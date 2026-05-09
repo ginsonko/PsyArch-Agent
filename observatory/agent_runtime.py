@@ -150,6 +150,10 @@ def _diary_path() -> Path:
     return _outputs_dir() / "agent_diary.json"
 
 
+def _scheduled_tasks_path() -> Path:
+    return _outputs_dir() / "agent_scheduled_tasks.json"
+
+
 def _events_path() -> Path:
     return _outputs_dir() / "agent_events.jsonl"
 
@@ -1552,6 +1556,18 @@ def _canonical_tool_name(name: Any) -> str:
         "查日记": "read_diary",
         "读日记": "read_diary",
         "查看日记": "read_diary",
+        "schedule_task": "schedule_task",
+        "scheduled_task": "schedule_task",
+        "timer_task": "schedule_task",
+        "timer": "schedule_task",
+        "alarm": "schedule_task",
+        "reminder": "schedule_task",
+        "定时任务": "schedule_task",
+        "闹钟": "schedule_task",
+        "提醒": "schedule_task",
+        "创建定时任务": "schedule_task",
+        "查看定时任务": "schedule_task",
+        "取消定时任务": "schedule_task",
         "image_generate": "image_generation",
         "draw_image": "image_generation",
         "generate_image": "image_generation",
@@ -1589,7 +1605,7 @@ def _display_of(row: dict[str, Any]) -> str:
 
 def _summarize_tool_output(output: Any, *, max_chars: int = 600) -> str:
     if isinstance(output, dict):
-        if output.get("mode") in {"read_diary", "write_diary"} or output.get("entry") or output.get("entries"):
+        if output.get("mode") in {"read_diary", "write_diary", "schedule_task"} or output.get("entry") or output.get("entries") or output.get("tasks"):
             parts: list[str] = []
             for key in ("summary", "message", "mode"):
                 value = output.get(key)
@@ -1628,6 +1644,27 @@ def _summarize_tool_output(output: Any, *, max_chars: int = 600) -> str:
             removed = _as_list(output.get("removed_entries"))
             if removed:
                 parts.append(f"removed={len(removed)}")
+            tasks = _as_list(output.get("tasks"))
+            if tasks:
+                compact_tasks = []
+                for task in tasks[:8]:
+                    item = _as_dict(task)
+                    compact_tasks.append(
+                        {
+                            "id": item.get("id") or "",
+                            "summary": item.get("summary") or "",
+                            "status": item.get("status") or "",
+                            "next_fire_at": item.get("next_fire_at") or item.get("next_fire_at_ms") or "",
+                            "prompt": _short(item.get("prompt") or "", 160),
+                        }
+                    )
+                parts.append("tasks=" + json.dumps(compact_tasks, ensure_ascii=False))
+            cancelled = _as_list(output.get("cancelled_tasks"))
+            if cancelled:
+                parts.append(f"cancelled={len(cancelled)}")
+            warnings = _as_list(output.get("warnings"))
+            if warnings:
+                parts.append("warnings=" + "；".join(str(item) for item in warnings[:3]))
             if parts:
                 return _naturalize_runtime_text("；".join(parts), max_chars=max_chars)
         if output.get("mode") == "image_generation" or output.get("attachment") or output.get("send_recommendation"):
@@ -2587,9 +2624,12 @@ class AgentConfig:
     diary_gc_oldest_count: int = 50
     diary_entry_max_chars: int = 20000
     diary_read_total_max_chars: int = 60000
+    scheduled_tasks_enabled: bool = True
+    scheduled_task_limit: int = 100
+    scheduled_task_warn_ratio: float = 0.9
     mcp_enabled: bool = False
     skill_enabled: bool = True
-    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
+    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
     model_pool: list[dict[str, Any]] = field(default_factory=list)
     persona_name: str = _DEFAULT_PERSONA_NAME
     persona_text: str = _DEFAULT_PERSONA_TEXT
@@ -2756,8 +2796,11 @@ class AgentConfig:
         base.diary_gc_oldest_count = max(1, min(base.diary_entry_limit, _as_int(base.diary_gc_oldest_count, 50)))
         base.diary_entry_max_chars = max(1000, min(120000, _as_int(base.diary_entry_max_chars, 20000)))
         base.diary_read_total_max_chars = max(2000, min(240000, _as_int(base.diary_read_total_max_chars, 60000)))
-        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
-        for builtin_tool in ("write_diary", "read_diary", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
+        base.scheduled_tasks_enabled = bool(base.scheduled_tasks_enabled)
+        base.scheduled_task_limit = max(5, min(1000, _as_int(base.scheduled_task_limit, 100)))
+        base.scheduled_task_warn_ratio = max(0.1, min(1.0, _as_float(base.scheduled_task_warn_ratio, 0.9)))
+        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
+        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
             if builtin_tool not in base.tool_allowlist:
                 base.tool_allowlist.append(builtin_tool)
         if not isinstance(base.model_pool, list):
@@ -3565,6 +3608,33 @@ class LocalToolRegistry:
                 },
             },
             {
+                "name": "schedule_task",
+                "label": "定时任务",
+                "enabled": self._allowed("schedule_task"),
+                "description": "查看、创建、更新或取消本地定时任务。任务到点后会把 [闹钟]: 提示信息 作为普通前端输入插入 PA-Agent 队列。",
+                "input_schema": {
+                    "operation": "可选，list | create | update | cancel | delete。无参数默认 list。",
+                    "commands": [
+                        {
+                            "operation": "create | update | cancel",
+                            "id": "取消/更新时的任务 id；创建时可省略。",
+                            "summary": "任务简介，便于列表显示。",
+                            "prompt": "触发时注入的提示信息，会变成 [闹钟]: prompt。",
+                            "trigger": {
+                                "type": "once | interval | daily | weekly | monthly | workday | weekdays | cron_like",
+                                "at": "单次触发时间，支持毫秒时间戳、YYYY-MM-DD HH:MM、YYYY-MM-DDTHH:MM:SS。",
+                                "interval_seconds": "interval 循环间隔秒数。",
+                                "time": "daily/weekly/workday 的本地时间，例如 08:00。",
+                                "weekdays": "weekly/workday 的星期，可用 1-7 或 mon/tue/...，1=周一。",
+                                "day": "monthly 的日期 1-31。",
+                            },
+                            "enabled": "是否启用，默认 true。",
+                        }
+                    ],
+                    "ids": ["cancel/delete 可一次取消多个 id"],
+                },
+            },
+            {
                 "name": "ap_tick_report",
                 "label": "AP 近期 tick 报告",
                 "enabled": self._allowed("ap_tick_report"),
@@ -3663,6 +3733,8 @@ class LocalToolRegistry:
                 output = self.runtime.write_diary(args, source=source)
             elif tool_name == "read_diary":
                 output = self.runtime.read_diary(args)
+            elif tool_name == "schedule_task":
+                output = self.runtime.schedule_task(args, source=source)
             elif tool_name == "ap_tick_report":
                 output = self._tool_ap_tick_report(args)
             elif tool_name == "ap_recall":
@@ -4671,6 +4743,7 @@ class AgentRuntime:
         self.state = self._load_state()
         self._state_lock = threading.RLock()
         self._diary_lock = threading.RLock()
+        self._scheduled_tasks_lock = threading.RLock()
         self._pending_external_inputs: list[dict[str, Any]] = []
         self._pending_teacher_feedback_labels: list[dict[str, Any]] = []
         self._reload_config_before_adapter_send = True
@@ -4875,6 +4948,39 @@ class AgentRuntime:
             "mentions": _as_list(event.get("mentions"))[:8],
             "raw_event_preview": _as_dict(event.get("raw_event_preview")),
         }
+
+    def _scheduled_task_origin_from_context(self, context: dict[str, Any] | None) -> dict[str, Any]:
+        context = context if isinstance(context, dict) else {}
+        reply_target = self._compact_reply_target(_as_dict(context.get("reply_target") or context.get("target")))
+        adapter_event = self._compact_adapter_event(_as_dict(context.get("adapter_event") or context.get("event")))
+        if not reply_target and adapter_event:
+            reply_target = self._compact_reply_target(adapter_event)
+        adapter = (
+            str(reply_target.get("adapter") or adapter_event.get("adapter") or context.get("adapter") or "").strip()
+        )
+        conversation_id = str(
+            context.get("conversation_id")
+            or reply_target.get("conversation_id")
+            or adapter_event.get("conversation_id")
+            or ""
+        ).strip()
+        adapter_label = _clean_text(
+            context.get("adapter_label")
+            or reply_target.get("target_label")
+            or adapter_event.get("target_label")
+            or "",
+            max_chars=160,
+        )
+        if not adapter and not conversation_id and not reply_target and not adapter_event:
+            return {}
+        origin = {
+            "source": adapter or _clean_text(context.get("source") or "scheduled_task", max_chars=120),
+            "conversation_id": conversation_id,
+            "adapter_label": adapter_label,
+            "reply_target": reply_target,
+            "adapter_event": adapter_event,
+        }
+        return {key: value for key, value in origin.items() if value not in ("", {}, [], None)}
 
     def _public_attachment_for_log(self, attachment: dict[str, Any] | None) -> dict[str, Any]:
         attachment = attachment if isinstance(attachment, dict) else {}
@@ -6368,6 +6474,594 @@ class AgentRuntime:
                 "summary": f"已新建日记：{title}（重要性 {importance}/100）。",
             }
 
+    def _load_scheduled_tasks_payload(self) -> dict[str, Any]:
+        raw = _safe_read_json(_scheduled_tasks_path(), {"version": 1, "tasks": []})
+        if isinstance(raw, list):
+            raw = {"version": 1, "tasks": raw}
+        if not isinstance(raw, dict):
+            raw = {"version": 1, "tasks": []}
+        now = _now_ms()
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for idx, item in enumerate(_as_list(raw.get("tasks"))):
+            if not isinstance(item, dict):
+                continue
+            task_id = _slug_id(item.get("id") or f"task_{idx + 1}", fallback=f"task_{idx + 1}")
+            if task_id in seen:
+                suffix = 2
+                base_id = task_id
+                while f"{base_id}_{suffix}" in seen:
+                    suffix += 1
+                task_id = f"{base_id}_{suffix}"
+            seen.add(task_id)
+            summary = _clean_text(item.get("summary") or item.get("title") or task_id, max_chars=180)
+            prompt = _clean_multiline_text(item.get("prompt") or item.get("message") or item.get("text") or "", max_chars=4000)
+            if not prompt and not summary:
+                continue
+            trigger = _as_dict(item.get("trigger"))
+            if not trigger:
+                trigger = {"type": _clean_text(item.get("type") or "once", max_chars=40)}
+            created_at = _as_int(item.get("created_at_ms"), now)
+            updated_at = _as_int(item.get("updated_at_ms"), created_at)
+            next_fire_at = _as_int(item.get("next_fire_at_ms"), 0)
+            if next_fire_at <= 0 and item.get("enabled", True) is not False and str(item.get("status") or "active") == "active":
+                next_fire_at = self._compute_next_schedule_fire_ms(trigger, now_ms=now, after_ms=now - 1000)
+            status = str(item.get("status") or "active").strip().lower()
+            if status not in {"active", "paused", "completed", "cancelled", "failed"}:
+                status = "active"
+            rows.append(
+                {
+                    "id": task_id,
+                    "summary": summary or task_id,
+                    "prompt": prompt,
+                    "trigger": trigger,
+                    "enabled": item.get("enabled", True) is not False,
+                    "status": status,
+                    "created_at_ms": created_at,
+                    "updated_at_ms": updated_at,
+                    "next_fire_at_ms": next_fire_at,
+                    "last_fire_at_ms": _as_int(item.get("last_fire_at_ms"), 0),
+                    "fire_count": max(0, _as_int(item.get("fire_count"), 0)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                    "meta": _as_dict(item.get("meta")),
+                    "origin": self._scheduled_task_origin_from_context(_as_dict(item.get("origin"))),
+                }
+            )
+        rows.sort(key=lambda row: (_as_int(row.get("created_at_ms"), 0), str(row.get("id") or "")))
+        return {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "tasks": rows}
+
+    def _save_scheduled_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        safe_tasks: list[dict[str, Any]] = []
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            safe_tasks.append(
+                {
+                    "id": _slug_id(item.get("id") or f"task_{len(safe_tasks) + 1}", fallback=f"task_{len(safe_tasks) + 1}"),
+                    "summary": _clean_text(item.get("summary") or item.get("title") or "", max_chars=180) or f"定时任务 {len(safe_tasks) + 1}",
+                    "prompt": _clean_multiline_text(item.get("prompt") or item.get("message") or item.get("text") or "", max_chars=4000),
+                    "trigger": _as_dict(item.get("trigger")),
+                    "enabled": item.get("enabled", True) is not False,
+                    "status": str(item.get("status") or "active").strip().lower() or "active",
+                    "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+                    "updated_at_ms": _as_int(item.get("updated_at_ms"), _now_ms()),
+                    "next_fire_at_ms": _as_int(item.get("next_fire_at_ms"), 0),
+                    "last_fire_at_ms": _as_int(item.get("last_fire_at_ms"), 0),
+                    "fire_count": max(0, _as_int(item.get("fire_count"), 0)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                    "meta": _as_dict(item.get("meta")),
+                    "origin": self._scheduled_task_origin_from_context(_as_dict(item.get("origin"))),
+                }
+            )
+        safe_tasks.sort(key=lambda row: (_as_int(row.get("created_at_ms"), 0), str(row.get("id") or "")))
+        _safe_write_json(_scheduled_tasks_path(), {"version": 1, "updated_at_ms": _now_ms(), "tasks": safe_tasks})
+
+    def _weekday_number(self, value: Any) -> int | None:
+        text = str(value or "").strip().lower()
+        mapping = {
+            "mon": 1,
+            "monday": 1,
+            "周一": 1,
+            "星期一": 1,
+            "tue": 2,
+            "tuesday": 2,
+            "周二": 2,
+            "星期二": 2,
+            "wed": 3,
+            "wednesday": 3,
+            "周三": 3,
+            "星期三": 3,
+            "thu": 4,
+            "thursday": 4,
+            "周四": 4,
+            "星期四": 4,
+            "fri": 5,
+            "friday": 5,
+            "周五": 5,
+            "星期五": 5,
+            "sat": 6,
+            "saturday": 6,
+            "周六": 6,
+            "星期六": 6,
+            "sun": 7,
+            "sunday": 7,
+            "周日": 7,
+            "周天": 7,
+            "星期日": 7,
+            "星期天": 7,
+        }
+        if text in mapping:
+            return mapping[text]
+        num = _as_int(text, 0)
+        if 1 <= num <= 7:
+            return num
+        if num == 0:
+            return 7
+        return None
+
+    def _parse_schedule_weekdays(self, value: Any, *, default: list[int] | None = None) -> list[int]:
+        default = default or []
+        raw_items = value if isinstance(value, list) else re.split(r"[,，、\s]+", str(value or ""))
+        days: list[int] = []
+        for item in raw_items:
+            day = self._weekday_number(item)
+            if day and day not in days:
+                days.append(day)
+        return sorted(days or default)
+
+    def _parse_schedule_time(self, value: Any, *, default_hour: int = 9, default_minute: int = 0) -> tuple[int, int]:
+        text = str(value or "").strip()
+        match = re.search(r"(\d{1,2})\s*[:：点]\s*(\d{1,2})?", text)
+        if not match:
+            return default_hour, default_minute
+        hour = max(0, min(23, _as_int(match.group(1), default_hour)))
+        minute = max(0, min(59, _as_int(match.group(2), default_minute) if match.group(2) is not None else 0))
+        return hour, minute
+
+    def _parse_schedule_at_ms(self, value: Any, *, now_ms: int | None = None) -> int:
+        now_ms = now_ms or _now_ms()
+        if isinstance(value, (int, float)) and float(value) > 0:
+            number = float(value)
+            return int(number if number > 10_000_000_000 else number * 1000)
+        text = str(value or "").strip()
+        if not text:
+            return 0
+        if re.fullmatch(r"\d+(?:\.\d+)?", text):
+            number = float(text)
+            return int(number if number > 10_000_000_000 else number * 1000)
+        normalized = text.replace("T", " ").replace("/", "-")
+        normalized = re.sub(r"\s+", " ", normalized)
+        formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%m-%d %H:%M",
+            "%m-%d",
+            "%H:%M:%S",
+            "%H:%M",
+        ]
+        now_tuple = time.localtime(now_ms / 1000.0)
+        for fmt in formats:
+            try:
+                parsed = time.strptime(normalized, fmt)
+            except Exception:
+                continue
+            year = parsed.tm_year if "%Y" in fmt else now_tuple.tm_year
+            month = parsed.tm_mon if "%m" in fmt else now_tuple.tm_mon
+            day = parsed.tm_mday if "%d" in fmt else now_tuple.tm_mday
+            hour = parsed.tm_hour if "%H" in fmt else 9
+            minute = parsed.tm_min if "%M" in fmt else 0
+            second = parsed.tm_sec if "%S" in fmt else 0
+            try:
+                fire_ms = int(time.mktime((year, month, day, hour, minute, second, 0, 0, -1)) * 1000)
+            except Exception:
+                continue
+            if "%Y" not in fmt and fire_ms <= now_ms:
+                if "%m" in fmt and "%d" in fmt:
+                    try:
+                        fire_ms = int(time.mktime((year + 1, month, day, hour, minute, second, 0, 0, -1)) * 1000)
+                    except Exception:
+                        pass
+                else:
+                    fire_ms += 24 * 60 * 60 * 1000
+            return fire_ms
+        return 0
+
+    def _compute_next_schedule_fire_ms(self, trigger: dict[str, Any], *, now_ms: int | None = None, after_ms: int | None = None) -> int:
+        now_ms = now_ms or _now_ms()
+        after_ms = after_ms if after_ms is not None else now_ms
+        trigger = _as_dict(trigger)
+        trigger_type = str(trigger.get("type") or trigger.get("mode") or "once").strip().lower()
+        if trigger_type in {"once", "single", "at", "date", "datetime", "single_shot"}:
+            return self._parse_schedule_at_ms(trigger.get("at") or trigger.get("datetime") or trigger.get("time") or trigger.get("date"), now_ms=now_ms)
+        if trigger_type in {"interval", "loop", "repeat", "every"}:
+            seconds = _as_float(trigger.get("interval_seconds") or trigger.get("seconds"), 0.0)
+            if seconds <= 0:
+                minutes = _as_float(trigger.get("interval_minutes") or trigger.get("minutes"), 0.0)
+                hours = _as_float(trigger.get("interval_hours") or trigger.get("hours"), 0.0)
+                seconds = minutes * 60 if minutes > 0 else hours * 3600
+            interval_ms = max(1000, int(seconds * 1000))
+            return max(now_ms, after_ms + interval_ms)
+        if trigger_type in {"daily", "everyday", "day"}:
+            hour, minute = self._parse_schedule_time(trigger.get("time") or trigger.get("at_time") or trigger.get("at"), default_hour=9)
+            base = time.localtime(now_ms / 1000.0)
+            fire_ms = int(time.mktime((base.tm_year, base.tm_mon, base.tm_mday, hour, minute, 0, 0, 0, -1)) * 1000)
+            while fire_ms <= after_ms:
+                fire_ms += 24 * 60 * 60 * 1000
+            return fire_ms
+        if trigger_type in {"workday", "weekdays", "weekday"}:
+            trigger_type = "weekly"
+            trigger = {**trigger, "weekdays": [1, 2, 3, 4, 5]}
+        if trigger_type in {"weekly", "week"}:
+            hour, minute = self._parse_schedule_time(trigger.get("time") or trigger.get("at_time") or trigger.get("at"), default_hour=9)
+            days = self._parse_schedule_weekdays(trigger.get("weekdays") or trigger.get("weekday") or trigger.get("days"), default=[1])
+            base = time.localtime(now_ms / 1000.0)
+            today = int(base.tm_wday) + 1
+            candidates: list[int] = []
+            for offset in range(0, 15):
+                day_number = ((today + offset - 1) % 7) + 1
+                if day_number not in days:
+                    continue
+                fire_ms = int(time.mktime((base.tm_year, base.tm_mon, base.tm_mday + offset, hour, minute, 0, 0, 0, -1)) * 1000)
+                if fire_ms > after_ms:
+                    candidates.append(fire_ms)
+            return min(candidates) if candidates else 0
+        if trigger_type in {"monthly", "month"}:
+            hour, minute = self._parse_schedule_time(trigger.get("time") or trigger.get("at_time") or trigger.get("at"), default_hour=9)
+            target_day = max(1, min(31, _as_int(trigger.get("day") or trigger.get("month_day"), 1)))
+            base = time.localtime(now_ms / 1000.0)
+            for month_offset in range(0, 15):
+                year = base.tm_year + ((base.tm_mon + month_offset - 1) // 12)
+                month = ((base.tm_mon + month_offset - 1) % 12) + 1
+                for day in range(target_day, 0, -1):
+                    try:
+                        fire_ms = int(time.mktime((year, month, day, hour, minute, 0, 0, 0, -1)) * 1000)
+                    except Exception:
+                        continue
+                    check = time.localtime(fire_ms / 1000.0)
+                    if check.tm_year == year and check.tm_mon == month and fire_ms > after_ms:
+                        return fire_ms
+                    break
+            return 0
+        if trigger.get("at") or trigger.get("datetime"):
+            return self._parse_schedule_at_ms(trigger.get("at") or trigger.get("datetime"), now_ms=now_ms)
+        return 0
+
+    def _public_scheduled_task(self, task: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+        item = task if isinstance(task, dict) else {}
+        next_ms = _as_int(item.get("next_fire_at_ms"), 0)
+        last_ms = _as_int(item.get("last_fire_at_ms"), 0)
+        row = {
+            "id": str(item.get("id") or ""),
+            "summary": _clean_text(item.get("summary") or "", max_chars=180),
+            "prompt": _clean_multiline_text(item.get("prompt") or "", max_chars=4000 if detail else 240),
+            "trigger": _as_dict(item.get("trigger")),
+            "enabled": item.get("enabled", True) is not False,
+            "status": str(item.get("status") or "active"),
+            "created_at_ms": _as_int(item.get("created_at_ms"), 0),
+            "updated_at_ms": _as_int(item.get("updated_at_ms"), 0),
+            "next_fire_at_ms": next_ms,
+            "next_fire_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(next_ms / 1000.0)) if next_ms > 0 else "",
+            "last_fire_at_ms": last_ms,
+            "last_fire_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_ms / 1000.0)) if last_ms > 0 else "",
+            "fire_count": max(0, _as_int(item.get("fire_count"), 0)),
+            "source": _clean_text(item.get("source") or "", max_chars=120),
+        }
+        if detail:
+            row["meta"] = _as_dict(item.get("meta"))
+            origin = self._scheduled_task_origin_from_context(_as_dict(item.get("origin")))
+            if origin:
+                row["origin"] = origin
+        return row
+
+    def _scheduled_task_capacity_warning(self, tasks: list[dict[str, Any]]) -> list[str]:
+        active_count = len([row for row in tasks if isinstance(row, dict) and row.get("enabled", True) is not False and str(row.get("status") or "active") == "active"])
+        limit = max(5, int(self.config.scheduled_task_limit or 100))
+        warn_at = max(1, int(math.ceil(limit * float(self.config.scheduled_task_warn_ratio or 0.9))))
+        if active_count >= warn_at:
+            return [f"当前活跃定时任务 {active_count}/{limit}，已经接近上限；建议抽空检查、合并或取消不再需要的任务。"]
+        return []
+
+    def _gc_scheduled_tasks(self, tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        limit = max(5, int(self.config.scheduled_task_limit or 100))
+        rows = list(tasks)
+        removed: list[dict[str, Any]] = []
+        while len([row for row in rows if str(row.get("status") or "active") == "active"]) > limit:
+            active_rows = [row for row in rows if str(row.get("status") or "active") == "active"]
+            victim = sorted(active_rows, key=lambda row: (_as_int(row.get("created_at_ms"), 0), _as_int(row.get("updated_at_ms"), 0)))[0]
+            rows = [row for row in rows if str(row.get("id") or "") != str(victim.get("id") or "")]
+            removed.append(victim)
+        return rows, removed
+
+    def _normalize_schedule_command(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        payload = payload if isinstance(payload, dict) else {}
+        commands = payload.get("commands")
+        if isinstance(commands, list):
+            return [dict(item) for item in commands if isinstance(item, dict)][:40]
+        operation = str(payload.get("operation") or payload.get("op") or payload.get("action") or "").strip().lower()
+        if not payload or (not operation and not any(key in payload for key in ("summary", "prompt", "trigger", "id", "ids"))):
+            return [{"operation": "list"}]
+        if not operation:
+            operation = "create" if (payload.get("summary") or payload.get("prompt") or payload.get("trigger")) else "list"
+        return [{**payload, "operation": operation}]
+
+    def schedule_task(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.scheduled_tasks_enabled:
+            return {"ok": False, "mode": "schedule_task", "error": "scheduled_tasks_disabled", "summary": "定时任务系统当前未启用。"}
+        now = _now_ms()
+        operations: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        cancelled: list[dict[str, Any]] = []
+        created: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        removed_by_gc: list[dict[str, Any]] = []
+        commands = self._normalize_schedule_command(args)
+        default_origin = self._scheduled_task_origin_from_context(
+            _as_dict(args.get("_scheduled_task_origin") or args.get("origin") or args.get("target_context"))
+        )
+        with self._scheduled_tasks_lock:
+            payload = self._load_scheduled_tasks_payload()
+            tasks = [row for row in _as_list(payload.get("tasks")) if isinstance(row, dict)]
+            for command_index, command in enumerate(commands, start=1):
+                operation = str(command.get("operation") or command.get("op") or command.get("action") or "list").strip().lower()
+                if operation in {"show", "view", "query", "active"}:
+                    operation = "list"
+                if operation in {"delete", "remove"}:
+                    operation = "cancel"
+                if operation in {"add", "new"}:
+                    operation = "create"
+                if operation not in {"list", "create", "update", "cancel"}:
+                    errors.append({"index": command_index, "error": "unknown_operation", "operation": operation})
+                    continue
+                if operation == "list":
+                    operations.append({"index": command_index, "operation": "list", "ok": True})
+                    continue
+                ids = _optional_string_list(command.get("ids"))
+                single_id = str(command.get("id") or command.get("task_id") or "").strip()
+                if single_id:
+                    ids.append(single_id)
+                if operation == "cancel":
+                    if not ids:
+                        errors.append({"index": command_index, "operation": operation, "error": "ids_required"})
+                        continue
+                    hit = False
+                    for task in tasks:
+                        if str(task.get("id") or "") in ids and str(task.get("status") or "active") == "active":
+                            task["status"] = "cancelled"
+                            task["enabled"] = False
+                            task["updated_at_ms"] = now
+                            task["next_fire_at_ms"] = 0
+                            cancelled.append(self._public_scheduled_task(task, detail=False))
+                            hit = True
+                    operations.append({"index": command_index, "operation": operation, "ok": hit, "ids": ids})
+                    if not hit:
+                        errors.append({"index": command_index, "operation": operation, "error": "task_not_found", "ids": ids})
+                    continue
+                has_trigger_update = bool(command.get("trigger")) or any(
+                    key in command
+                    for key in ("type", "trigger_type", "at", "datetime", "date", "time", "weekdays", "weekday", "days", "interval_seconds", "interval_minutes", "interval_hours", "day")
+                )
+                trigger = _as_dict(command.get("trigger"))
+                if not trigger and has_trigger_update:
+                    trigger = {
+                        "type": command.get("type") or command.get("trigger_type") or ("interval" if command.get("interval_seconds") or command.get("interval_minutes") else "once")
+                    }
+                    for key in ("at", "datetime", "date", "time", "weekdays", "weekday", "days", "interval_seconds", "interval_minutes", "interval_hours", "day"):
+                        if key in command:
+                            trigger[key] = command.get(key)
+                next_fire_at = self._compute_next_schedule_fire_ms(trigger, now_ms=now, after_ms=now - 1000) if trigger else 0
+                if operation == "create" and next_fire_at <= 0:
+                    errors.append({"index": command_index, "operation": operation, "error": "invalid_trigger", "trigger": trigger})
+                    continue
+                if operation == "update" and has_trigger_update and next_fire_at <= 0:
+                    errors.append({"index": command_index, "operation": operation, "error": "invalid_trigger", "trigger": trigger})
+                    continue
+                summary = _clean_text(command.get("summary") or command.get("title") or "", max_chars=180)
+                prompt = _clean_multiline_text(command.get("prompt") or command.get("message") or command.get("text") or "", max_chars=4000)
+                command_origin = self._scheduled_task_origin_from_context(
+                    _as_dict(command.get("origin") or command.get("target_context") or command.get("_scheduled_task_origin"))
+                ) or copy.deepcopy(default_origin)
+                if operation == "create":
+                    if not prompt:
+                        errors.append({"index": command_index, "operation": operation, "error": "prompt_required"})
+                        continue
+                    if not summary:
+                        summary = _short(prompt, 80)
+                    digest = hashlib.sha1(f"{summary}|{prompt}|{now}|{command_index}".encode("utf-8", errors="ignore")).hexdigest()[:8]
+                    task_id = _slug_id(command.get("id") or f"task_{now}_{digest}", fallback=f"task_{now}_{digest}")
+                    used = {str(row.get("id") or "") for row in tasks}
+                    if task_id in used:
+                        suffix = 2
+                        base_id = task_id
+                        while f"{base_id}_{suffix}" in used:
+                            suffix += 1
+                        task_id = f"{base_id}_{suffix}"
+                    task = {
+                        "id": task_id,
+                        "summary": summary,
+                        "prompt": prompt,
+                        "trigger": trigger,
+                        "enabled": command.get("enabled", True) is not False,
+                        "status": "active",
+                        "created_at_ms": now,
+                        "updated_at_ms": now,
+                        "next_fire_at_ms": next_fire_at,
+                        "last_fire_at_ms": 0,
+                        "fire_count": 0,
+                        "source": _clean_text(source, max_chars=120),
+                        "meta": _as_dict(command.get("meta")),
+                        "origin": command_origin,
+                    }
+                    tasks.append(task)
+                    created.append(self._public_scheduled_task(task, detail=True))
+                    operations.append({"index": command_index, "operation": operation, "ok": True, "id": task_id})
+                    continue
+                if operation == "update":
+                    if not ids:
+                        errors.append({"index": command_index, "operation": operation, "error": "id_required"})
+                        continue
+                    hit = False
+                    for task in tasks:
+                        if str(task.get("id") or "") not in ids:
+                            continue
+                        if summary:
+                            task["summary"] = summary
+                        if prompt:
+                            task["prompt"] = prompt
+                        if has_trigger_update and trigger:
+                            task["trigger"] = trigger
+                            task["next_fire_at_ms"] = next_fire_at
+                        if "enabled" in command:
+                            task["enabled"] = command.get("enabled") is not False
+                            task["status"] = "active" if task["enabled"] else "paused"
+                        else:
+                            task["status"] = "active"
+                            task["enabled"] = True
+                        if command_origin:
+                            task["origin"] = command_origin
+                        task["updated_at_ms"] = now
+                        task["source"] = _clean_text(source, max_chars=120)
+                        updated.append(self._public_scheduled_task(task, detail=True))
+                        hit = True
+                    operations.append({"index": command_index, "operation": operation, "ok": hit, "ids": ids})
+                    if not hit:
+                        errors.append({"index": command_index, "operation": operation, "error": "task_not_found", "ids": ids})
+            tasks, removed_by_gc = self._gc_scheduled_tasks(tasks)
+            self._save_scheduled_tasks(tasks)
+        active = self.scheduled_tasks_public(detail=False, include_inactive=False)
+        warnings = self._scheduled_task_capacity_warning([row for row in tasks if isinstance(row, dict)])
+        if removed_by_gc:
+            warnings.append(f"定时任务超过上限，已自动移除最旧的 {len(removed_by_gc)} 条活跃任务。")
+        self.record_event(
+            {
+                "event": "scheduled_task_tool",
+                "source": source,
+                "operation_count": len(commands),
+                "created_count": len(created),
+                "updated_count": len(updated),
+                "cancelled_count": len(cancelled),
+                "error_count": len(errors),
+            }
+        )
+        summary_parts = []
+        if created:
+            summary_parts.append(f"创建 {len(created)} 条")
+        if updated:
+            summary_parts.append(f"更新 {len(updated)} 条")
+        if cancelled:
+            summary_parts.append(f"取消 {len(cancelled)} 条")
+        if not summary_parts:
+            summary_parts.append(f"当前活跃定时任务 {active.get('active_count', 0)} 条")
+        return {
+            "ok": not errors or bool(created or updated or cancelled or active.get("tasks")),
+            "mode": "schedule_task",
+            "operations": operations,
+            "errors": errors,
+            "created_tasks": created,
+            "updated_tasks": updated,
+            "cancelled_tasks": cancelled,
+            "removed_by_gc": [self._public_scheduled_task(row, detail=False) for row in removed_by_gc],
+            "tasks": active.get("tasks", []),
+            "active_count": active.get("active_count", 0),
+            "total": active.get("total", 0),
+            "limit": active.get("limit", self.config.scheduled_task_limit),
+            "warnings": warnings,
+            "summary": "；".join(summary_parts) + ("；" + "；".join(warnings) if warnings else "。"),
+            "usage_hint": "可一次传 commands 数组顺序处理多条 create/update/cancel；无参数会列出当前活跃任务。",
+        }
+
+    def scheduled_tasks_public(self, *, detail: bool = False, include_inactive: bool = True) -> dict[str, Any]:
+        with self._scheduled_tasks_lock:
+            payload = self._load_scheduled_tasks_payload()
+            tasks = [row for row in _as_list(payload.get("tasks")) if isinstance(row, dict)]
+        rows = [
+            self._public_scheduled_task(row, detail=detail)
+            for row in tasks
+            if include_inactive or (row.get("enabled", True) is not False and str(row.get("status") or "active") == "active")
+        ]
+        rows.sort(key=lambda row: (_as_int(row.get("next_fire_at_ms"), 0) or 9_999_999_999_999, _as_int(row.get("created_at_ms"), 0)))
+        active_count = len([row for row in tasks if row.get("enabled", True) is not False and str(row.get("status") or "active") == "active"])
+        return {
+            "ok": True,
+            "enabled": bool(self.config.scheduled_tasks_enabled),
+            "tasks": rows,
+            "active_count": active_count,
+            "total": len(tasks),
+            "limit": max(5, int(self.config.scheduled_task_limit or 100)),
+            "warnings": self._scheduled_task_capacity_warning(tasks),
+            "path": str(_scheduled_tasks_path()),
+            "generated_at_ms": _now_ms(),
+        }
+
+    def delete_scheduled_tasks(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        ids = _optional_string_list(payload.get("ids"))
+        single_id = str(payload.get("id") or payload.get("task_id") or "").strip()
+        if single_id:
+            ids.append(single_id)
+        if not ids:
+            return {"ok": False, "error": "ids_required", "summary": "删除定时任务需要 id 或 ids。"}
+        with self._scheduled_tasks_lock:
+            data = self._load_scheduled_tasks_payload()
+            tasks = [row for row in _as_list(data.get("tasks")) if isinstance(row, dict)]
+            removed = [row for row in tasks if str(row.get("id") or "") in ids]
+            kept = [row for row in tasks if str(row.get("id") or "") not in ids]
+            self._save_scheduled_tasks(kept)
+        self.record_event({"event": "scheduled_tasks_deleted", "ids": ids, "removed_count": len(removed)})
+        result = self.scheduled_tasks_public(detail=False, include_inactive=True)
+        result.update({"removed_tasks": [self._public_scheduled_task(row, detail=False) for row in removed], "summary": f"已删除 {len(removed)} 条定时任务。"})
+        return result
+
+    def save_scheduled_task_manual(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        operation = "update" if str(payload.get("id") or "").strip() else "create"
+        result = self.schedule_task({**payload, "operation": operation}, source="agent_page_schedule_editor")
+        return result
+
+    def claim_due_scheduled_tasks(self, *, now_ms: int | None = None, limit: int = 10) -> dict[str, Any]:
+        now_ms = now_ms or _now_ms()
+        claimed: list[dict[str, Any]] = []
+        with self._scheduled_tasks_lock:
+            data = self._load_scheduled_tasks_payload()
+            tasks = [row for row in _as_list(data.get("tasks")) if isinstance(row, dict)]
+            for task in tasks:
+                if len(claimed) >= max(1, min(50, int(limit or 10))):
+                    break
+                if task.get("enabled", True) is False or str(task.get("status") or "active") != "active":
+                    continue
+                next_fire_at = _as_int(task.get("next_fire_at_ms"), 0)
+                if next_fire_at <= 0 or next_fire_at > now_ms:
+                    continue
+                claimed.append(copy.deepcopy(task))
+                trigger = _as_dict(task.get("trigger"))
+                trigger_type = str(trigger.get("type") or "once").strip().lower()
+                task["last_fire_at_ms"] = now_ms
+                task["fire_count"] = max(0, _as_int(task.get("fire_count"), 0)) + 1
+                task["updated_at_ms"] = now_ms
+                if trigger_type in {"once", "single", "at", "date", "datetime", "single_shot"}:
+                    task["status"] = "completed"
+                    task["enabled"] = False
+                    task["next_fire_at_ms"] = 0
+                else:
+                    next_ms = self._compute_next_schedule_fire_ms(trigger, now_ms=now_ms, after_ms=max(now_ms, next_fire_at))
+                    if next_ms > 0:
+                        task["next_fire_at_ms"] = next_ms
+                    else:
+                        task["status"] = "failed"
+                        task["enabled"] = False
+                        task["next_fire_at_ms"] = 0
+            if claimed:
+                self._save_scheduled_tasks(tasks)
+        if claimed:
+            self.record_event({"event": "scheduled_tasks_claimed", "count": len(claimed), "ids": [row.get("id") for row in claimed]})
+        return {
+            "ok": True,
+            "tasks": [self._public_scheduled_task(row, detail=True) for row in claimed],
+            "count": len(claimed),
+            "now_ms": now_ms,
+        }
+
     def update_config(self, updates: dict[str, Any]) -> dict[str, Any]:
         self._maybe_reload_config_from_disk()
         current = self.config.to_dict(public=False)
@@ -6720,6 +7414,8 @@ class AgentRuntime:
         files = {
             "config": _file_info(_config_path()),
             "state": _file_info(_state_path()),
+            "diary": _file_info(_diary_path()),
+            "scheduled_tasks": _file_info(_scheduled_tasks_path()),
             "events": _file_info(_events_path()),
             "outbox": _file_info(_outbox_path()),
             "experiments": _file_info(_experiments_path()),
@@ -6765,6 +7461,8 @@ class AgentRuntime:
         files = {
             "config": _file_info(_config_path()),
             "state": _file_info(_state_path()),
+            "diary": _file_info(_diary_path()),
+            "scheduled_tasks": _file_info(_scheduled_tasks_path()),
             "events": _file_info(_events_path()),
             "outbox": _file_info(_outbox_path()),
             "experiments": _file_info(_experiments_path()),
@@ -6828,7 +7526,7 @@ class AgentRuntime:
             checks.append(item("adapter", "平台适配器", "pass", f"当前使用 {self.config.platform_adapter or 'local'} 本地适配。"))
 
         tool_names = {str(row.get("name") or "") for row in self.tools.list_tools()}
-        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "image_understanding") if name not in tool_names]
         if missing_tools:
             checks.append(item("tools", "本地工具", "fail", f"缺少关键工具：{', '.join(missing_tools)}。"))
         else:
@@ -8506,7 +9204,7 @@ class AgentRuntime:
 
     def tool_matrix(self) -> dict[str, Any]:
         tools = self.tools.list_tools()
-        mutating_tools = {"memory_note", "write_diary", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
+        mutating_tools = {"memory_note", "write_diary", "schedule_task", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
         stub_tools = {"web_search", "image_understanding", "mcp_ping", "skill_run"}
         external_reserved = {"weather", "web_search", "mcp_ping", "skill_run", "image_understanding"}
         rows: list[dict[str, Any]] = []
@@ -8739,7 +9437,7 @@ class AgentRuntime:
             "rows": rows,
             "counts": counts,
             "readiness": readiness,
-            "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "write_diary", "read_diary", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
+                "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "write_diary", "read_diary", "schedule_task", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
             "allowlist": list(self.config.tool_allowlist),
             "mcp_enabled": mcp_enabled,
             "skill_enabled": skill_enabled,
@@ -11424,7 +12122,7 @@ class AgentRuntime:
 
         tools = self.list_tools()
         tool_names = {str(item.get("name") or "") for item in _as_list(tools.get("tools")) if isinstance(item, dict)}
-        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "image_understanding") if name not in tool_names]
         add("tools", "pass" if not missing_tools else "fail", f"tools={len(tool_names)} missing={','.join(missing_tools) or '-'}", meta={"tools": sorted(tool_names)})
 
         profiles = self.config_profiles()
@@ -14735,7 +15433,14 @@ class AgentRuntime:
                     ap_tick_count=len(reports),
                     internal_mode=internal_mode,
                 )
-            tool_results = self._execute_tool_calls(tool_calls, turn_id=turn_id, thought_index=index + 1)
+            tool_context = {
+                "source": source_kind,
+                "conversation_id": conversation_id,
+                "adapter_label": adapter_label or self._adapter_target_label(reply_target),
+                "reply_target": copy.deepcopy(reply_target),
+                "adapter_event": copy.deepcopy(adapter_event),
+            }
+            tool_results = self._execute_tool_calls(tool_calls, turn_id=turn_id, thought_index=index + 1, context=tool_context)
             quality = self._score_thought_quality(thought_text, normalized, packet)
             thought_row = {
                 "id": f"{'internal_thought' if internal_mode else 'thought'}_{_now_ms()}_{index + 1}",
@@ -17552,6 +18257,11 @@ class AgentRuntime:
                         "read_diary：当用户问“你还记得吗/我们的约定是什么/之前说过什么/某人的信息是什么”，而当前上下文没有可靠依据时使用。典型流程是：第一轮 read_diary 无参数列标题；第二轮按 id/title/query 选 1-3 条 read_diary 取详情；第三轮基于详情 reply。",
                         "更新已有日记时，优先先 read_diary 查是否已有相关标题和 id。已有 id 时用 write_diary mode=append 追加新情报；mode=overwrite 只在整理、纠错或合并时使用，并且 content 必须尽量保留原有重要信息。",
                         "如果用户明确纠正某条长期信息，先 read_diary 读出旧内容，再 write_diary overwrite 写入修正后的完整版本；不要只把“旧信息错了”追加在后面导致未来混乱。",
+                        "schedule_task：用于查看、创建、更新、取消本地定时任务。无参数或 operation=list 会返回当前活跃任务；operation=create 创建任务；operation=update 修改任务；operation=cancel/delete 取消任务。也可以一次传 commands 数组，按顺序处理多条命令。",
+                        "定时任务触发后，会像用户在前端文本框输入一样，把一条文本插入队列，格式为“[闹钟]: 提示信息”。看到这种消息时，先理解这是你过去创建的提醒/计划触发了，再决定是否回复、调用工具、整理日报、提醒用户或调整任务。",
+                        "创建定时任务必须写清 summary、prompt、trigger。trigger 常用格式：{\"type\":\"once\",\"at\":\"2026-05-10 21:30\"}；{\"type\":\"interval\",\"interval_minutes\":30}；{\"type\":\"daily\",\"time\":\"08:00\"}；{\"type\":\"weekly\",\"weekdays\":[7],\"time\":\"08:00\"}；{\"type\":\"workday\",\"time\":\"09:00\"}。",
+                        "如果发现循环任务太频繁、提示词太含糊、已经完成或可能造成重复打扰，可以 tool_call schedule_task 取消、更新或删除后重建。接近任务数量上限时，工具结果会提醒你管理任务数量。",
+                        "定时任务只负责到点注入提示，不代表任务已经完成。触发后要像处理普通用户消息一样继续思考：需要查资料就先 tool_call，需要发消息就 reply/actions，不适合回复就 sleep。",
                         "memory_note、web_search、mcp_ping、skill_run 只在用户需求或上下文明确需要时使用。",
                     ]
                 ),
@@ -17631,6 +18341,9 @@ class AgentRuntime:
                         "正例 4：用户问“你还记得自己和我的约定吗？”当前上下文没有明确依据。Thought #1 tool_call read_diary 无参数；Thought #2 从标题里选“和用户的项目约定”等 ids 再 read_diary；Thought #3 基于日记详情回答。不要凭感觉编约定。",
                         "正例 5：聊天中得知“银子是晋中人”。如果这是长期用户画像信息，先 read_diary query=\"银子的信息\"；若已有条目，就 write_diary mode=append 指定 id 追加“银子是晋中人”；若没有，就新建标题“银子的信息”，importance 70 左右。普通玩笑和一次性表情互动不用记。",
                         "反例 3：用户只是说“哈哈”“吃饭了吗”“草”，你也写日记。这是错误，会污染长期记忆。",
+                        "正例 5b：用户说“明早 9 点提醒我交日报”。Thought 可以 tool_call schedule_task，args={\"operation\":\"create\",\"summary\":\"提醒用户交日报\",\"prompt\":\"提醒银子交日报，并询问是否需要我一起整理。\",\"trigger\":{\"type\":\"once\",\"at\":\"2026-05-11 09:00\"}}。如果自然语言时间不确定，必须改成明确日期时间。",
+                        "正例 5c：用户说“以后每周日早上 8 点叫我复盘项目”。Thought 可以 tool_call schedule_task，args={\"operation\":\"create\",\"summary\":\"每周项目复盘提醒\",\"prompt\":\"提醒银子做项目复盘；如果他愿意，就先查日记和近期任务，再帮他整理复盘提纲。\",\"trigger\":{\"type\":\"weekly\",\"weekdays\":[7],\"time\":\"08:00\"}}。",
+                        "正例 5d：工具返回“任务接近上限”。如果当前任务里有过期或重复项，可以下一段 tool_call schedule_task，args={\"commands\":[{\"operation\":\"cancel\",\"ids\":[\"task_a\",\"task_b\"]},{\"operation\":\"create\",\"summary\":\"合并后的提醒\",\"prompt\":\"...\",\"trigger\":{\"type\":\"daily\",\"time\":\"09:00\"}}]}。",
                         "正例 3：已回复后用户又插入新问题。下一段 thought 应处理新问题，不要把它当重复。",
                         "正例 4：已回复后发现自己说错事实。可以第二次 reply 纠错，并在 why 说明是纠错或撤回。",
                         "正例 5：用户问“你有真正的内心吗？现在有什么感觉？” Thought #1 reply 已经回答了“如果说我有内心，它像安静灯光，此刻有期待”。Thought #2 没有新输入，应 thought“我已经把当前感觉说出来了，再换一个灯光比喻只会重复，我先停住。” decision=sleep。",
@@ -18098,16 +18811,20 @@ class AgentRuntime:
             return ""
         return f"同时有一点{'、'.join(list(dict.fromkeys(natural))[:3])}在心里。"
 
-    def _execute_tool_calls(self, calls: Any, *, turn_id: str, thought_index: int) -> list[dict[str, Any]]:
+    def _execute_tool_calls(self, calls: Any, *, turn_id: str, thought_index: int, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
+        origin = self._scheduled_task_origin_from_context(context)
         for idx, call in enumerate(_as_list(calls)[:5]):
             if not isinstance(call, dict):
                 continue
             name = call.get("name") or call.get("tool") or call.get("tool_name")
             args = call.get("args") if isinstance(call.get("args"), dict) else call.get("arguments")
+            args = copy.deepcopy(args) if isinstance(args, dict) else {}
+            if _canonical_tool_name(name) == "schedule_task" and origin and "_scheduled_task_origin" not in args:
+                args["_scheduled_task_origin"] = copy.deepcopy(origin)
             result = self.tools.run(
                 name,
-                args if isinstance(args, dict) else {},
+                args,
                 source=f"llm_tool_call:{turn_id}:{thought_index}:{idx + 1}",
             )
             results.append(result)

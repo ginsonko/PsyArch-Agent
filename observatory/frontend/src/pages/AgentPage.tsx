@@ -52,6 +52,8 @@ import {
   IconTool,
   IconChartBar,
   IconArrowsMaximize,
+  IconBook,
+  IconClock,
 } from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { JsonInspector } from '../components/JsonInspector';
@@ -289,6 +291,9 @@ type AgentConfig = AnyRecord & {
   diary_gc_oldest_count?: number;
   diary_entry_max_chars?: number;
   diary_read_total_max_chars?: number;
+  scheduled_tasks_enabled?: boolean;
+  scheduled_task_limit?: number;
+  scheduled_task_warn_ratio?: number;
   mcp_enabled?: boolean;
   skill_enabled?: boolean;
   tool_allowlist?: string[];
@@ -402,6 +407,9 @@ const emptyConfig: AgentConfig = {
   diary_gc_oldest_count: 50,
   diary_entry_max_chars: 20000,
   diary_read_total_max_chars: 60000,
+  scheduled_tasks_enabled: true,
+  scheduled_task_limit: 100,
+  scheduled_task_warn_ratio: 0.9,
   mcp_enabled: false,
   skill_enabled: true,
   tool_allowlist: ['time', 'weather', 'memory_note', 'write_diary', 'read_diary', 'web_search', 'image_understanding', 'image_generation', 'ap_tick_report', 'ap_recall', 'ap_attention_focus', 'ap_attention_diverge', 'napcat_recall_message'],
@@ -2266,6 +2274,9 @@ function ConfigEditor({
           <NumberInput label="日记清理旧条目窗口" description="超过上限时，只在最旧的这批日记里删除重要性最低的一条。" value={Number(draft.diary_gc_oldest_count ?? 50)} min={1} max={1000} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_gc_oldest_count', Number(v) || 50)} />
           <NumberInput label="单条日记最大字符" value={Number(draft.diary_entry_max_chars ?? 20000)} min={1000} max={120000} step={1000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_entry_max_chars', Number(v) || 20000)} />
           <NumberInput label="查日记返回总字符" value={Number(draft.diary_read_total_max_chars ?? 60000)} min={2000} max={240000} step={2000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_read_total_max_chars', Number(v) || 60000)} />
+          <Switch label="启用定时任务工具" checked={draft.scheduled_tasks_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'scheduled_tasks_enabled', event.currentTarget.checked)} />
+          <NumberInput label="定时任务总数上限" value={Number(draft.scheduled_task_limit ?? 100)} min={5} max={1000} step={5} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_limit', Number(v) || 100)} />
+          <NumberInput label="定时任务上限提醒比例" value={Number(draft.scheduled_task_warn_ratio ?? 0.9)} min={0.1} max={1} step={0.05} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_warn_ratio', Number(v) || 0.9)} />
           <CsvTextInput label="工具白名单" value={draft.tool_allowlist} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'tool_allowlist', value)} />
           <Select label="Prompt 风格" value={String(draft.prompt_variant || 'balanced')} data={promptVariants} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'prompt_variant', value || 'balanced')} />
           <Switch label="thought 质量评分" checked={draft.thought_quality_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'thought_quality_enabled', event.currentTarget.checked)} />
@@ -2360,6 +2371,9 @@ function ConfigEditor({
           <NumberInput label="Prompt 近期表情包" value={Number(draft.sticker_prompt_recent_limit ?? 5)} min={0} max={30} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'sticker_prompt_recent_limit', Number(v) || 0)} />
           <NumberInput label="Prompt 高频表情包" value={Number(draft.sticker_prompt_top_limit ?? 5)} min={0} max={30} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'sticker_prompt_top_limit', Number(v) || 0)} />
           <NumberInput label="Prompt 随机表情包" value={Number(draft.sticker_prompt_random_limit ?? 10)} min={0} max={60} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'sticker_prompt_random_limit', Number(v) || 0)} />
+          <Switch label="启用定时任务工具" checked={draft.scheduled_tasks_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'scheduled_tasks_enabled', event.currentTarget.checked)} />
+          <NumberInput label="定时任务总数上限" value={Number(draft.scheduled_task_limit ?? 100)} min={5} max={1000} step={5} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_limit', Number(v) || 100)} />
+          <NumberInput label="定时任务上限提醒比例" value={Number(draft.scheduled_task_warn_ratio ?? 0.9)} min={0.1} max={1} step={0.05} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_warn_ratio', Number(v) || 0.9)} />
           <Switch label="MCP" checked={Boolean(draft.mcp_enabled)} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'mcp_enabled', event.currentTarget.checked)} />
           <Switch label="Skills" checked={draft.skill_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'skill_enabled', event.currentTarget.checked)} />
           <NumberInput label="历史上限" value={Number(draft.history_limit ?? 80)} min={20} max={500} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'history_limit', Number(v) || 80)} />
@@ -3493,6 +3507,18 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [background, setBackground] = useState<AnyRecord | null>(null);
   const [tools, setTools] = useState<AnyRecord[]>([]);
   const [stickers, setStickers] = useState<AnyRecord | null>(null);
+  const [diaryBook, setDiaryBook] = useState<AnyRecord | null>(null);
+  const [selectedDiaryEntry, setSelectedDiaryEntry] = useState<AnyRecord | null>(null);
+  const [diaryDraft, setDiaryDraft] = useState<AnyRecord>({ id: '', title: '', content: '', importance: 70, mode: 'append' });
+  const [scheduledTasks, setScheduledTasks] = useState<AnyRecord | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<AnyRecord>({
+    id: '',
+    summary: '',
+    prompt: '',
+    triggerText: JSON.stringify({ type: 'once', at: '2026-05-10 21:30' }, null, 2),
+    enabled: true,
+  });
+  const [scheduleCommandText, setScheduleCommandText] = useState(JSON.stringify({ operation: 'list' }, null, 2));
   const [toolMatrix, setToolMatrix] = useState<AnyRecord | null>(null);
   const [protocolRegistry, setProtocolRegistry] = useState<AnyRecord | null>(null);
   const [integrations, setIntegrations] = useState<AnyRecord | null>(null);
@@ -3724,7 +3750,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         refreshSnapshotHistory().catch(() => undefined);
       }
       if (!silent) {
-        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
           api.agentDiagnostics().catch(() => null),
           api.agentReadiness().catch(() => null),
           api.agentAcceptance().catch(() => null),
@@ -3746,6 +3772,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
           api.agentBackgroundStatus().catch(() => null),
           api.agentTools().catch(() => null),
           api.agentStickers().catch(() => null),
+          api.agentDiary(false).catch(() => null),
+          api.agentScheduledTasks(true, false).catch(() => null),
           api.agentToolMatrix().catch(() => null),
           api.agentProtocolRegistry().catch(() => null),
           api.agentIntegrations().catch(() => null),
@@ -3790,6 +3818,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         if (bgPayload) setBackground(bgPayload);
         if (toolPayload) setTools(asArray<AnyRecord>(toolPayload.tools));
         if (stickerPayload) setStickers(stickerPayload);
+        if (diaryPayload) setDiaryBook(diaryPayload);
+        if (scheduledPayload) setScheduledTasks(scheduledPayload);
         if (toolMatrixPayload) setToolMatrix(toolMatrixPayload);
         if (protocolPayload) setProtocolRegistry(protocolPayload);
         if (integrationPayload) setIntegrations(integrationPayload);
@@ -3964,7 +3994,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
   async function refreshDiagnostics() {
     await withBusy('diag', async () => {
-      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
         api.agentDiagnostics(),
         api.agentReadiness(),
         api.agentAcceptance(),
@@ -3986,6 +4016,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         api.agentBackgroundStatus(),
         api.agentTools(),
         api.agentStickers(),
+        api.agentDiary(false),
+        api.agentScheduledTasks(true, false),
         api.agentToolMatrix(),
         api.agentProtocolRegistry(),
         api.agentIntegrations(),
@@ -4024,6 +4056,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       setBackground(bgPayload);
       setTools(asArray<AnyRecord>(toolPayload.tools));
       setStickers(stickerPayload);
+      setDiaryBook(diaryPayload);
+      setScheduledTasks(scheduledPayload);
       setToolMatrix(toolMatrixPayload);
       setProtocolRegistry(protocolPayload);
       setIntegrations(integrationPayload);
@@ -4220,6 +4254,155 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       const result = await api.agentClearStickers();
       setStickers(result);
       setSelected(result);
+    });
+  }
+
+  async function refreshDiary(selectResult = false) {
+    await withBusy('tool', async () => {
+      const result = await api.agentDiary(false);
+      setDiaryBook(result);
+      if (selectResult) setSelected(result);
+    });
+  }
+
+  async function selectDiaryEntry(entry: AnyRecord) {
+    const id = String(entry.id || '').trim();
+    if (!id) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentDiaryEntry(id);
+      const detail = asArray<AnyRecord>(result.entries)[0] || entry;
+      setSelectedDiaryEntry(detail);
+      setDiaryDraft({
+        id: detail.id || '',
+        title: detail.title || '',
+        content: detail.content || '',
+        importance: Number(detail.importance ?? 70),
+        mode: 'overwrite',
+      });
+      setSelected(detail);
+    });
+  }
+
+  function startNewDiaryEntry() {
+    setSelectedDiaryEntry(null);
+    setDiaryDraft({ id: '', title: '', content: '', importance: 70, mode: 'create' });
+  }
+
+  async function saveDiaryEntry(mode?: string) {
+    await withBusy('tool', async () => {
+      const payload: AnyRecord = {
+        id: diaryDraft.id || undefined,
+        title: diaryDraft.title || '',
+        content: diaryDraft.content || '',
+        importance: Number(diaryDraft.importance ?? 70),
+        mode: mode || diaryDraft.mode || (diaryDraft.id ? 'overwrite' : 'create'),
+      };
+      const result = await api.agentSaveDiary(payload);
+      setSelected(result);
+      await refreshDiary(false);
+      const entry = result?.entry || asArray<AnyRecord>(result?.entries)[0];
+      if (entry?.id) await selectDiaryEntry(entry);
+    });
+  }
+
+  async function deleteDiaryEntry(entry?: AnyRecord) {
+    const id = String((entry || selectedDiaryEntry || diaryDraft).id || '').trim();
+    if (!id) return;
+    const ok = window.confirm(`删除这条日记？\n${String((entry || selectedDiaryEntry || diaryDraft).title || id)}`);
+    if (!ok) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentDeleteDiary(id);
+      setSelected(result);
+      setSelectedDiaryEntry(null);
+      startNewDiaryEntry();
+      await refreshDiary(false);
+    });
+  }
+
+  async function refreshScheduledTasks(selectResult = false) {
+    await withBusy('tool', async () => {
+      const result = await api.agentScheduledTasks(true, false);
+      setScheduledTasks(result);
+      if (selectResult) setSelected(result);
+    });
+  }
+
+  function editScheduledTask(task: AnyRecord) {
+    setScheduleDraft({
+      id: task.id || '',
+      summary: task.summary || '',
+      prompt: task.prompt || '',
+      triggerText: JSON.stringify(task.trigger || { type: 'once', at: task.next_fire_at || '' }, null, 2),
+      enabled: task.enabled !== false,
+    });
+    setSelected(task);
+  }
+
+  function startNewScheduledTask() {
+    setScheduleDraft({
+      id: '',
+      summary: '',
+      prompt: '',
+      triggerText: JSON.stringify({ type: 'once', at: '2026-05-10 21:30' }, null, 2),
+      enabled: true,
+    });
+  }
+
+  async function saveScheduledTask() {
+    await withBusy('tool', async () => {
+      let trigger: AnyRecord = {};
+      try {
+        trigger = scheduleDraft.triggerText ? JSON.parse(String(scheduleDraft.triggerText)) : {};
+      } catch {
+        trigger = { type: 'once', at: String(scheduleDraft.triggerText || '') };
+      }
+      const result = await api.agentSaveScheduledTask({
+        id: scheduleDraft.id || undefined,
+        summary: scheduleDraft.summary || '',
+        prompt: scheduleDraft.prompt || '',
+        trigger,
+        enabled: scheduleDraft.enabled !== false,
+      });
+      setSelected(result);
+      await refreshScheduledTasks(false);
+    });
+  }
+
+  async function cancelScheduledTask(task: AnyRecord) {
+    const id = String(task.id || '').trim();
+    if (!id) return;
+    const ok = window.confirm(`取消这个定时任务？\n${String(task.summary || id)}`);
+    if (!ok) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentRunScheduledTaskCommand({ operation: 'cancel', ids: [id] });
+      setSelected(result);
+      await refreshScheduledTasks(false);
+    });
+  }
+
+  async function deleteScheduledTask(task: AnyRecord) {
+    const id = String(task.id || '').trim();
+    if (!id) return;
+    const ok = window.confirm(`彻底删除这个定时任务记录？\n${String(task.summary || id)}`);
+    if (!ok) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentDeleteScheduledTask(id);
+      setSelected(result);
+      await refreshScheduledTasks(false);
+    });
+  }
+
+  async function runScheduledTaskCommand() {
+    await withBusy('tool', async () => {
+      let payload: AnyRecord = {};
+      try {
+        payload = scheduleCommandText.trim() ? JSON.parse(scheduleCommandText) : { operation: 'list' };
+      } catch {
+        payload = { operation: 'list' };
+      }
+      const result = await api.agentRunScheduledTaskCommand(payload);
+      setSelected(result);
+      await refreshScheduledTasks(false);
     });
   }
 
@@ -6580,6 +6763,144 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                   <Button mt="sm" variant="light" leftSection={<IconHammer size={14} />} loading={isBusy('tool')} onClick={runTool}>
                     执行并回灌 AP
                   </Button>
+                </Card>
+
+                <Card className="pa-panel" mt="md">
+                  <Group justify="space-between" align="flex-start" mb="xs">
+                    <div>
+                      <Group gap={8}>
+                        <IconBook size={18} />
+                        <Text fw={900}>日记本管理</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        人工查看、修订和删除长期日记；LLM 的 write_diary/read_diary 也会读写同一份账本。
+                      </Text>
+                    </div>
+                    <Group gap={6}>
+                      <Badge variant="light" color={diaryBook?.ok === false || draft.diary_enabled === false ? 'gray' : 'teal'}>
+                        {formatCount(diaryBook?.total ?? asArray<AnyRecord>(diaryBook?.entries).length)} 条
+                      </Badge>
+                      <Tooltip label="刷新日记本">
+                        <ActionIcon size="sm" variant="subtle" loading={toolBusy} aria-label="刷新日记本" onClick={() => void refreshDiary(true)}>
+                          <IconRefresh size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+                    <ScrollArea.Autosize mah={360}>
+                      <Stack gap="xs">
+                        <Button size="compact-sm" variant="light" leftSection={<IconBook size={14} />} onClick={startNewDiaryEntry}>
+                          新建日记
+                        </Button>
+                        {asArray<AnyRecord>(diaryBook?.entries).map((entry) => (
+                          <button key={String(entry.id)} type="button" className="agent-tool-row" onClick={() => void selectDiaryEntry(entry)}>
+                            <div>
+                              <strong>{shortText(String(entry.title || entry.id || '-'), 36)}</strong>
+                              <small>{shortText(String(entry.preview || entry.updated_at || ''), 80)}</small>
+                            </div>
+                            <Badge variant="light" color={Number(entry.importance || 0) >= 80 ? 'red' : Number(entry.importance || 0) >= 60 ? 'yellow' : 'gray'}>
+                              {formatCount(entry.importance)}
+                            </Badge>
+                          </button>
+                        ))}
+                        {!asArray<AnyRecord>(diaryBook?.entries).length ? <div className="empty-box compact">当前还没有日记。可以让想法写日记，也可以在这里手动新增。</div> : null}
+                      </Stack>
+                    </ScrollArea.Autosize>
+                    <Stack gap="xs">
+                      <TextInput label="标题" value={String(diaryDraft.title || '')} onChange={(event) => setDiaryDraft((prev) => ({ ...prev, title: event.currentTarget.value }))} />
+                      <NumberInput label="重要性" value={Number(diaryDraft.importance ?? 70)} min={0} max={100} step={1} onChange={(v) => setDiaryDraft((prev) => ({ ...prev, importance: Number(v) || 0 }))} />
+                      <Textarea label="内容" minRows={7} autosize value={String(diaryDraft.content || '')} onChange={(event) => setDiaryDraft((prev) => ({ ...prev, content: event.currentTarget.value }))} />
+                      <Group gap="xs">
+                        <Button size="compact-sm" variant="light" leftSection={<IconDeviceFloppy size={14} />} loading={toolBusy} onClick={() => void saveDiaryEntry(diaryDraft.id ? 'overwrite' : 'create')}>
+                          保存
+                        </Button>
+                        {diaryDraft.id ? (
+                          <Button size="compact-sm" variant="subtle" color="red" leftSection={<IconTrash size={14} />} loading={toolBusy} onClick={() => void deleteDiaryEntry()}>
+                            删除
+                          </Button>
+                        ) : null}
+                      </Group>
+                    </Stack>
+                  </SimpleGrid>
+                </Card>
+
+                <Card className="pa-panel" mt="md">
+                  <Group justify="space-between" align="flex-start" mb="xs">
+                    <div>
+                      <Group gap={8}>
+                        <IconClock size={18} />
+                        <Text fw={900}>定时任务</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        到点后会把 “[闹钟]: 提示信息” 作为前端输入插入队列，由想法继续决定下一步。
+                      </Text>
+                    </div>
+                    <Group gap={6}>
+                      <Badge variant="light" color={scheduledTasks?.enabled === false || draft.scheduled_tasks_enabled === false ? 'gray' : 'teal'}>
+                        {formatCount(scheduledTasks?.active_count)} / {formatCount(scheduledTasks?.limit ?? draft.scheduled_task_limit)}
+                      </Badge>
+                      <Tooltip label="刷新定时任务">
+                        <ActionIcon size="sm" variant="subtle" loading={toolBusy} aria-label="刷新定时任务" onClick={() => void refreshScheduledTasks(true)}>
+                          <IconRefresh size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  </Group>
+                  {asArray<AnyRecord>(scheduledTasks?.warnings).length ? (
+                    <div className="pa-inline-warning compact">{asArray<AnyRecord>(scheduledTasks?.warnings).map((item) => String(item)).join('；')}</div>
+                  ) : null}
+                  <SimpleGrid cols={{ base: 1, lg: 3 }} spacing="sm">
+                    <ScrollArea.Autosize mah={380}>
+                      <Stack gap="xs">
+                        <Button size="compact-sm" variant="light" leftSection={<IconClock size={14} />} onClick={startNewScheduledTask}>
+                          新建任务
+                        </Button>
+                        {asArray<AnyRecord>(scheduledTasks?.tasks).map((task) => (
+                          <button key={String(task.id)} type="button" className="agent-tool-row" onClick={() => editScheduledTask(task)}>
+                            <div>
+                              <strong>{shortText(String(task.summary || task.id || '-'), 34)}</strong>
+                              <small>{shortText(String(task.next_fire_at || task.status || ''), 72)}</small>
+                            </div>
+                            <Badge variant="light" color={task.enabled === false || task.status !== 'active' ? 'gray' : 'teal'}>
+                              {String(task.status || 'active')}
+                            </Badge>
+                          </button>
+                        ))}
+                        {!asArray<AnyRecord>(scheduledTasks?.tasks).length ? <div className="empty-box compact">当前没有定时任务。</div> : null}
+                      </Stack>
+                    </ScrollArea.Autosize>
+                    <Stack gap="xs">
+                      <TextInput label="简介" value={String(scheduleDraft.summary || '')} onChange={(event) => setScheduleDraft((prev) => ({ ...prev, summary: event.currentTarget.value }))} />
+                      <Textarea label="触发提示" minRows={4} autosize value={String(scheduleDraft.prompt || '')} onChange={(event) => setScheduleDraft((prev) => ({ ...prev, prompt: event.currentTarget.value }))} />
+                      <Textarea label="触发规则 JSON" minRows={6} autosize value={String(scheduleDraft.triggerText || '')} onChange={(event) => setScheduleDraft((prev) => ({ ...prev, triggerText: event.currentTarget.value }))} />
+                      <Switch label="启用" checked={scheduleDraft.enabled !== false} onChange={(event) => setScheduleDraft((prev) => ({ ...prev, enabled: event.currentTarget.checked }))} />
+                      <Group gap="xs">
+                        <Button size="compact-sm" variant="light" leftSection={<IconDeviceFloppy size={14} />} loading={toolBusy} onClick={() => void saveScheduledTask()}>
+                          保存任务
+                        </Button>
+                        {scheduleDraft.id ? (
+                          <>
+                            <Button size="compact-sm" variant="subtle" leftSection={<IconPlayerStop size={14} />} loading={toolBusy} onClick={() => void cancelScheduledTask(scheduleDraft)}>
+                              取消
+                            </Button>
+                            <Button size="compact-sm" variant="subtle" color="red" leftSection={<IconTrash size={14} />} loading={toolBusy} onClick={() => void deleteScheduledTask(scheduleDraft)}>
+                              删除
+                            </Button>
+                          </>
+                        ) : null}
+                      </Group>
+                    </Stack>
+                    <Stack gap="xs">
+                      <Textarea label="批量命令 JSON" minRows={13} autosize value={scheduleCommandText} onChange={(event) => setScheduleCommandText(event.currentTarget.value)} />
+                      <Button variant="light" leftSection={<IconHammer size={14} />} loading={toolBusy} onClick={() => void runScheduledTaskCommand()}>
+                        执行命令
+                      </Button>
+                      <Text size="xs" c="dimmed">
+                        支持 commands 数组顺序执行 create、update、cancel。无参数或 operation=list 会查看当前活跃任务。
+                      </Text>
+                    </Stack>
+                  </SimpleGrid>
                 </Card>
 
                 <Card className="pa-panel" mt="md">

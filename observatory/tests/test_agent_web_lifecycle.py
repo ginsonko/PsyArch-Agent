@@ -213,6 +213,18 @@ class _WebFakeRuntime:
     def pending_external_input_count(self):
         return len(self.pending_external_inputs)
 
+    def _scheduled_task_origin_from_context(self, context):
+        context = context if isinstance(context, dict) else {}
+        reply_target = dict(context.get("reply_target") or {})
+        adapter_event = dict(context.get("adapter_event") or {})
+        return {
+            "source": context.get("source") or reply_target.get("adapter") or adapter_event.get("adapter") or "",
+            "conversation_id": context.get("conversation_id") or reply_target.get("conversation_id") or adapter_event.get("conversation_id") or "",
+            "adapter_label": context.get("adapter_label") or reply_target.get("target_label") or adapter_event.get("target_label") or "",
+            "reply_target": reply_target,
+            "adapter_event": adapter_event,
+        }
+
     def send_message(self, payload, progress=None, should_stop=None):
         if progress:
             progress({"stage": "waiting_llm", "stage_label": "等待 LLM 1", "decision": "reply"})
@@ -429,6 +441,54 @@ def test_submit_agent_turn_does_not_absorb_into_decision_ready_job(monkeypatch):
     assert result["job"]["user_message"]["text"] == "这个临界点的新消息不能丢"
     assert server.agent_turn_jobs["old"].get("absorbed_messages") in (None, [])
     assert server.agent_runtime.pending_external_input_count() == 0
+
+
+def test_submit_agent_turn_initial_stage_is_not_app_lock_wait(monkeypatch):
+    server = _server_without_init()
+    monkeypatch.setattr(server, "_ensure_agent_turn_worker", lambda: None)
+
+    result = server.submit_agent_turn({"text": "先排队", "source": "user"})
+
+    assert result["job"]["status"] == "queued"
+    assert result["job"]["stage"] == "queued"
+    assert "主锁" not in result["job"]["stage_label"]
+
+
+def test_scheduled_task_payload_preserves_napcat_private_target(monkeypatch):
+    server = _server_without_init()
+    task = {
+        "id": "sleep_1",
+        "summary": "提醒银子睡觉",
+        "prompt": "提醒银子该睡觉了",
+        "origin": {
+            "source": "napcat_qq",
+            "conversation_id": "private:474764004",
+            "adapter_label": "私聊 银子 (474764004)",
+            "reply_target": {
+                "adapter": "napcat_qq",
+                "message_type": "private",
+                "conversation_id": "private:474764004",
+                "user_id": "474764004",
+                "target_label": "私聊 银子 (474764004)",
+            },
+            "adapter_event": {
+                "adapter": "napcat_qq",
+                "message_type": "private",
+                "conversation_id": "private:474764004",
+                "user_id": "474764004",
+                "target_label": "私聊 银子 (474764004)",
+            },
+        },
+    }
+
+    payload = server._scheduled_task_turn_payload(task, now_ms=1_800_000_000_000)
+
+    assert payload["text"] == "[闹钟]: 提醒银子该睡觉了"
+    assert payload["source"] == "napcat_qq"
+    assert payload["conversation_id"] == "private:474764004"
+    assert payload["reply_target"]["user_id"] == "474764004"
+    assert payload["adapter_event"]["adapter"] == "napcat_qq"
+    assert payload["_visible_user_message"]["source"] == "napcat_qq"
 
 
 def test_submit_agent_turn_absorbs_into_waiting_llm_job(monkeypatch):
@@ -665,6 +725,30 @@ def test_background_step_uses_existing_runtime_and_releases_lock_before_bridge(m
     assert server.agent_runtime.bridge_lock_owned is False
     assert server.agent_runtime.saved is False
     assert result["background_save"]["saved"] is False
+
+
+def test_background_lock_busy_is_transient_and_not_reported_as_waiting(monkeypatch):
+    server = _server_without_init()
+    lock_acquired = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock():
+        with server.app_lock:
+            lock_acquired.set()
+            release_lock.wait(timeout=2)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_acquired.wait(timeout=1)
+    try:
+        result = server._agent_background_step()
+    finally:
+        release_lock.set()
+        holder.join(timeout=2)
+
+    assert result["stage"] == "background_skipped_app_lock_busy"
+    assert result["transient"] is True
+    assert "等待 AP 主锁" not in result["stage_label"]
 
 
 def test_background_step_saves_on_configured_interval(monkeypatch):

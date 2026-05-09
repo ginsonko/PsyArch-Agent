@@ -37,6 +37,96 @@ from . import experiment as exp
 from .experiment.runner import apply_experiment_default_app_overrides
 
 
+class TrackedRLock:
+    """Small RLock wrapper that exposes who currently holds the AP app lock."""
+
+    def __init__(self, name: str = "ap_app_lock") -> None:
+        self.name = name
+        self._lock = threading.RLock()
+        self._state_lock = threading.RLock()
+        self._owner_thread_id = 0
+        self._owner_thread_name = ""
+        self._owner_label = ""
+        self._acquired_at_ms = 0
+        self._depth = 0
+        self._last_wait_ms = 0
+        self._last_wait_label = ""
+        self._last_wait_thread_name = ""
+        self._last_wait_at_ms = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1, *, label: str = "") -> bool:
+        start_ms = int(time.time() * 1000)
+        if timeout is None or timeout < 0:
+            acquired = self._lock.acquire(blocking)
+        else:
+            acquired = self._lock.acquire(blocking, timeout)
+        done_ms = int(time.time() * 1000)
+        wait_ms = max(0, done_ms - start_ms)
+        current = threading.current_thread()
+        with self._state_lock:
+            self._last_wait_ms = wait_ms
+            self._last_wait_label = str(label or "")
+            self._last_wait_thread_name = current.name
+            self._last_wait_at_ms = done_ms
+            if acquired:
+                if self._owner_thread_id == current.ident:
+                    self._depth += 1
+                else:
+                    self._owner_thread_id = int(current.ident or 0)
+                    self._owner_thread_name = current.name
+                    self._owner_label = str(label or "") or self._owner_label
+                    self._acquired_at_ms = done_ms
+                    self._depth = 1
+        return bool(acquired)
+
+    def release(self) -> None:
+        current = threading.current_thread()
+        with self._state_lock:
+            if self._owner_thread_id == current.ident and self._depth > 0:
+                self._depth -= 1
+                if self._depth <= 0:
+                    self._owner_thread_id = 0
+                    self._owner_thread_name = ""
+                    self._owner_label = ""
+                    self._acquired_at_ms = 0
+                    self._depth = 0
+        self._lock.release()
+
+    def __enter__(self) -> "TrackedRLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
+
+    def _is_owned(self) -> bool:
+        probe = getattr(self._lock, "_is_owned", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:
+                return False
+        return False
+
+    def status(self) -> dict[str, Any]:
+        now_ms = int(time.time() * 1000)
+        with self._state_lock:
+            locked = self._depth > 0
+            return {
+                "name": self.name,
+                "locked": locked,
+                "owner_thread_id": self._owner_thread_id if locked else 0,
+                "owner_thread_name": self._owner_thread_name if locked else "",
+                "owner_label": self._owner_label if locked else "",
+                "held_ms": max(0, now_ms - self._acquired_at_ms) if locked and self._acquired_at_ms else 0,
+                "depth": self._depth if locked else 0,
+                "last_wait_ms": self._last_wait_ms,
+                "last_wait_label": self._last_wait_label,
+                "last_wait_thread_name": self._last_wait_thread_name,
+                "last_wait_at_ms": self._last_wait_at_ms,
+            }
+
+
 EXPERIMENT_TERMINAL_STATUSES = {"completed", "stopped_max_ticks", "cancelled", "failed"}
 EXPERIMENT_ACTIVE_STATUSES = {"queued", "waiting_for_app_lock", "running", "cancelling"}
 EXPERIMENT_CANCEL_STALE_MS = 90_000
@@ -343,7 +433,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
 
     def __init__(self, host: str, port: int, app: ObservatoryApp):
         self.app = app
-        self.app_lock = threading.RLock()
+        self.app_lock = TrackedRLock()
         self.agent_runtime = AgentRuntime(app)
         self.agent_runtime.set_app_lock(self.app_lock)
         self.agent_background_lock = threading.RLock()
@@ -363,6 +453,18 @@ class ObservatoryWebServer(ThreadingHTTPServer):
         self.group_continuity_gate_queue: queue.Queue[str] = queue.Queue()
         self.group_continuity_gate_stop = threading.Event()
         self.group_continuity_gate_worker: threading.Thread | None = None
+        self.agent_scheduler_lock = threading.RLock()
+        self.agent_scheduler_stop = threading.Event()
+        self.agent_scheduler_thread: threading.Thread | None = None
+        self.agent_scheduler_state: dict[str, Any] = {
+            "running": False,
+            "started_at_ms": 0,
+            "stopped_at_ms": 0,
+            "last_check_at_ms": 0,
+            "last_triggered_at_ms": 0,
+            "trigger_count": 0,
+            "last_error": "",
+        }
         self.agent_background_state: dict[str, Any] = {
             "running": False,
             "started_at_ms": 0,
@@ -402,6 +504,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
         self.started_at = app._started_at
         self._ensure_agent_turn_worker()
         self._ensure_group_continuity_gate_worker()
+        self._ensure_agent_scheduler_worker()
         super().__init__((host, port), _build_handler())
 
     def _ensure_agent_turn_worker(self) -> None:
@@ -423,6 +526,26 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 name="pa-group-continuity-gate-worker",
             )
             self.group_continuity_gate_worker.start()
+
+    def _ensure_agent_scheduler_worker(self) -> None:
+        with self.agent_scheduler_lock:
+            if self.agent_scheduler_thread and self.agent_scheduler_thread.is_alive():
+                return
+            self.agent_scheduler_stop.clear()
+            self.agent_scheduler_state.update(
+                {
+                    "running": True,
+                    "started_at_ms": int(time.time() * 1000),
+                    "stopped_at_ms": 0,
+                    "last_error": "",
+                }
+            )
+            self.agent_scheduler_thread = threading.Thread(
+                target=self._agent_scheduler_loop,
+                daemon=True,
+                name="pa-agent-scheduler",
+            )
+            self.agent_scheduler_thread.start()
 
     def _mark_agent_foreground_pending(self, reason: str = "foreground_input", *, hold_ms: int = 4000) -> None:
         now = int(time.time() * 1000)
@@ -598,6 +721,32 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             "result_status": dict(row.get("result_status") or {}) if isinstance(row.get("result_status"), dict) else {},
             "payload": payload,
         }
+
+    def app_lock_status(self) -> dict[str, Any]:
+        status_fn = getattr(self.app_lock, "status", None)
+        if callable(status_fn):
+            try:
+                return dict(status_fn())
+            except Exception as exc:
+                return {"locked": False, "error": str(exc)}
+        return {
+            "locked": False,
+            "owner_thread_name": "",
+            "owner_label": "",
+            "held_ms": 0,
+            "last_wait_ms": 0,
+        }
+
+    def _acquire_app_lock(self, *, blocking: bool = True, timeout: float | None = None, label: str = "") -> bool:
+        acquire = getattr(self.app_lock, "acquire")
+        try:
+            if timeout is None:
+                return bool(acquire(blocking=blocking, label=label))
+            return bool(acquire(blocking=blocking, timeout=timeout, label=label))
+        except TypeError:
+            if timeout is None:
+                return bool(acquire(blocking))
+            return bool(acquire(blocking, timeout))
 
     def submit_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_agent_turn_worker()
@@ -1191,8 +1340,8 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     self.agent_turn_job_queue.task_done()
                     continue
                 job["status"] = "running"
-                job["stage"] = "waiting_for_app_lock"
-                job["stage_label"] = "等待 AP 主锁"
+                job["stage"] = "starting_agent_turn"
+                job["stage_label"] = "准备本轮"
                 job["started_at_ms"] = int(time.time() * 1000)
                 job["updated_at_ms"] = job["started_at_ms"]
             job_payload_for_start = dict(job.get("payload") or {})
@@ -1217,12 +1366,38 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     }
                 )
             try:
-                with self.app_lock:
+                lock_wait_started_ms = int(time.time() * 1000)
+                acquired = self._acquire_app_lock(label="agent_turn_prepare")
+                lock_wait_ms = max(0, int(time.time() * 1000) - lock_wait_started_ms)
+                if lock_wait_ms >= 200:
+                    self._update_agent_turn_job(
+                        job_id,
+                        {
+                            "stage": "waiting_for_app_lock",
+                            "stage_label": f"等待 AP 主锁 {lock_wait_ms}ms",
+                            "app_lock_wait_ms": lock_wait_ms,
+                            "app_lock": self.app_lock_status(),
+                        },
+                    )
+                try:
                     apply_experiment_default_app_overrides(self.app, source="agent_api_message_async")
+                finally:
+                    if acquired:
+                        self.app_lock.release()
+                self._update_agent_turn_job(
+                    job_id,
+                    {
+                        "stage": "running_message_flow",
+                        "stage_label": "本轮运行中",
+                        "app_lock_wait_ms": lock_wait_ms,
+                        "app_lock": self.app_lock_status(),
+                    },
+                )
 
                 def _progress(update: dict[str, Any]) -> None:
                     patch = dict(update or {})
                     patch.setdefault("status", "running")
+                    patch.setdefault("app_lock", self.app_lock_status())
                     self._update_agent_turn_job(job_id, patch)
 
                 def _should_stop() -> bool:
@@ -1455,6 +1630,19 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             state["wake_drive_threshold"] = float(getattr(self.agent_runtime.config, "wake_drive_threshold", 0.68) or 0.0)
             state["background_save_interval_ticks"] = int(getattr(self.agent_runtime.config, "background_save_interval_ticks", 30) or 30)
             state["background_save_interval_ms"] = int(getattr(self.agent_runtime.config, "background_save_interval_ms", 60000) or 60000)
+            state["app_lock"] = self.app_lock_status()
+            last_result = state.get("last_result") if isinstance(state.get("last_result"), dict) else {}
+            last_stage = str(state.get("last_stage") or last_result.get("stage") or "")
+            last_step_at_ms = int(state.get("last_step_at_ms", 0) or 0)
+            if (
+                not bool(state.get("running"))
+                and last_stage == "background_skipped_app_lock_busy"
+                and last_step_at_ms
+                and int(time.time() * 1000) - last_step_at_ms > 3000
+            ):
+                state["last_stage"] = ""
+                state["last_stage_label"] = ""
+                state["last_result"] = {}
             return state
 
     def start_agent_background(self) -> dict[str, Any]:
@@ -1756,6 +1944,93 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             self.agent_background_state["running"] = False
             self.agent_background_state["stopped_at_ms"] = int(time.time() * 1000)
 
+    def agent_scheduler_status(self) -> dict[str, Any]:
+        with self.agent_scheduler_lock:
+            state = dict(self.agent_scheduler_state)
+            state["thread_alive"] = bool(self.agent_scheduler_thread and self.agent_scheduler_thread.is_alive())
+            state["enabled"] = bool(getattr(self.agent_runtime.config, "scheduled_tasks_enabled", True))
+            state["poll_interval_ms"] = 1000
+        try:
+            public = self.agent_runtime.scheduled_tasks_public(detail=False, include_inactive=False)
+            state["active_count"] = public.get("active_count", 0)
+            state["task_limit"] = public.get("limit", 100)
+            state["next_task"] = (public.get("tasks") or [None])[0]
+        except Exception as exc:
+            state["last_error"] = str(exc)
+        return state
+
+    def _agent_scheduler_loop(self) -> None:
+        while not self.agent_scheduler_stop.is_set():
+            now_ms = int(time.time() * 1000)
+            try:
+                self.agent_runtime._maybe_reload_config_from_disk()
+                if bool(getattr(self.agent_runtime.config, "scheduled_tasks_enabled", True)):
+                    claimed = self.agent_runtime.claim_due_scheduled_tasks(now_ms=now_ms, limit=8)
+                    tasks = [item for item in claimed.get("tasks", []) if isinstance(item, dict)]
+                    if tasks:
+                        for task in tasks:
+                            prompt = str(task.get("prompt") or task.get("summary") or "").strip()
+                            if not prompt:
+                                continue
+                            payload = self._scheduled_task_turn_payload(task, now_ms=now_ms)
+                            self.submit_agent_turn(payload)
+                        with self.agent_scheduler_lock:
+                            self.agent_scheduler_state["last_triggered_at_ms"] = now_ms
+                            self.agent_scheduler_state["trigger_count"] = int(self.agent_scheduler_state.get("trigger_count", 0) or 0) + len(tasks)
+                with self.agent_scheduler_lock:
+                    self.agent_scheduler_state["running"] = True
+                    self.agent_scheduler_state["last_check_at_ms"] = now_ms
+                    self.agent_scheduler_state["last_error"] = ""
+            except Exception as exc:
+                with self.agent_scheduler_lock:
+                    self.agent_scheduler_state["last_check_at_ms"] = now_ms
+                    self.agent_scheduler_state["last_error"] = str(exc)
+                try:
+                    self.agent_runtime.record_event({"event": "scheduled_task_loop_error", "ok": False, "error": str(exc)})
+                except Exception:
+                    pass
+            self.agent_scheduler_stop.wait(1.0)
+        with self.agent_scheduler_lock:
+            self.agent_scheduler_state["running"] = False
+            self.agent_scheduler_state["stopped_at_ms"] = int(time.time() * 1000)
+
+    def _scheduled_task_turn_payload(self, task: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
+        now_ms = now_ms or int(time.time() * 1000)
+        task = task if isinstance(task, dict) else {}
+        prompt = str(task.get("prompt") or task.get("summary") or "").strip()
+        text = f"[闹钟]: {prompt}"
+        origin = self.agent_runtime._scheduled_task_origin_from_context(task.get("origin") if isinstance(task.get("origin"), dict) else {})
+        reply_target = dict(origin.get("reply_target") or {}) if isinstance(origin.get("reply_target"), dict) else {}
+        adapter_event = dict(origin.get("adapter_event") or {}) if isinstance(origin.get("adapter_event"), dict) else {}
+        conversation_id = str(origin.get("conversation_id") or reply_target.get("conversation_id") or adapter_event.get("conversation_id") or "local:scheduled_task")
+        adapter_label = str(origin.get("adapter_label") or reply_target.get("target_label") or adapter_event.get("target_label") or f"定时任务 {task.get('summary') or task.get('id')}")
+        source = str(origin.get("source") or reply_target.get("adapter") or adapter_event.get("adapter") or "scheduled_task")
+        message_id = f"scheduled_{task.get('id')}_{now_ms}"
+        visible = {
+            "id": message_id,
+            "role": "user",
+            "text": text,
+            "source": source,
+            "conversation_id": conversation_id,
+            "reply_target": reply_target,
+            "adapter_event": adapter_event,
+            "adapter_label": adapter_label,
+            "created_at_ms": now_ms,
+            "scheduled_task": task,
+        }
+        payload = {
+            "text": text,
+            "source": source,
+            "conversation_id": conversation_id,
+            "reply_target": reply_target,
+            "adapter_event": adapter_event,
+            "adapter_label": adapter_label,
+            "scheduled_task": task,
+            "_client_message_id": message_id,
+            "_visible_user_message": visible,
+        }
+        return payload
+
     def _agent_background_step(self) -> dict[str, Any]:
         try:
             def background_stop_requested() -> bool:
@@ -1797,7 +2072,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 return paused_result("background_stop_requested")
             if foreground_pending():
                 return paused_result("background_paused_for_foreground_turn")
-            locked = self.app_lock.acquire(blocking=False)
+            locked = self._acquire_app_lock(blocking=False, label="agent_background_tick")
             if not locked:
                 result = {
                     "ok": True,
@@ -1805,8 +2080,10 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     "triggered": False,
                     "reason": "background_skipped_app_lock_busy",
                     "stage": "background_skipped_app_lock_busy",
-                    "stage_label": "后台等待 AP 主锁",
+                    "stage_label": "后台让路：AP 正在被前台或观测任务使用",
                     "latency_ms": 0,
+                    "transient": True,
+                    "app_lock": self.app_lock_status(),
                 }
                 with self.agent_background_lock:
                     self.agent_background_state["last_step_at_ms"] = int(time.time() * 1000)
@@ -1973,6 +2250,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
         self.stop_agent_background()
         self.agent_turn_job_stop.set()
         self.group_continuity_gate_stop.set()
+        self.agent_scheduler_stop.set()
         try:
             self.agent_turn_job_queue.put_nowait("")
         except Exception:
@@ -2142,7 +2420,11 @@ def _load_auto_tuner_state_cached(server: ObservatoryWebServer) -> dict[str, Any
 
     locked = False
     try:
-        locked = bool(server.app_lock.acquire(timeout=_AUTO_TUNER_STATE_LOCK_TIMEOUT_SEC))
+        acquire = getattr(server, "_acquire_app_lock", None)
+        if callable(acquire):
+            locked = bool(acquire(timeout=_AUTO_TUNER_STATE_LOCK_TIMEOUT_SEC, label="auto_tuner_state_cache"))
+        else:
+            locked = bool(server.app_lock.acquire(timeout=_AUTO_TUNER_STATE_LOCK_TIMEOUT_SEC))
         if locked:
             live_payload = exp.read_auto_tuner_state(app=server.app)
             refreshed_at_ms = int(time.time() * 1000)
@@ -2222,6 +2504,9 @@ def _build_handler():
                     else:
                         with self.server.app_lock:
                             payload = self.server.agent_runtime.status(compact=False)
+                    if isinstance(payload, dict):
+                        payload = dict(payload)
+                        payload["app_lock"] = self.server.app_lock_status()
                     self._send_json({"success": True, "data": payload})
                     return
                 if parsed.path == "/api/agent/config":
@@ -2324,6 +2609,25 @@ def _build_handler():
                     return
                 if parsed.path == "/api/agent/stickers":
                     payload = self.server.agent_runtime.stickers_public()
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/diary":
+                    detail = str(query.get("detail", ["0"])[0] or "").lower() in {"1", "true", "yes"}
+                    include_content = str(query.get("include_content", ["1" if detail else "0"])[0] or "").lower() in {"1", "true", "yes"}
+                    limit = _maybe_int(query.get("limit", [100])[0]) or 100
+                    args = {"limit": limit, "detail": include_content}
+                    entry_id = str(query.get("id", [""])[0] or "").strip()
+                    if entry_id:
+                        args["id"] = entry_id
+                        args["detail"] = True
+                    payload = self.server.agent_runtime.read_diary(args)
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/scheduled-tasks":
+                    include_inactive = str(query.get("include_inactive", ["1"])[0] or "").lower() in {"1", "true", "yes"}
+                    detail = str(query.get("detail", ["0"])[0] or "").lower() in {"1", "true", "yes"}
+                    payload = self.server.agent_runtime.scheduled_tasks_public(detail=detail, include_inactive=include_inactive)
+                    payload["scheduler"] = self.server.agent_scheduler_status()
                     self._send_json({"success": True, "data": payload})
                     return
                 if parsed.path == "/api/agent/prompt/experiments":
@@ -2915,6 +3219,30 @@ def _build_handler():
                     result = self.server.agent_runtime.clear_stickers(payload if isinstance(payload, dict) else {})
                     self._send_json({"success": True, "data": result})
                     return
+                if parsed.path == "/api/agent/diary/save":
+                    result = self.server.agent_runtime.write_diary(payload if isinstance(payload, dict) else {}, source="agent_page_diary_editor")
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/diary/delete":
+                    body = payload if isinstance(payload, dict) else {}
+                    result = self.server.agent_runtime.write_diary({**body, "mode": "delete"}, source="agent_page_diary_editor")
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/scheduled-tasks/save":
+                    result = self.server.agent_runtime.save_scheduled_task_manual(payload if isinstance(payload, dict) else {})
+                    result["scheduler"] = self.server.agent_scheduler_status()
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/scheduled-tasks/run":
+                    result = self.server.agent_runtime.schedule_task(payload if isinstance(payload, dict) else {}, source="agent_page_schedule_editor")
+                    result["scheduler"] = self.server.agent_scheduler_status()
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/scheduled-tasks/delete":
+                    result = self.server.agent_runtime.delete_scheduled_tasks(payload if isinstance(payload, dict) else {})
+                    result["scheduler"] = self.server.agent_scheduler_status()
+                    self._send_json({"success": True, "data": result})
+                    return
                 if parsed.path == "/api/agent/prompt/preview":
                     result = self.server.agent_runtime.prompt_preview(payload)
                     self._send_json({"success": True, "data": result})
@@ -3096,7 +3424,11 @@ def _build_handler():
                     self._send_json(result)
                     return
                 if parsed.path == "/api/repair_all":
-                    locked = self.server.app_lock.acquire(blocking=False)
+                    acquire = getattr(self.server, "_acquire_app_lock", None)
+                    if callable(acquire):
+                        locked = acquire(blocking=False, label="hdb_idle_consolidation")
+                    else:
+                        locked = self.server.app_lock.acquire(blocking=False)
                     if not locked:
                         self._send_json(
                             {
