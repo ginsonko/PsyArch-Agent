@@ -88,6 +88,95 @@ function Resolve-QQBaseDir {
     throw 'Cannot locate QQ base directory. Set NAPCAT_QQ_BASE_DIR to the directory that contains the versions folder, for example H:\.'
 }
 
+function Get-PnpmInvocation {
+    $pnpmCmd = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
+    if ($pnpmCmd) {
+        return @{ Command = $pnpmCmd.Source; Prefix = @(); Label = $pnpmCmd.Source }
+    }
+
+    $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+    if ($pnpm) {
+        return @{ Command = $pnpm.Source; Prefix = @(); Label = $pnpm.Source }
+    }
+
+    $corepack = Get-Command corepack.cmd -ErrorAction SilentlyContinue
+    if (-not $corepack) {
+        $corepack = Get-Command corepack -ErrorAction SilentlyContinue
+    }
+    if ($corepack) {
+        return @{ Command = $corepack.Source; Prefix = @('pnpm'); Label = 'corepack pnpm' }
+    }
+
+    return $null
+}
+
+function Invoke-Pnpm {
+    param([string[]] $Arguments)
+
+    $pnpm = Get-PnpmInvocation
+    if (-not $pnpm) {
+        Write-PA 'ERROR: pnpm was not found. Install pnpm or install Node.js with corepack support, then run this launcher again.'
+        exit 1
+    }
+
+    $pnpmArgs = @()
+    $pnpmArgs += $pnpm.Prefix
+    $pnpmArgs += $Arguments
+    Write-PA "Running $($pnpm.Label) $($Arguments -join ' ')"
+    $previousAutoPin = $env:COREPACK_ENABLE_AUTO_PIN
+    $env:COREPACK_ENABLE_AUTO_PIN = '0'
+    try {
+        & $pnpm.Command @pnpmArgs
+    } finally {
+        if ($null -eq $previousAutoPin) {
+            Remove-Item Env:\COREPACK_ENABLE_AUTO_PIN -ErrorAction SilentlyContinue
+        } else {
+            $env:COREPACK_ENABLE_AUTO_PIN = $previousAutoPin
+        }
+    }
+}
+
+function Ensure-NapCatPnpmBuildPolicy {
+    $workspacePath = Join-Path $napcatDir 'pnpm-workspace.yaml'
+    if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) {
+        return
+    }
+
+    $packages = @(
+        '@heroui/shared-utils',
+        '@homebridge/node-pty-prebuilt-multiarch',
+        '@swc/core',
+        'esbuild',
+        'sharp',
+        'ttf2woff2',
+        'unrs-resolver'
+    )
+
+    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $workspacePath
+    $changed = $false
+
+    if ($content -notmatch '(?m)^onlyBuiltDependencies\s*:') {
+        $content = $content.TrimEnd() + "`r`n`r`n# Added by PsyArch Agent launcher so pnpm 10 can build NapCat without interactive approve-builds.`r`nonlyBuiltDependencies:`r`n"
+        foreach ($package in $packages) {
+            $content += "  - $package`r`n"
+        }
+        $changed = $true
+    }
+
+    if ($content -notmatch '(?m)^allowBuilds\s*:') {
+        $content = $content.TrimEnd() + "`r`n`r`n# Added by PsyArch Agent launcher so pnpm 11 can build NapCat without interactive approve-builds.`r`nallowBuilds:`r`n"
+        foreach ($package in $packages) {
+            $content += "  `"$package`": true`r`n"
+        }
+        $changed = $true
+    }
+
+    if ($changed) {
+        Write-PA 'Adding local NapCat pnpm build-script allowlist for non-interactive install.'
+        [System.IO.File]::WriteAllText($workspacePath, $content, [System.Text.UTF8Encoding]::new($false))
+    }
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $napcatDir = Join-Path (Split-Path -Parent $repoRoot) 'NapCatQQ'
 $loaderDir = Join-Path $napcatDir 'packages\napcat-shell-loader'
@@ -148,22 +237,22 @@ Write-PA 'Source checkout detected. Preparing NapCat shell dist if needed.'
 
 Push-Location $napcatDir
 try {
-    if (-not (Test-Path -LiteralPath (Join-Path $napcatDir 'node_modules') -PathType Container)) {
-        Write-PA 'node_modules missing, running pnpm install...'
-        & pnpm.cmd install
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
+    Ensure-NapCatPnpmBuildPolicy
+
+    Write-PA 'Checking NapCat dependencies with pnpm install...'
+    Invoke-Pnpm @('install', '--config.confirmModulesPurge=false')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     $webuiIndex = Join-Path $webuiDist 'index.html'
     if (-not (Test-Path -LiteralPath $webuiIndex -PathType Leaf)) {
         Write-PA "$webuiIndex missing, building napcat-webui-frontend..."
-        & pnpm.cmd --filter napcat-webui-frontend run build
+        Invoke-Pnpm @('--filter', 'napcat-webui-frontend', 'run', 'build')
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
     if (-not (Test-Path -LiteralPath $shellMain -PathType Leaf) -or -not (Test-Path -LiteralPath $shellStaticIndex -PathType Leaf)) {
         Write-PA 'napcat-shell dist is incomplete, building napcat-shell...'
-        & pnpm.cmd --filter napcat-shell run build
+        Invoke-Pnpm @('--filter', 'napcat-shell', 'run', 'build')
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
@@ -187,4 +276,3 @@ try {
 } finally {
     Pop-Location
 }
-

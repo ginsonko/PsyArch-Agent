@@ -24,6 +24,28 @@ function Resolve-AbsolutePath {
     return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $expanded))
 }
 
+function Get-PnpmInvocation {
+    $pnpmCmd = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
+    if ($pnpmCmd) {
+        return @{ Label = $pnpmCmd.Source }
+    }
+
+    $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+    if ($pnpm) {
+        return @{ Label = $pnpm.Source }
+    }
+
+    $corepack = Get-Command corepack.cmd -ErrorAction SilentlyContinue
+    if (-not $corepack) {
+        $corepack = Get-Command corepack -ErrorAction SilentlyContinue
+    }
+    if ($corepack) {
+        return @{ Label = "corepack pnpm" }
+    }
+
+    return $null
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($NapCatDir)) {
     $NapCatDir = Join-Path (Split-Path -Parent $repoRoot) "NapCatQQ"
@@ -76,18 +98,13 @@ if (Test-Path -LiteralPath $targetDir -PathType Container) {
 }
 
 if (-not $DryRun) {
-    if (Get-Command corepack -ErrorAction SilentlyContinue) {
-        Write-PA "Enabling corepack for pnpm if available..."
-        try {
-            & corepack enable
-        } catch {
-            Write-PA "corepack enable skipped: $($_.Exception.Message)"
-        }
-    }
-    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue) -and -not (Get-Command pnpm.cmd -ErrorAction SilentlyContinue)) {
+    $pnpm = Get-PnpmInvocation
+    if ($pnpm) {
+        Write-PA "pnpm is available for NapCat build step: $($pnpm.Label)"
+    } else {
         Write-PA "WARN: pnpm was not found. NapCat source launcher may install/build only after pnpm is available."
+        Write-PA "Install pnpm, or install Node.js with corepack support. This script will not run 'corepack enable' because that may require administrator permission."
     }
 }
 
 Write-PA "Done."
-
