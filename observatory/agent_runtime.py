@@ -10972,19 +10972,38 @@ class AgentRuntime:
                 sticker_id=sticker_id,
             )
         results: list[dict[str, Any]] = []
-        original_reload = getattr(self, "_reload_config_before_adapter_send", True)
         target = self._compact_reply_target(_as_dict(event.get("reply_target") or event))
         event_for_log = {**event, **target, "reply_target": target}
         for index, part in enumerate(parts):
             delay_ms = self._reply_segment_interval_ms(part, index=index)
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
-            previous_min_interval = int(self.config.qq_napcat_min_send_interval_ms or 0)
-            previous_reload = getattr(self, "_reload_config_before_adapter_send", True)
-            if index > 0:
-                self.config.qq_napcat_min_send_interval_ms = 0
-                self._reload_config_before_adapter_send = False
-            try:
+            attempt_results: list[dict[str, Any]] = []
+            max_attempts = 2
+            result: dict[str, Any] = {}
+            for attempt in range(max_attempts):
+                if attempt > 0:
+                    retry_after_ms = _as_int(result.get("retry_after_ms"), 0)
+                    retry_delay_ms = max(350, min(3000, retry_after_ms or 850))
+                    self.record_adapter_log(
+                        {
+                            "event": "adapter_reply_segment_retry",
+                            "level": "warn",
+                            "outbound": False,
+                            "adapter": "napcat_qq",
+                            "reply_text": part,
+                            "reply_id": reply_id,
+                            "segment_index": index + 1,
+                            "segment_count": len(parts),
+                            "attempt": attempt + 1,
+                            "retry_delay_ms": retry_delay_ms,
+                            "reason": result.get("reason", ""),
+                            "error": result.get("error", ""),
+                            "event_payload": event_for_log,
+                            "reply_target": event_for_log,
+                        }
+                    )
+                    time.sleep(retry_delay_ms / 1000.0)
                 result = self._send_napcat_reply(
                     event,
                     part,
@@ -10994,21 +11013,32 @@ class AgentRuntime:
                     attachments=[],
                     action_type=action_type,
                     sticker_id=sticker_id,
+                    bypass_rate_limit=index > 0,
                 )
-            finally:
-                self.config.qq_napcat_min_send_interval_ms = previous_min_interval
-                self._reload_config_before_adapter_send = previous_reload
+                result["segment_attempt"] = attempt + 1
+                attempt_results.append(dict(result))
+                if result.get("ok"):
+                    break
+                reason = str(result.get("reason") or "").strip().lower()
+                fatal_reasons = {"napcat_disabled", "napcat_url_empty", "missing_target"}
+                if reason in fatal_reasons or reason.startswith("access_denied_"):
+                    break
             result["segment_index"] = index + 1
             result["segment_count"] = len(parts)
             result["segment_text"] = part
             result["segment_delay_ms"] = delay_ms
+            result["segment_attempts"] = len(attempt_results)
+            result["segment_attempt_results"] = attempt_results
             if reply_id:
                 result["parent_reply_id"] = reply_id
             results.append(result)
-            if not result.get("ok"):
+            reason = str(result.get("reason") or "").strip().lower()
+            if not result.get("ok") and (
+                index == 0
+                or reason in {"napcat_disabled", "napcat_url_empty", "missing_target"}
+                or reason.startswith("access_denied_")
+            ):
                 break
-        if original_reload != getattr(self, "_reload_config_before_adapter_send", True):
-            self._reload_config_before_adapter_send = original_reload
         ok_count = sum(1 for row in results if isinstance(row, dict) and row.get("ok"))
         message_ids = [
             str(row.get("message_id") or row.get("napcat_message_id") or "").strip()
@@ -12301,6 +12331,7 @@ class AgentRuntime:
         attachments: list[dict[str, Any]] | None = None,
         action_type: str = "reply",
         sticker_id: str = "",
+        bypass_rate_limit: bool = False,
     ) -> dict[str, Any]:
         if getattr(self, "_reload_config_before_adapter_send", True):
             self._maybe_reload_config_from_disk(force=True)
@@ -12380,7 +12411,7 @@ class AgentRuntime:
         last_send_by_target = _as_dict(outbound_state.get("last_send_by_target_ms"))
         last_send = _as_int(last_send_by_target.get(target_key), 0)
         elapsed = max(0, _now_ms() - last_send)
-        if elapsed < self.config.qq_napcat_min_send_interval_ms:
+        if not bypass_rate_limit and elapsed < self.config.qq_napcat_min_send_interval_ms:
             result = {
                 "ok": False,
                 "mode": "napcat_qq",
@@ -12426,6 +12457,7 @@ class AgentRuntime:
                 self._mark_sticker_used(sticker_id)
             return result
         started = _now_ms()
+        send_timeout = max(10, min(600, int(self.config.timeout_sec or 120)))
         try:
             req = urllib.request.Request(
                 endpoint,
@@ -12433,7 +12465,7 @@ class AgentRuntime:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=min(30, max(3, int(self.config.timeout_sec or 30)))) as resp:
+            with urllib.request.urlopen(req, timeout=send_timeout) as resp:
                 raw = resp.read(65536).decode("utf-8", errors="replace")
             parsed = _extract_json_object(raw) or {"raw": _short(raw, 1000)}
             result = {
@@ -12449,6 +12481,7 @@ class AgentRuntime:
                 "action_type": action_type,
                 "sticker_id": sticker_id,
                 "latency_ms": max(0, _now_ms() - started),
+                "timeout_sec": send_timeout,
             }
             outbound = _as_dict(self.state.get("outbound"))
             now_ms = _now_ms()
@@ -12465,8 +12498,10 @@ class AgentRuntime:
                 "endpoint": endpoint,
                 "target": {"message_type": message_type, "group_id": group_id, "user_id": user_id},
                 "reply_id": reply_id,
+                "reason": "send_failed",
                 "error": str(exc),
                 "latency_ms": max(0, _now_ms() - started),
+                "timeout_sec": send_timeout,
             }
         self.record_event(
             {
@@ -12477,10 +12512,11 @@ class AgentRuntime:
                 "group_id": group_id,
                 "user_id": user_id,
                 "latency_ms": result.get("latency_ms"),
+                "timeout_sec": result.get("timeout_sec"),
                 "error": result.get("error", ""),
             }
         )
-        self.record_adapter_log({"event": "adapter_reply_outbound_detail", "level": "info" if result.get("ok") else "error", "outbound": bool(result.get("ok")), "dry_run": False, "adapter": "napcat_qq", "reply_text": text, "action_type": action_type, "mentions": mentions, "attachment_count": len(attachments), "segments": message_segments, "endpoint": endpoint, "error": result.get("error", ""), "event_payload": event, "reply_target": event})
+        self.record_adapter_log({"event": "adapter_reply_outbound_detail", "level": "info" if result.get("ok") else "error", "outbound": bool(result.get("ok")), "dry_run": False, "adapter": "napcat_qq", "reply_text": text, "action_type": action_type, "mentions": mentions, "attachment_count": len(attachments), "segments": message_segments, "endpoint": endpoint, "timeout_sec": result.get("timeout_sec"), "reason": result.get("reason", ""), "error": result.get("error", ""), "event_payload": event, "reply_target": event})
         self._record_outbox(event=event, text=text, result=result, endpoint=endpoint, mentions=mentions, attachments=attachments, action_type=action_type, sticker_id=sticker_id)
         if result.get("ok") and sticker_id:
             self._mark_sticker_used(sticker_id)

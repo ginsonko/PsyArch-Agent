@@ -2789,6 +2789,64 @@ def test_napcat_reply_auto_segments_by_custom_delimiter(tmp_path, monkeypatch):
     assert [row["reply_id"] for row in outbox] == ["reply_seg#1", "reply_seg#2", "reply_seg#3"]
 
 
+def test_napcat_reply_segments_retry_stalled_segment_and_keep_sending(tmp_path, monkeypatch):
+    monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: tmp_path / "agent_adapter_events.jsonl")
+    monkeypatch.setattr("observatory.agent_runtime._outbox_path", lambda: tmp_path / "agent_outbox.jsonl")
+    monkeypatch.setattr("observatory.agent_runtime.time.sleep", lambda _seconds: None)
+    runtime = _runtime_for_flow([], soft=1, hard=1)
+    runtime.config.qq_napcat_enabled = True
+    runtime.config.qq_napcat_dry_run = False
+    runtime.config.qq_napcat_min_send_interval_ms = 60_000
+    runtime.config.timeout_sec = 120
+    runtime.config.reply_auto_segment_enabled = True
+    runtime.config.reply_auto_segment_delimiter = "|"
+    runtime.config.reply_segment_interval_mode = "fixed"
+    runtime.config.reply_segment_fixed_interval_ms = 0
+    runtime.config.reply_segment_interval_jitter = 0
+    calls = []
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *args):
+            return json.dumps({"status": "ok", "data": {"message_id": f"qq_{len(calls)}"}}, ensure_ascii=False).encode("utf-8")
+
+    def sent_text(body):
+        message = body.get("message")
+        if isinstance(message, list):
+            return "".join(str(row.get("data", {}).get("text") or "") for row in message if isinstance(row, dict) and row.get("type") == "text")
+        return str(message or "")
+
+    def fake_urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append({"url": req.full_url, "body": body, "timeout": timeout})
+        text = sent_text(body)
+        if text == "我先看一下" and sum(1 for row in calls if sent_text(row["body"]) == "我先看一下") == 1:
+            raise TimeoutError("timed out")
+        return FakeResp()
+
+    monkeypatch.setattr("observatory.agent_runtime.urllib.request.urlopen", fake_urlopen)
+
+    result = runtime.send_adapter_reply(
+        {"adapter": "napcat_qq", "message_type": "private", "user_id": "200020002", "conversation_id": "private:200020002"},
+        "好呀|我先看一下|等我几秒",
+        reply_id="reply_seg_retry",
+    )
+
+    assert result["ok"] is True
+    assert result["sent_segment_count"] == 3
+    assert result["ok_segment_count"] == 3
+    assert result["segment_results"][1]["segment_attempts"] == 2
+    assert [sent_text(row["body"]) for row in calls] == ["好呀", "我先看一下", "我先看一下", "等我几秒"]
+    assert all(row["timeout"] == 120 for row in calls)
+    outbox = _read_jsonl_tail(tmp_path / "agent_outbox.jsonl", limit=10)
+    assert [row["text"] for row in outbox] == ["好呀", "我先看一下", "我先看一下", "等我几秒"]
+
+
 def test_napcat_reply_with_image_collapses_custom_delimiter(tmp_path, monkeypatch):
     monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: tmp_path / "agent_adapter_events.jsonl")
     monkeypatch.setattr("observatory.agent_runtime._outbox_path", lambda: tmp_path / "agent_outbox.jsonl")
