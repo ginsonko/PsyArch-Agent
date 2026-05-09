@@ -9952,6 +9952,20 @@ class AgentRuntime:
         target_label = _clean_text(normalized.get("target_label") or conversation_id or "群聊", max_chars=160)
         digest_basis = f"{conversation_id}|{normalized.get('message_id') or ''}|{normalized.get('text') or ''}"
         digest = hashlib.sha1(digest_basis.encode("utf-8", errors="ignore")).hexdigest()[:10]
+        recent_group_history = []
+        if str(normalized.get("message_type") or "").lower() == "group" and conversation_id:
+            for row in self._recent_adapter_group_history(conversation_id, limit=8):
+                if not isinstance(row, dict):
+                    continue
+                recent_group_history.append(
+                    {
+                        "sender": row.get("sender_label") or row.get("adapter_label") or "",
+                        "text": _sanitize_llm_visible_text(row.get("text"), max_chars=220),
+                        "mentions": _as_list(row.get("mentions"))[:8],
+                        "gate_stage": row.get("gate_stage") or "",
+                        "created_at_ms": row.get("created_at_ms"),
+                    }
+                )
         return {
             "action_id": f"{_ACTIVE_REPLY_ACTION_ID}_{digest}",
             "action_kind": _ACTIVE_REPLY_ACTION_KIND,
@@ -9971,6 +9985,19 @@ class AgentRuntime:
                 "conversation_id": conversation_id,
                 "target_label": target_label,
                 "reply_target": self._compact_reply_target(_as_dict(normalized.get("reply_target"))),
+                "bot_aliases": self._configured_bot_alias_tokens(include_keywords=True),
+                "latest_message": {
+                    "text": _sanitize_llm_visible_text(normalized.get("text"), max_chars=600),
+                    "message_type": normalized.get("message_type") or "",
+                    "conversation_id": conversation_id,
+                    "group_id": normalized.get("group_id") or "",
+                    "user_id": normalized.get("user_id") or "",
+                    "sender": _as_dict(normalized.get("sender")),
+                    "mentions": _as_list(normalized.get("mentions"))[:8],
+                    "target_label": target_label,
+                    "message_id": normalized.get("message_id") or "",
+                },
+                "recent_group_history": recent_group_history,
                 "background_packet_hint": _short(packet.get("prompt_text") or normalized.get("text") or "", 360),
                 "local_rwd_pun_drive_sensitivity": 1.0,
             },
@@ -11331,25 +11358,36 @@ class AgentRuntime:
         mode = str(self.config.qq_access_mode or "off").strip().lower()
         user_id = str(event.get("user_id") or "").strip()
         group_id = str(event.get("group_id") or "").strip()
+        message_type = str(event.get("message_type") or event.get("type") or "").strip().lower()
+        is_group = message_type == "group" or bool(group_id)
         owner = str(self.config.owner_qq or "").strip()
-        if owner and user_id == owner:
-            return {"allowed": True, "reason": "owner"}
+        owner_hit = bool(owner and user_id == owner)
         if mode == "blacklist":
             if user_id and user_id in self._id_set(self.config.qq_user_blacklist):
                 return {"allowed": False, "reason": "blocked_user_blacklist"}
             if group_id and group_id in self._id_set(self.config.qq_group_blacklist):
                 return {"allowed": False, "reason": "blocked_group_blacklist"}
+            if owner_hit:
+                return {"allowed": True, "reason": "owner"}
             return {"allowed": True, "reason": "blacklist_pass"}
         if mode == "whitelist":
             user_whitelist = self._id_set(self.config.qq_user_whitelist)
             group_whitelist = self._id_set(self.config.qq_group_whitelist)
-            if not user_whitelist and not group_whitelist:
+            if not user_whitelist and not group_whitelist and not owner:
                 return {"allowed": True, "reason": "whitelist_empty_allow"}
+            if is_group:
+                if not group_id:
+                    return {"allowed": False, "reason": "missing_group_id"}
+                if group_id in group_whitelist:
+                    return {"allowed": True, "reason": "group_whitelist"}
+                return {"allowed": False, "reason": "group_not_in_whitelist"}
+            if owner_hit:
+                return {"allowed": True, "reason": "owner"}
             if user_id and user_id in user_whitelist:
                 return {"allowed": True, "reason": "user_whitelist"}
-            if group_id and group_id in group_whitelist:
-                return {"allowed": True, "reason": "group_whitelist"}
             return {"allowed": False, "reason": "not_in_whitelist"}
+        if owner_hit:
+            return {"allowed": True, "reason": "owner"}
         return {"allowed": True, "reason": "access_off"}
 
     def _event_to_reply_target(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -12280,6 +12318,38 @@ class AgentRuntime:
         if not base:
             result = {"ok": False, "mode": "disabled", "reason": "napcat_url_empty", "reply_id": reply_id}
             self.record_adapter_log({"event": "adapter_reply_failed", "level": "error", "outbound": False, "adapter": "napcat_qq", "reason": result["reason"], "reply_text": text, "action_type": action_type, "mentions": mentions, "attachment_count": len(attachments), "event_payload": event, "reply_target": event})
+            self._record_outbox(event=event, text=text, result=result, endpoint="", mentions=mentions, attachments=attachments, action_type=action_type, sticker_id=sticker_id)
+            return result
+        access = self._access_gate(event)
+        if not access.get("allowed"):
+            reason = f"access_denied_{access.get('reason') or 'unknown'}"
+            result = {
+                "ok": False,
+                "mode": "napcat_qq",
+                "reason": reason,
+                "access": access,
+                "message_type": str(event.get("message_type") or "private").lower(),
+                "group_id": str(event.get("group_id") or "").strip(),
+                "user_id": str(event.get("user_id") or "").strip(),
+                "reply_id": reply_id,
+            }
+            self.record_event({"event": "adapter_reply_access_denied", **result})
+            self.record_adapter_log(
+                {
+                    "event": "adapter_reply_access_denied",
+                    "level": "warn",
+                    "outbound": False,
+                    "adapter": "napcat_qq",
+                    "reason": reason,
+                    "access": access,
+                    "reply_text": text,
+                    "action_type": action_type,
+                    "mentions": mentions,
+                    "attachment_count": len(attachments),
+                    "event_payload": event,
+                    "reply_target": event,
+                }
+            )
             self._record_outbox(event=event, text=text, result=result, endpoint="", mentions=mentions, attachments=attachments, action_type=action_type, sticker_id=sticker_id)
             return result
         message_type = str(event.get("message_type") or "private").lower()
@@ -15049,7 +15119,7 @@ class AgentRuntime:
 
         drive = dict(drive or self._estimate_wake_drive(packet))
         action_row = dict(action_row or {})
-        gate = self._teacher_gate_should_wake(packet=packet, drive=drive, mode=f"{mode}:{action_kind}")
+        gate = self._teacher_gate_should_wake(packet=packet, drive=drive, mode=f"{mode}:{action_kind}", action_row=action_row)
         if abort_requested():
             gate_reason = _clean_text(gate.get("reason") or reason or "foreground_priority", max_chars=240)
             return {
@@ -17458,9 +17528,17 @@ class AgentRuntime:
             return False
         return (tick_counter - recent_input_tick) <= int(self.config.agency_trigger_window_ticks or 0)
 
-    def _teacher_gate_should_wake(self, *, packet: dict[str, Any], drive: dict[str, Any], mode: str) -> dict[str, Any]:
+    def _teacher_gate_should_wake(self, *, packet: dict[str, Any], drive: dict[str, Any], mode: str, action_row: dict[str, Any] | None = None) -> dict[str, Any]:
         confidence_floor = float(self.config.agency_teacher_gate_confidence)
+        active_reply_mode = _ACTIVE_REPLY_ACTION_KIND in str(mode or "")
         if not self.config.agency_teacher_gate_enabled or not self.config.llm_enabled:
+            if active_reply_mode:
+                return {
+                    "should_wake": False,
+                    "confidence": 1.0,
+                    "reason": "active_reply_teacher_gate_unavailable_fail_closed",
+                    "mode": "fail_closed",
+                }
             confidence = max(confidence_floor, min(0.98, float(drive.get("wake_drive", 0.0) or 0.0)))
             return {
                 "should_wake": bool(float(drive.get("wake_drive", 0.0) or 0.0) >= float(self.config.agency_trigger_threshold)),
@@ -17497,14 +17575,32 @@ class AgentRuntime:
             "confidence": 0.75,
             "reason": "简短中文理由",
         }
-        active_reply_mode = _ACTIVE_REPLY_ACTION_KIND in str(mode or "")
+        action_row = _as_dict(action_row)
+        action_params = _as_dict(action_row.get("params"))
+        action_context = {
+            "action_kind": action_row.get("action_kind") or action_row.get("kind") or "",
+            "target_display": _sanitize_llm_visible_text(action_row.get("target_display"), max_chars=260),
+            "source": _as_dict(action_row.get("source")),
+            "params": {
+                "reason": action_params.get("reason") or "",
+                "role": action_params.get("role") or "",
+                "conversation_id": action_params.get("conversation_id") or "",
+                "target_label": action_params.get("target_label") or "",
+                "bot_aliases": _as_list(action_params.get("bot_aliases"))[:16],
+                "latest_message": _as_dict(action_params.get("latest_message")),
+                "recent_group_history": _as_list(action_params.get("recent_group_history"))[-8:],
+            },
+        }
         if active_reply_mode:
             gate_role = (
                 "你是 PA 群聊主动回复行动的教师门控。你判断 AP 触发“主动回复行动”是否合适。"
                 "普通群消息已经进入 AP 学习，不代表 PA 必须插话。"
-                "只有当群聊内容明确需要 PA、出现直接提问/求助/情绪支持/任务协助/与 PA 或主人强相关，"
-                "或者 AP 状态显示这次参与能带来明确价值时，should_wake=true。"
-                "如果只是群友普通闲聊、噪声、无明确参与价值、容易刷屏打扰，should_wake=false。"
+                "只在最新群消息明确对配置别名/艾特中的 PA 说话、要求 PA 执行动作、追问 PA 刚刚在本群发出的内容、"
+                "或群里正在明确讨论 PA 自身能力/状态且参与有清晰价值时，should_wake=true。"
+                "不要因为发送者是主人、白名单成员、或文本里出现泛泛的“bot/机器人/你”就放行；主人身份只影响权限，不等于这句话在对 PA 说。"
+                "如果 recent_group_history 显示“你”指向别的群友、引用消息里的别人、游戏账号/开挂/吃饭等群友彼此话题，必须 should_wake=false。"
+                "如果只是群友普通闲聊、群宣、战绩吐槽、噪声、无关表情、短句泛问、无明确参与价值、容易刷屏打扰，should_wake=false。"
+                "不确定时默认 false。"
                 "should_wake=true 会给主动回复行动教师奖励；false 会给教师惩罚，用来长期校正 AP 群聊参与时机。"
             )
             decision_hint = (
@@ -17533,6 +17629,7 @@ class AgentRuntime:
                     f"当前模式：{mode}\n"
                     f"判断说明：{decision_hint}\n"
                     f"唤醒驱动力：{json.dumps(drive, ensure_ascii=False)}\n"
+                    f"AP action context：{json.dumps(action_context, ensure_ascii=False)}\n"
                     f"AP compact packet：{json.dumps(compact, ensure_ascii=False)}\n"
                     f"最近 thoughts：{json.dumps(recent_thoughts, ensure_ascii=False)}\n"
                     f"最近 replies：{json.dumps(recent_replies, ensure_ascii=False)}\n"
@@ -17543,6 +17640,14 @@ class AgentRuntime:
         ]
         payload, status = self.gateway.generate(messages)
         if not bool(status.get("ok")):
+            if active_reply_mode:
+                return {
+                    "should_wake": False,
+                    "confidence": 1.0,
+                    "reason": _clean_text(_as_dict(status).get("reason") or _as_dict(status).get("error") or "active_reply_teacher_gate_llm_failed_fail_closed", max_chars=240),
+                    "mode": "fail_closed",
+                    "llm_status": status,
+                }
             confidence = max(confidence_floor, min(0.98, float(drive.get("wake_drive", 0.0) or 0.0)))
             return {
                 "should_wake": bool(float(drive.get("wake_drive", 0.0) or 0.0) >= float(self.config.agency_trigger_threshold)),

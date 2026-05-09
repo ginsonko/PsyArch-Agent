@@ -824,6 +824,65 @@ def test_adapter_events_show_whitelist_filter_reason(tmp_path, monkeypatch):
     assert filtered[-1]["text"] == "下午好"
 
 
+def test_group_whitelist_requires_group_match_even_for_owner_or_user():
+    runtime = _runtime_for_group_gate(execute_active_reply=False)
+    runtime.config.qq_access_mode = "whitelist"
+    runtime.config.owner_qq = "20002"
+    runtime.config.qq_user_whitelist = ["20002"]
+    runtime.config.qq_group_whitelist = ["10001"]
+    runtime.config.trigger_modes = ["private_all", "group_at", "keyword", "group_all_ap_gate"]
+
+    blocked = runtime.ingest_adapter_event(
+        _message_payload("@小澪 在不在", group_id="1077670061", user_id="20002", message_id="group_blocked_owner")
+    )
+    allowed = runtime.should_wake(
+        runtime._normalize_adapter_event(
+            _message_payload("@小澪 在不在", group_id="10001", user_id="20002", message_id="group_allowed")
+        )
+    )
+
+    assert blocked["handled"] is False
+    assert blocked["wake"]["reason"] == "group_not_in_whitelist"
+    assert runtime.state["messages"] == []
+    assert runtime.state["group_continuity_windows"] == {}
+    assert allowed["should_wake"] is True
+    assert allowed["access"]["reason"] == "group_whitelist"
+
+
+def test_whitelist_owner_only_does_not_open_all_groups():
+    runtime = _runtime_for_group_gate(execute_active_reply=False)
+    runtime.config.qq_access_mode = "whitelist"
+    runtime.config.owner_qq = "20002"
+    runtime.config.qq_user_whitelist = []
+    runtime.config.qq_group_whitelist = []
+    runtime.config.trigger_modes = ["private_all", "group_at", "keyword", "group_all_ap_gate"]
+
+    owner_group = runtime.ingest_adapter_event(
+        _message_payload("@小澪 在不在", group_id="1077670061", user_id="20002", message_id="owner_only_group")
+    )
+    stranger_group = runtime.ingest_adapter_event(
+        _message_payload("@小澪 在不在", group_id="1077670061", user_id="30003", message_id="owner_only_stranger")
+    )
+    owner_private = runtime.should_wake(
+        runtime._normalize_adapter_event(
+            {
+                "adapter": "napcat_qq",
+                "post_type": "message",
+                "message_type": "private",
+                "user_id": "20002",
+                "message": [{"type": "text", "data": {"text": "在嘛"}}],
+            }
+        )
+    )
+
+    assert owner_group["handled"] is False
+    assert owner_group["wake"]["reason"] == "group_not_in_whitelist"
+    assert stranger_group["handled"] is False
+    assert stranger_group["wake"]["reason"] == "group_not_in_whitelist"
+    assert owner_private["should_wake"] is True
+    assert owner_private["access"]["reason"] == "owner"
+
+
 def test_adapter_events_hide_stale_image_resolve_and_dry_run_noise(tmp_path, monkeypatch):
     adapter_log = tmp_path / "agent_adapter_events.jsonl"
     monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: adapter_log)
@@ -1013,6 +1072,36 @@ def test_group_all_ap_gate_active_reply_reject_writes_teacher_punish_without_rep
     assert feedback["ok"] is False
 
 
+def test_group_all_ap_gate_active_reply_teacher_failure_fails_closed():
+    runtime = _runtime_for_group_gate(execute_active_reply=True)
+    runtime.config.trigger_modes = ["group_all_ap_gate"]
+
+    class FailingGate:
+        def __init__(self):
+            self.gate_calls = 0
+            self.thought_calls = 0
+            self.messages = []
+
+        def generate(self, messages):
+            self.gate_calls += 1
+            self.messages.append(messages)
+            return {}, {"ok": False, "reason": "unit_api_failed"}
+
+    runtime.gateway = FailingGate()
+
+    result = runtime.ingest_adapter_event(_message_payload("帮忙看看这个问题应该怎么处理", message_id="g_gate_fail"))
+
+    assert result["handled"] is True
+    assert result["ap_gate"]["triggered"] is True
+    assert result["ap_gate"]["allowed"] is False
+    assert result["ap_gate"]["teacher_gate"]["verdict"] == "reject"
+    assert result["ap_gate"]["teacher_gate"]["gate"]["mode"] == "fail_closed"
+    assert runtime.gateway.gate_calls == 1
+    assert runtime.gateway.thought_calls == 0
+    assert runtime.state["messages"] == []
+    assert runtime.state["group_continuity_windows"] == {}
+
+
 def test_group_all_ap_gate_active_reply_allow_enters_reply_flow_without_duplicate_user_message():
     runtime = _runtime_for_group_gate(
         execute_active_reply=True,
@@ -1056,6 +1145,7 @@ def test_group_all_ap_gate_active_reply_allow_enters_reply_flow_without_duplicat
 def test_group_direct_wake_opens_continuity_window():
     runtime = _runtime_for_group_gate(execute_active_reply=False)
     runtime.config.trigger_modes = ["group_at", "keyword"]
+    runtime.config.group_at_names = ["PA"]
 
     result = runtime.ingest_adapter_event(_message_payload("@PA 在不在", message_id="cw_open"))
 
@@ -1205,6 +1295,41 @@ def test_group_continuity_gate_payload_uses_configured_aliases_only():
     assert "小醒醒" not in aliases
     assert "澪" not in aliases
     assert "bot" not in [str(item).lower() for item in aliases]
+
+
+def test_active_reply_teacher_prompt_includes_latest_group_context():
+    runtime = _runtime_for_group_gate(
+        execute_active_reply=True,
+        gate_payload={"should_wake": False, "confidence": 0.95, "reason": "这是群友对别人说的"},
+    )
+    runtime.config.trigger_modes = ["group_all_ap_gate"]
+    runtime.config.group_at_names = ["小PA"]
+    runtime.config.wake_keywords = ["醒醒"]
+    runtime._remember_adapter_group_history(
+        runtime._normalize_adapter_event(
+            {
+                **_message_payload("我号租出去了诶", group_id="928185505", user_id="3281681767", message_id="rent_account"),
+                "sender": {"card": "莫言不熬夜"},
+            }
+        ),
+        gate_stage="received",
+    )
+
+    result = runtime.ingest_adapter_event(
+        {
+            **_message_payload("帮忙看看这个问题：你不怕别人用你号开挂？", group_id="928185505", user_id="3353083294", message_id="wrong_you"),
+            "sender": {"card": "霜华"},
+        }
+    )
+
+    prompt = runtime.gateway.messages[0][1]["content"]
+    assert result["ap_gate"]["triggered"] is True
+    assert result["ap_gate"]["allowed"] is False
+    assert "AP action context" in prompt
+    assert "你不怕别人用你号开挂" in prompt
+    assert "我号租出去了" in prompt
+    assert "小PA" in prompt
+    assert "澪" not in json.loads(prompt.split("AP action context：", 1)[1].split("\nAP compact packet：", 1)[0])["params"]["bot_aliases"]
 
 
 def test_group_continuity_gate_pass_leaves_bare_question_to_thought_layer():
@@ -2602,6 +2727,38 @@ def test_napcat_rate_limit_is_scoped_per_reply_target(tmp_path, monkeypatch):
     assert group["ok"] is True
     assert private_again["ok"] is False
     assert private_again["reason"] == "rate_limited"
+
+
+def test_napcat_send_rechecks_group_whitelist_before_outbound(tmp_path, monkeypatch):
+    monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: tmp_path / "agent_adapter_events.jsonl")
+    monkeypatch.setattr("observatory.agent_runtime._outbox_path", lambda: tmp_path / "agent_outbox.jsonl")
+    runtime = _runtime_for_flow([], soft=1, hard=1)
+    runtime.config.qq_napcat_enabled = True
+    runtime.config.qq_napcat_dry_run = True
+    runtime.config.qq_napcat_min_send_interval_ms = 0
+    runtime.config.qq_access_mode = "whitelist"
+    runtime.config.owner_qq = "20002"
+    runtime.config.qq_user_whitelist = ["20002"]
+    runtime.config.qq_group_whitelist = ["10001"]
+
+    result = runtime.send_adapter_reply(
+        {
+            "adapter": "napcat_qq",
+            "message_type": "group",
+            "group_id": "1077670061",
+            "user_id": "20002",
+            "conversation_id": "group:1077670061",
+            "target_label": "群聊 未授权群 (1077670061)",
+        },
+        "卧槽",
+        reply_id="blocked_group_reply",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "access_denied_group_not_in_whitelist"
+    assert "last_send_by_target_ms" not in runtime.state["outbound"]
+    logs = runtime.adapter_events(limit=20, view="detail")["events"]
+    assert any(row.get("event") == "adapter_reply_access_denied" for row in logs)
 
 
 def test_napcat_reply_auto_segments_by_custom_delimiter(tmp_path, monkeypatch):
