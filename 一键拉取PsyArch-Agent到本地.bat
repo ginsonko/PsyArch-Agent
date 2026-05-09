@@ -1,8 +1,6 @@
 @echo off
 setlocal EnableExtensions
 
-cd /d "%~dp0" || goto :err_cd
-
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\clone_psyarch_agent.ps1" %*
 set "CODE=%ERRORLEVEL%"
 
@@ -14,9 +12,3 @@ if not "%CODE%"=="0" (
 )
 pause
 exit /b %CODE%
-
-:err_cd
-echo [PA] Failed to enter script directory.
-pause
-exit /b 1
-
