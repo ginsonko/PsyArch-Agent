@@ -608,8 +608,8 @@ def test_group_all_ap_gate_should_wake_modes():
     runtime = _runtime_for_group_gate(execute_active_reply=False)
 
     ordinary = runtime.should_wake(runtime._normalize_adapter_event(_message_payload("大家看看这个版本", message_id="g1")))
-    at_hit = runtime.should_wake(runtime._normalize_adapter_event(_message_payload("@PA 看看这个", message_id="g2")))
-    keyword_hit = runtime.should_wake(runtime._normalize_adapter_event(_message_payload("小PA 醒醒", message_id="g3")))
+    at_hit = runtime.should_wake(runtime._normalize_adapter_event(_message_payload("@小澪 看看这个", message_id="g2")))
+    keyword_hit = runtime.should_wake(runtime._normalize_adapter_event(_message_payload("嘉欣 在吗", message_id="g3")))
     private = runtime.should_wake(
         runtime._normalize_adapter_event(
             {

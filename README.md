@@ -118,7 +118,7 @@ NapCat 不会放进本仓库。需要 QQ 适配器时，按下面顺序操作。
 - API Key 为空，需要你自己填写。
 - Base URL 使用通用 OpenAI 兼容默认值。
 - 默认人设为“小澪 / 林嘉欣”模板，但主人 QQ 已脱敏为 `*********`，真实 owner QQ 需要你自己在配置中填写。
-- NapCat 默认关闭真实发送，接入 QQ 前请确认 `NapCat dry-run`、白名单、黑名单和触发模式。
+- NapCat 默认开启并关闭 dry-run，方便用户按教程配置 NapCat 后直接测试 QQ 收发；主人 QQ、白名单和群白名单默认留空作为占位，需要按自己的账号填写。若想先保守演练，请在适配器页手动打开 `NapCat dry-run`。
 - 表情包小偷默认开启，用于测试图片/表情包识别与本地表情库，但运行生成的表情包目录不会入库。
 - 运行输出、历史记录、日志、模型密钥、图片生成结果、表情包库等都在 `observatory/outputs/` 下，本仓库默认忽略。
 
@@ -190,4 +190,3 @@ python -m pytest observatory\tests\test_agent_public_projection.py -q
 - GitHub Issues：推荐用于可公开复现的问题
 - QQ 群：`296842274`
 - 加群备注：`PsyArch Agent`
-

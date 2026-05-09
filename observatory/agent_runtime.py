@@ -501,7 +501,7 @@ _ACTIVE_REPLY_ACTION_ID = "agent_active_reply"
 _ACTIVE_REPLY_ACTION_KIND = "active_reply"
 _WEATHER_ACTION_KINDS = {"weather_stub", "weather", "weather_bridge", "tool_weather"}
 _TRIGGER_MODE_CHOICES = {"private_all", "group_at", "keyword", "manual", "group_all_ap_gate"}
-_DEFAULT_TRIGGER_MODES = ["private_all", "group_at", "keyword"]
+_DEFAULT_TRIGGER_MODES = ["private_all", "group_at", "keyword", "group_all_ap_gate"]
 _TRIGGER_MODE_LABELS = {
     "private_all": "私聊全量",
     "group_at": "群聊艾特",
@@ -2213,7 +2213,7 @@ class AgentConfig:
     max_thoughts_per_turn: int = 12
     max_total_thought_steps_per_turn: int = 48
     thought_budget_reset_limit: int = 4
-    run_ap_while_waiting_llm: bool = False
+    run_ap_while_waiting_llm: bool = True
     llm_wait_tick_interval_ms: int = 0
     llm_wait_tick_max_per_call: int = 8
     auto_reply: bool = True
@@ -2240,17 +2240,17 @@ class AgentConfig:
     group_continuity_gate_model: str = ""
     group_continuity_gate_min_confidence: float = 0.62
     group_continuity_gate_context_messages: int = 18
-    group_at_names: list[str] = field(default_factory=lambda: ["PA", "psyarch"])
-    wake_keywords: list[str] = field(default_factory=lambda: ["醒醒", "PA", "psyarch", "小PA"])
+    group_at_names: list[str] = field(default_factory=lambda: ["小澪", "澪", "嘉欣"])
+    wake_keywords: list[str] = field(default_factory=lambda: ["小澪", "澪", "嘉欣"])
     allow_group_without_at: bool = False
     quiet_hours_start: str = ""
     quiet_hours_end: str = ""
     platform_adapter: str = "local"
-    qq_napcat_enabled: bool = False
-    qq_napcat_dry_run: bool = True
+    qq_napcat_enabled: bool = True
+    qq_napcat_dry_run: bool = False
     qq_napcat_http_url: str = "http://127.0.0.1:3000"
     qq_napcat_min_send_interval_ms: int = 1200
-    reply_auto_segment_enabled: bool = False
+    reply_auto_segment_enabled: bool = True
     reply_auto_segment_delimiter: str = "|"
     reply_segment_interval_mode: str = "adaptive"
     reply_segment_fixed_interval_ms: int = 650
@@ -2262,7 +2262,7 @@ class AgentConfig:
     reply_segment_max_segments: int = 8
     qq_short_context_isolation_enabled: bool = True
     owner_qq: str = ""
-    qq_access_mode: str = "off"
+    qq_access_mode: str = "whitelist"
     qq_user_whitelist: list[str] = field(default_factory=list)
     qq_user_blacklist: list[str] = field(default_factory=list)
     qq_group_whitelist: list[str] = field(default_factory=list)
@@ -2406,8 +2406,8 @@ class AgentConfig:
         if str(base.prompt_variant or "").strip() not in {"balanced", "warm", "concise", "analytical"}:
             base.prompt_variant = "balanced"
         base.thought_quality_enabled = bool(base.thought_quality_enabled)
-        base.group_at_names = _listify_strings(base.group_at_names, ["PA", "psyarch"])
-        base.wake_keywords = _listify_strings(base.wake_keywords, ["醒醒", "PA", "psyarch", "小PA"])
+        base.group_at_names = _listify_strings(base.group_at_names, ["小澪", "澪", "嘉欣"])
+        base.wake_keywords = _listify_strings(base.wake_keywords, ["小澪", "澪", "嘉欣"])
         base.qq_user_whitelist = _listify_strings(base.qq_user_whitelist, [])
         base.qq_user_blacklist = _listify_strings(base.qq_user_blacklist, [])
         base.qq_group_whitelist = _listify_strings(base.qq_group_whitelist, [])
