@@ -21,6 +21,7 @@ import hashlib
 import heapq
 import json
 import os
+import shutil
 import shlex
 import sys
 import time
@@ -166,6 +167,17 @@ DEFAULT_CONFIG = {
     "maintenance_lightweight_summary_enabled": True,
     "export_html": True,
     "export_json": True,
+    "export_full_cycle_json": False,
+    "export_cycle_json_history": False,
+    "export_cycle_html_history": False,
+    "export_compact_json": True,
+    "export_compact_html": True,
+    "export_cycle_json_history_limit": 12,
+    "export_cycle_html_history_limit": 12,
+    "export_cycle_json_max_bytes": 2 * 1024 * 1024,
+    "export_cycle_html_max_bytes": 4 * 1024 * 1024,
+    "outputs_cycle_max_total_bytes": 64 * 1024 * 1024,
+    "outputs_cycle_max_age_days": 2,
     "auto_open_html_report": False,
     "history_limit": 24,
     "stimulus_packet_preview_group_limit": 10,
@@ -387,6 +399,7 @@ class ObservatoryApp:
         self._hdb_config_base: dict[str, Any] = dict(self.hdb._config)
         self.cut_engine.update_config(self._cut_engine_config_override())
         self.cut_engine.update_config(self._cut_engine_config_override())
+        self._cleanup_output_reports()
         self._silence_jieba_logs()
 
     def close(self) -> None:
@@ -2615,7 +2628,8 @@ class ObservatoryApp:
         if len(self._report_history) > history_limit:
             self._report_history = self._report_history[-history_limit:]
         if self._config.get("auto_open_html_report", False):
-            self.open_report(trace_id, open_browser=True)
+            open_target = trace_id if self._config.get("export_cycle_html_history", False) else "latest"
+            self.open_report(open_target, open_browser=True)
         return report
 
     def show_state_snapshot(self, top_k: str | int | None = None) -> str:
@@ -13062,22 +13076,254 @@ class ObservatoryApp:
 
     def _export_report(self, trace_id: str, report: dict) -> dict:
         json_path = self.output_dir / f"{trace_id}.json"
+        full_json_path = self.output_dir / f"{trace_id}.full.json"
         html_path = self.output_dir / f"{trace_id}.html"
         latest_json = self.output_dir / "latest.json"
         latest_html = self.output_dir / "latest.html"
-        if self._config.get("export_json", True):
-            payload = json.dumps(report, ensure_ascii=False, indent=2)
-            json_path.write_text(payload, encoding="utf-8")
-            latest_json.write_text(payload, encoding="utf-8")
-        if self._config.get("export_html", True):
-            export_cycle_html(report, html_path)
-            export_cycle_html(report, latest_html)
-        return {
-            "json_path": str(json_path),
-            "html_path": str(html_path),
+        compact_report = self._compact_report_for_disk_export(report)
+        json_report = compact_report if self._config.get("export_compact_json", True) else report
+        exports: dict[str, Any] = {
+            "json_path": "",
+            "full_json_path": "",
+            "html_path": "",
             "latest_json_path": str(latest_json),
             "latest_html_path": str(latest_html),
+            "compact_export": bool(self._config.get("export_compact_json", True)),
+            "cycle_json_history_enabled": bool(self._config.get("export_cycle_json_history", False)),
+            "cycle_html_history_enabled": bool(self._config.get("export_cycle_html_history", False)),
+            "full_cycle_json_enabled": bool(self._config.get("export_full_cycle_json", False)),
         }
+        try:
+            if self._config.get("export_json", True):
+                self._write_report_json(latest_json, json_report, compact=bool(self._config.get("export_compact_json", True)))
+                exports["latest_json_bytes"] = latest_json.stat().st_size if latest_json.exists() else 0
+                if self._config.get("export_cycle_json_history", False):
+                    self._write_report_json(json_path, json_report, compact=bool(self._config.get("export_compact_json", True)))
+                    exports["json_path"] = str(json_path)
+                    exports["json_bytes"] = json_path.stat().st_size if json_path.exists() else 0
+                if self._config.get("export_full_cycle_json", False):
+                    self._write_report_json(full_json_path, report, compact=False)
+                    exports["full_json_path"] = str(full_json_path)
+                    exports["full_json_bytes"] = full_json_path.stat().st_size if full_json_path.exists() else 0
+            if self._config.get("export_html", True):
+                html_report = compact_report if self._config.get("export_compact_html", True) else report
+                export_cycle_html(html_report, latest_html)
+                exports["latest_html_bytes"] = latest_html.stat().st_size if latest_html.exists() else 0
+                if self._config.get("export_cycle_html_history", False):
+                    export_cycle_html(html_report, html_path)
+                    exports["html_path"] = str(html_path)
+                    exports["html_bytes"] = html_path.stat().st_size if html_path.exists() else 0
+            self._cleanup_output_reports()
+        except Exception as exc:
+            exports["error"] = str(exc)
+        return exports
+
+    def _write_report_json(self, path: Path, payload: dict, *, compact: bool = True) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":") if compact else None,
+            indent=None if compact else 2,
+        )
+        data = text.encode("utf-8")
+        max_bytes = int(self._config.get("export_cycle_json_max_bytes", 2 * 1024 * 1024) or 0)
+        if max_bytes > 0 and len(data) > max_bytes:
+            fallback = self._emergency_compact_report(payload, original_bytes=len(data), max_bytes=max_bytes)
+            data = json.dumps(fallback, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+
+    def _compact_report_for_disk_export(self, report: dict) -> dict:
+        return self._bounded_json_value(
+            report,
+            max_depth=7,
+            default_list_limit=80,
+            default_string_limit=1600,
+            list_limits={
+                "top_items": 32,
+                "items": 32,
+                "events": 32,
+                "round_details": 6,
+                "candidate_details": 8,
+                "cam_items": 24,
+                "groups": 40,
+                "sequence_groups": 32,
+                "units": 96,
+                "flat_tokens": 160,
+                "target_display_texts": 24,
+                "memory_item_count": 24,
+                "history": 24,
+            },
+            string_limits={
+                "display_text": 1200,
+                "grouped_display_text": 1200,
+                "semantic_display_text": 1000,
+                "semantic_grouped_display_text": 1000,
+                "visible_text": 1400,
+                "raw": 1400,
+                "normalized": 1400,
+                "message": 1200,
+                "input_text": 1200,
+                "normalized_text": 1200,
+            },
+        )
+
+    def _emergency_compact_report(self, payload: dict, *, original_bytes: int, max_bytes: int) -> dict:
+        if not isinstance(payload, dict):
+            return {"truncated": True, "reason": "report_payload_too_large", "original_bytes": original_bytes, "max_bytes": max_bytes}
+        final_state = payload.get("final_state", {}) if isinstance(payload.get("final_state"), dict) else {}
+        state_snapshot = final_state.get("state_snapshot", {}) if isinstance(final_state.get("state_snapshot"), dict) else {}
+        return {
+            "trace_id": payload.get("trace_id", ""),
+            "tick_counter": payload.get("tick_counter", 0),
+            "started_at": payload.get("started_at", 0),
+            "finished_at": payload.get("finished_at", 0),
+            "timing": payload.get("timing", {}),
+            "sensor": self._bounded_json_value(payload.get("sensor", {}), max_depth=3, default_list_limit=24, default_string_limit=800),
+            "input_queue": self._bounded_json_value(payload.get("input_queue", {}), max_depth=3, default_list_limit=24, default_string_limit=800),
+            "state_summary": state_snapshot.get("summary") or final_state.get("state_energy_summary") or {},
+            "top_items": self._bounded_json_value(state_snapshot.get("top_items", [])[:12] if isinstance(state_snapshot.get("top_items"), list) else [], max_depth=4, default_list_limit=12, default_string_limit=600),
+            "cognitive_feeling": self._bounded_json_value(payload.get("cognitive_feeling", {}), max_depth=4, default_list_limit=16, default_string_limit=800),
+            "emotion": self._bounded_json_value(payload.get("emotion", {}), max_depth=4, default_list_limit=16, default_string_limit=800),
+            "truncated": True,
+            "reason": "report_payload_too_large",
+            "original_bytes": original_bytes,
+            "max_bytes": max_bytes,
+        }
+
+    def _bounded_json_value(
+        self,
+        value: Any,
+        *,
+        max_depth: int,
+        default_list_limit: int,
+        default_string_limit: int,
+        list_limits: dict[str, int] | None = None,
+        string_limits: dict[str, int] | None = None,
+        _key: str = "",
+    ) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            limit = int((string_limits or {}).get(_key, default_string_limit))
+            if len(value) <= limit:
+                return value
+            tail = value[-80:] if limit >= 180 else ""
+            return f"{value[: max(0, limit - 120)]}...(truncated,len={len(value)})...{tail}"
+        if max_depth <= 0:
+            return {"_omitted": True, "reason": "max_depth"}
+        if isinstance(value, list):
+            limit = max(0, int((list_limits or {}).get(_key, default_list_limit)))
+            rows = [
+                self._bounded_json_value(
+                    item,
+                    max_depth=max_depth - 1,
+                    default_list_limit=default_list_limit,
+                    default_string_limit=default_string_limit,
+                    list_limits=list_limits,
+                    string_limits=string_limits,
+                )
+                for item in value[:limit]
+            ]
+            if len(value) > limit:
+                rows.append({"_truncated_items": len(value) - limit})
+            return rows
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for key, item in value.items():
+                key_text = str(key)
+                out[key_text] = self._bounded_json_value(
+                    item,
+                    max_depth=max_depth - 1,
+                    default_list_limit=default_list_limit,
+                    default_string_limit=default_string_limit,
+                    list_limits=list_limits,
+                    string_limits=string_limits,
+                    _key=key_text,
+                )
+            return out
+        return str(value)
+
+    def _cleanup_output_reports(self) -> None:
+        try:
+            if not self.output_dir.exists():
+                return
+            now = time.time()
+            max_age_days = float(self._config.get("outputs_cycle_max_age_days", 2) or 0)
+            cutoff = now - max_age_days * 24 * 3600 if max_age_days > 0 else 0
+            max_json_bytes = int(self._config.get("export_cycle_json_max_bytes", 2 * 1024 * 1024) or 0)
+            max_html_bytes = int(self._config.get("export_cycle_html_max_bytes", 4 * 1024 * 1024) or 0)
+            json_keep = int(self._config.get("export_cycle_json_history_limit", 12) or 0) if self._config.get("export_cycle_json_history", False) else 0
+            full_json_keep = 2 if self._config.get("export_full_cycle_json", False) else 0
+            html_keep = int(self._config.get("export_cycle_html_history_limit", 12) or 0) if self._config.get("export_cycle_html_history", False) else 0
+            groups = (
+                ([path for path in self.output_dir.glob("cycle_*.json") if not path.name.endswith(".full.json")], json_keep, max_json_bytes),
+                (list(self.output_dir.glob("cycle_*.full.json")), full_json_keep, max_json_bytes),
+                (list(self.output_dir.glob("cycle_*.html")), html_keep, max_html_bytes),
+            )
+            candidates: list[Path] = []
+            for group_files, keep, max_bytes in groups:
+                files = sorted(group_files, key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+                for index, path in enumerate(files):
+                    try:
+                        stat = path.stat()
+                        too_old = bool(cutoff and stat.st_mtime < cutoff)
+                        too_many = index >= max(0, keep)
+                        too_big = bool(max_bytes and stat.st_size > max_bytes)
+                        if too_old or too_many or too_big:
+                            path.unlink()
+                        else:
+                            candidates.append(path)
+                    except OSError:
+                        continue
+            max_total = int(self._config.get("outputs_cycle_max_total_bytes", 64 * 1024 * 1024) or 0)
+            if max_total <= 0:
+                return
+            existing = sorted(
+                [path for path in candidates if path.exists()],
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            )
+            total = 0
+            for path in existing:
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                total += size
+                if total > max_total:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+            self._cleanup_jsonl_logs()
+        except Exception:
+            return
+
+    def _cleanup_jsonl_logs(self) -> None:
+        max_bytes = 2 * 1024 * 1024
+        max_archives = 3
+        for path in self.output_dir.rglob("*.jsonl"):
+            try:
+                if path.stat().st_size <= max_bytes:
+                    continue
+                archive = path.with_name(f"{path.stem}.{time.strftime('%Y%m%d-%H%M%S')}.jsonl.gz")
+                with path.open("rb") as src, archive.open("wb") as raw_dst:
+                    import gzip
+
+                    with gzip.GzipFile(fileobj=raw_dst, mode="wb", compresslevel=5) as dst:
+                        shutil.copyfileobj(src, dst, length=1024 * 1024)
+                path.write_text("", encoding="utf-8")
+                archives = sorted(path.parent.glob(f"{path.stem}.*.jsonl.gz"), key=lambda item: item.stat().st_mtime)
+                for old in archives[:-max_archives]:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            except Exception:
+                continue
 
     def _silence_jieba_logs(self) -> None:
         try:

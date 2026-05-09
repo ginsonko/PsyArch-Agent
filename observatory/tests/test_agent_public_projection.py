@@ -11,7 +11,9 @@ from observatory.agent_runtime import (
     AgentRuntime,
     LLMGateway,
     _attachment_summary,
+    _append_jsonl,
     _compact_object,
+    _normalize_attachment,
     _safe_read_json,
     _public_object_row,
     _public_tool_result,
@@ -21,6 +23,39 @@ from observatory.agent_runtime import (
     _sanitize_llm_visible_text,
     _sanitize_object_display_text,
 )
+
+
+def test_inline_attachment_data_url_is_persisted_and_redacted(tmp_path, monkeypatch):
+    incoming_dir = tmp_path / "incoming_attachments"
+    incoming_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("observatory.agent_runtime._incoming_attachments_dir", lambda: incoming_dir)
+    raw_png = b"\x89PNG\r\n\x1a\n" + (b"unit-image" * 256)
+    data_url = "data:image/png;base64," + base64.b64encode(raw_png).decode("ascii")
+
+    item = _normalize_attachment({"kind": "image", "name": "截图.png", "file": "napcat-file-id", "data_url": data_url}, index=0)
+    dumped = json.dumps(item, ensure_ascii=False)
+
+    assert item["kind"] == "image"
+    assert item["inline_data_saved"] is True
+    assert item["inline_data_redacted"] is True
+    assert item["content_sha256"]
+    assert Path(item["file"]).exists()
+    assert "napcat-file-id" in json.dumps(item.get("source_fields", {}), ensure_ascii=False)
+    assert base64.b64encode(raw_png).decode("ascii") not in dumped
+    assert item.get("data_url") in (None, "")
+
+
+def test_jsonl_writer_redacts_and_rotates_large_rows(tmp_path):
+    path = tmp_path / "agent_events.jsonl"
+    huge = "data:image/png;base64," + ("A" * 80000)
+
+    for idx in range(140):
+        _append_jsonl(path, {"event": "large_payload", "idx": idx, "payload": huge})
+
+    text = path.read_text(encoding="utf-8")
+    assert len(text.encode("utf-8")) <= 2 * 1024 * 1024
+    assert "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" not in text
+    assert "inline_base64_redacted" in text or "jsonl_row_too_large" in text
 
 
 def _message_payload(text: str, *, group_id: str = "10001", user_id: str = "20002", message_id: str = "msg_1") -> dict:

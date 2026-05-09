@@ -471,16 +471,82 @@ run_cycle_gc_pause_enabled: true
 maintenance_lightweight_summary_enabled: true
 
 # export_html / 是否导出 HTML 报告
-# Purpose / 作用: Enables writing a human-readable HTML report after each cycle.
-# Meaning / 意义: Good for inspection and archive review; disabling it reduces I/O overhead.
-# Reference / 参考: Default true. Keep enabled in research mode unless you are batch-running speed tests.
+# Purpose / 作用: Enables writing a human-readable latest.html report after each cycle.
+# Meaning / 意义: Default only refreshes latest.html and does not keep every cycle's HTML archive, preventing observatory/outputs from growing without bound.
+# Reference / 参考: Default true. Keep enabled for daily observation; enable export_cycle_html_history only for short forensic sessions.
 export_html: true
 
 # export_json / 是否导出 JSON 报告
-# Purpose / 作用: Enables structured JSON export after each cycle.
-# Meaning / 意义: Useful for programmatic diffing, replay, and future tooling; disabling it reduces disk writes.
-# Reference / 参考: Default true. Keep enabled if you need machine-readable traces.
+# Purpose / 作用: Enables structured latest.json export after each cycle.
+# Meaning / 意义: Default writes a compact bounded report for UI/tools, not the full internal tick object. This keeps long-running PA-Agent instances safe for ordinary disks.
+# Reference / 参考: Default true. Turn off only if you do not need latest.json at all.
 export_json: true
+
+# export_full_cycle_json / 是否导出完整轮次 JSON
+# Purpose / 作用: Allows writing the full internal cycle report for deep forensic debugging.
+# Meaning / 意义: Full reports can become tens of MB per tick in long runs; keep this false for all normal PA-Agent use.
+# Reference / 参考: Default false. Temporarily enable only for short, bounded debugging and clean outputs afterwards.
+export_full_cycle_json: false
+
+# export_cycle_json_history / 是否保留每轮 JSON 历史
+# Purpose / 作用: Controls whether compact cycle_*.json history files are kept in addition to latest.json.
+# Meaning / 意义: Default false prevents per-tick archive growth. latest.json still updates every cycle.
+# Reference / 参考: Default false. Enable only when you need a short rolling machine-readable trace.
+export_cycle_json_history: false
+
+# export_cycle_html_history / 是否保留每轮 HTML 历史
+# Purpose / 作用: Controls whether cycle_*.html history files are kept in addition to latest.html.
+# Meaning / 意义: Default false prevents HTML archive growth. latest.html still updates every cycle.
+# Reference / 参考: Default false. Enable only for short manual report comparisons.
+export_cycle_html_history: false
+
+# export_compact_json / JSON 导出是否使用紧凑安全快照
+# Purpose / 作用: Keeps exported JSON bounded by trimming deep debug arrays and long strings.
+# Meaning / 意义: Does not change in-memory cognition; only controls disk export shape.
+# Reference / 参考: Default true. Keep true unless you are doing one-off exporter development.
+export_compact_json: true
+
+# export_compact_html / HTML 导出是否使用紧凑安全快照
+# Purpose / 作用: Renders latest.html from the compact report instead of the full internal report.
+# Meaning / 意义: Keeps the browser report responsive and prevents enormous HTML files.
+# Reference / 参考: Default true.
+export_compact_html: true
+
+# export_cycle_json_history_limit / 每轮 JSON 历史保留数量
+# Purpose / 作用: Maximum compact cycle_*.json files retained when export_cycle_json_history is enabled.
+# Meaning / 意义: Older or oversized files are automatically removed.
+# Reference / 参考: Default 12.
+export_cycle_json_history_limit: 12
+
+# export_cycle_html_history_limit / 每轮 HTML 历史保留数量
+# Purpose / 作用: Maximum cycle_*.html files retained when export_cycle_html_history is enabled.
+# Meaning / 意义: Older or oversized files are automatically removed.
+# Reference / 参考: Default 12.
+export_cycle_html_history_limit: 12
+
+# export_cycle_json_max_bytes / 单个导出 JSON 最大字节数
+# Purpose / 作用: Hard guardrail for latest/cycle JSON exports.
+# Meaning / 意义: If compact JSON is still too large, exporter falls back to an emergency summary.
+# Reference / 参考: Default 2097152 (2 MiB).
+export_cycle_json_max_bytes: 2097152
+
+# export_cycle_html_max_bytes / 单个历史 HTML 最大字节数
+# Purpose / 作用: Cleanup guardrail for old cycle_*.html reports.
+# Meaning / 意义: Oversized history reports are removed during output maintenance; latest.html is regenerated compactly.
+# Reference / 参考: Default 4194304 (4 MiB).
+export_cycle_html_max_bytes: 4194304
+
+# outputs_cycle_max_total_bytes / 轮次报告总量上限
+# Purpose / 作用: Caps retained cycle_*.json/html files under observatory/outputs.
+# Meaning / 意义: Prevents long-running instances from filling disk even if history switches are enabled.
+# Reference / 参考: Default 67108864 (64 MiB).
+outputs_cycle_max_total_bytes: 67108864
+
+# outputs_cycle_max_age_days / 轮次报告最大保留天数
+# Purpose / 作用: Removes old cycle_*.json/html files during output maintenance.
+# Meaning / 意义: latest.json/latest.html are not removed by this setting.
+# Reference / 参考: Default 2 days.
+outputs_cycle_max_age_days: 2
 
 # auto_open_html_report / 是否自动打开 HTML 报告
 # Purpose / 作用: Opens the newly written HTML report automatically after a cycle completes.

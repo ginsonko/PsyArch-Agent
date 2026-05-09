@@ -1,6 +1,8 @@
 param(
   [string]$Root = "",
   [string]$KeepDays = "1",
+  [int64]$LargeCycleBytes = 2097152,
+  [int64]$LargeJsonlBytes = 2097152,
   [switch]$Preview
 )
 
@@ -65,6 +67,36 @@ function Add-FileByPattern {
   if (-not (Test-Path -LiteralPath $Path)) { return }
   Get-ChildItem -LiteralPath $Path -Force -File -Filter $Pattern -ErrorAction SilentlyContinue | ForEach-Object {
     if ($_.LastWriteTime -lt $Cutoff) {
+      $List.Add($_)
+    }
+  }
+}
+
+function Add-LargeFileByPattern {
+  param(
+    [System.Collections.Generic.List[object]]$List,
+    [string]$Path,
+    [string]$Pattern,
+    [int64]$MinBytes
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  Get-ChildItem -LiteralPath $Path -Force -File -Filter $Pattern -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Length -ge $MinBytes) {
+      $List.Add($_)
+    }
+  }
+}
+
+function Add-RecursiveLargeFileByPattern {
+  param(
+    [System.Collections.Generic.List[object]]$List,
+    [string]$Path,
+    [string]$Pattern,
+    [int64]$MinBytes
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  Get-ChildItem -LiteralPath $Path -Force -Recurse -File -Filter $Pattern -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Length -ge $MinBytes) {
       $List.Add($_)
     }
   }
@@ -139,6 +171,10 @@ Add-DirectoryChildren $targets (Join-Path $outputsPath "diagnostic_ev_trace_2026
 
 Add-FileByPattern $targets $outputsPath "cycle_*.json" $cutoff
 Add-FileByPattern $targets $outputsPath "cycle_*.html" $cutoff
+Add-LargeFileByPattern $targets $outputsPath "cycle_*.json" $LargeCycleBytes
+Add-LargeFileByPattern $targets $outputsPath "cycle_*.html" ($LargeCycleBytes * 2)
+Add-RecursiveLargeFileByPattern $targets $outputsPath "*.jsonl" $LargeJsonlBytes
+Add-RecursiveFileByPattern $targets $outputsPath "*.jsonl.gz" $cutoff
 Add-FileByPattern $targets $outputsPath "*.log" $cutoff
 Add-FileByPattern $targets $outputsPath "*.tmp" $cutoff
 Add-FileByPattern $targets $outputsPath "dataset_diagnostics_*.json" $cutoff
@@ -178,10 +214,11 @@ Write-Host ("Target dirs: {0}" -f $dirCount)
 Write-Host ("Target files: {0}" -f $fileCount)
 Write-Host ("Direct file bytes: {0}" -f $totalBytes)
 Write-Host "Directory sizes are not recursively counted, to keep preview fast."
+Write-Host "Preserved: config files, HDB data, latest.json/latest.html, stickers, generated images, and incoming attachments."
 Write-Host ""
 
 $unique | Select-Object -First 120 | ForEach-Object {
-  $kind = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+  $kind = if ($_.PSIsContainer) { "DIR " } elseif ($_.Extension -eq ".jsonl" -and $_.Length -ge $LargeJsonlBytes) { "TRIM" } else { "FILE" }
   Write-Host ("[{0}] {1}" -f $kind, $_.FullName)
 }
 if ($unique.Count -gt 120) {
@@ -208,11 +245,34 @@ if ($confirm -ne "YES") {
 }
 
 $deleted = 0
+$trimmed = 0
 $failed = 0
 foreach ($item in $unique) {
   try {
-    Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
-    $deleted += 1
+    if ((-not $item.PSIsContainer) -and $item.Extension -eq ".jsonl" -and $item.Length -ge $LargeJsonlBytes) {
+      $archive = Join-Path $item.DirectoryName ("{0}.{1}.jsonl.gz" -f $item.BaseName, (Get-Date -Format "yyyyMMdd-HHmmss"))
+      $inputStream = [System.IO.File]::OpenRead($item.FullName)
+      try {
+        $outputStream = [System.IO.File]::Create($archive)
+        try {
+          $gzipStream = [System.IO.Compression.GzipStream]::new($outputStream, [System.IO.Compression.CompressionLevel]::Optimal)
+          try {
+            $inputStream.CopyTo($gzipStream)
+          } finally {
+            $gzipStream.Dispose()
+          }
+        } finally {
+          $outputStream.Dispose()
+        }
+      } finally {
+        $inputStream.Dispose()
+      }
+      Set-Content -LiteralPath $item.FullName -Value "" -Encoding UTF8
+      $trimmed += 1
+    } else {
+      Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
+      $deleted += 1
+    }
   } catch {
     $failed += 1
     Write-Host ("[WARN] Failed: {0} :: {1}" -f $item.FullName, $_.Exception.Message)
@@ -221,6 +281,7 @@ foreach ($item in $unique) {
 
 Write-Host ""
 Write-Host ("Deleted: {0}" -f $deleted)
+Write-Host ("Trimmed JSONL: {0}" -f $trimmed)
 Write-Host ("Failed: {0}" -f $failed)
 if ($failed -gt 0) {
   exit 1

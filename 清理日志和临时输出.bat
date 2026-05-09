@@ -9,7 +9,7 @@ echo ======================================
 echo Current directory: %cd%
 echo.
 echo This tool cleans generated logs, temp probes, run outputs, and cache files.
-echo It does not clean source code, datasets, config files, or the main HDB data.
+echo It does not clean source code, datasets, config files, HDB data, latest reports, stickers, or generated images.
 echo.
 echo Choose cleanup mode:
 echo   1. Preview only

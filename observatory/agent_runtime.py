@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import gzip
 import difflib
 import hashlib
 import json
@@ -293,6 +294,12 @@ def _image_reviews_dir() -> Path:
     return path
 
 
+def _incoming_attachments_dir() -> Path:
+    path = _outputs_dir() / "incoming_attachments"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _adapter_log_path() -> Path:
     return _outputs_dir() / "agent_adapter_events.jsonl"
 
@@ -355,6 +362,115 @@ def _prompt_snapshot_path() -> Path:
     return _outputs_dir() / "agent_last_prompt_snapshot.json"
 
 
+_MAX_JSONL_BYTES = 2 * 1024 * 1024
+_MAX_JSONL_ARCHIVES = 3
+_MAX_JSON_ROW_CHARS = 24_000
+_MAX_STATE_BYTES = 12 * 1024 * 1024
+_MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
+_DATA_URL_RE = re.compile(r"data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s_-]{256,})")
+
+
+def _redact_large_inline_data(value: Any, *, max_string_chars: int = 6000, depth: int = 0) -> Any:
+    if depth > 12:
+        return "<truncated:depth>"
+    if isinstance(value, str):
+        text = value
+        if text.startswith("data:") and ";base64," in text:
+            header, data = text.split(",", 1)
+            digest = hashlib.sha256(data[:200000].encode("utf-8", errors="ignore")).hexdigest()[:16]
+            return f"{header},<inline_base64_redacted chars={len(data)} sha256={digest}>"
+        text = _DATA_URL_RE.sub(
+            lambda match: f"data:{match.group(1)};base64,<inline_base64_redacted chars={len(match.group(2))}>",
+            text,
+        )
+        if len(text) > max_string_chars:
+            return text[:max_string_chars] + f"...<truncated chars={len(text)}>"
+        return text
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.lower() in {"data_url", "b64_json", "base64", "image_data", "inline_data"} and isinstance(item, str) and len(item) > 256:
+                out[key] = _redact_large_inline_data(item, max_string_chars=max_string_chars, depth=depth + 1)
+            else:
+                out[key] = _redact_large_inline_data(item, max_string_chars=max_string_chars, depth=depth + 1)
+        return out
+    if isinstance(value, list):
+        limit = 200 if depth < 4 else 80
+        rows = [_redact_large_inline_data(item, max_string_chars=max_string_chars, depth=depth + 1) for item in value[:limit]]
+        if len(value) > limit:
+            rows.append({"truncated_items": len(value) - limit})
+        return rows
+    return value
+
+
+def _json_bytes(payload: Any, *, compact: bool = False) -> bytes:
+    if compact:
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    else:
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+    return text.encode("utf-8")
+
+
+def _safe_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+def _rotate_jsonl_if_needed(path: Path, *, max_bytes: int = _MAX_JSONL_BYTES, max_archives: int = _MAX_JSONL_ARCHIVES) -> None:
+    try:
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        archive = path.with_name(f"{path.stem}.{timestamp}.jsonl.gz")
+        with path.open("rb") as src, gzip.open(archive, "wb", compresslevel=5) as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        path.write_text("", encoding="utf-8")
+        archives = sorted(path.parent.glob(f"{path.stem}.*.jsonl.gz"), key=lambda item: item.stat().st_mtime)
+        for old in archives[:-max(0, int(max_archives))]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:
+        return
+
+
+def _trim_output_files() -> None:
+    """Best-effort guardrail: keep runtime outputs bounded for long-running users."""
+    root = Path(__file__).resolve().parent / "outputs"
+    try:
+        if not root.exists():
+            return
+        now = time.time()
+        for path in list(root.glob("cycle_*.json")):
+            try:
+                if path.stat().st_size > 2 * 1024 * 1024 or now - path.stat().st_mtime > 2 * 24 * 3600:
+                    path.unlink()
+            except OSError:
+                pass
+        for path in list(root.rglob("*.jsonl")):
+            _rotate_jsonl_if_needed(path)
+        for pattern, keep, max_age_days in (
+            ("agent/generated_image_reviews/*.json", 80, 14),
+            ("agent/generated_images/*", 120, 30),
+            ("agent/incoming_attachments/*", 240, 14),
+        ):
+            rows = sorted(root.glob(pattern), key=lambda item: item.stat().st_mtime if item.exists() else 0)
+            cutoff = now - max_age_days * 24 * 3600
+            for item in rows:
+                try:
+                    if len(rows) > keep or item.stat().st_mtime < cutoff:
+                        item.unlink()
+                        rows.remove(item)
+                except OSError:
+                    pass
+    except Exception:
+        return
+
+
 def _file_info(path: Path) -> dict[str, Any]:
     try:
         stat = path.stat()
@@ -373,20 +489,99 @@ def _safe_read_json(path: Path, default: Any) -> Any:
         return copy.deepcopy(default)
 
 
+def _persist_inline_attachment_data_url(data_url: str, *, index: int = 0, name: str = "") -> dict[str, Any]:
+    text = str(data_url or "").strip()
+    if not text.startswith("data:") or ";base64," not in text:
+        return {}
+    header, payload = text.split(",", 1)
+    mime = header[5:].split(";", 1)[0] or "application/octet-stream"
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:
+        return {"inline_data_redacted": True, "inline_data_error": "base64_decode_failed", "inline_data_chars": len(payload)}
+    ext = "bin"
+    if mime == "image/png":
+        ext = "png"
+    elif mime in {"image/jpeg", "image/jpg"}:
+        ext = "jpg"
+    elif mime == "image/gif":
+        ext = "gif"
+    elif mime == "image/webp":
+        ext = "webp"
+    digest = hashlib.sha256(raw).hexdigest()
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(str(name or "")).stem).strip("._-")[:40]
+    filename = f"inline_{digest[:16]}_{safe_name or index}.{ext}"
+    path = _incoming_attachments_dir() / filename
+    try:
+        if not path.exists():
+            path.write_bytes(raw)
+    except Exception:
+        return {"inline_data_redacted": True, "inline_data_error": "write_failed", "inline_data_bytes": len(raw), "content_sha256": digest}
+    return {
+        "file": str(path),
+        "mime_type": mime,
+        "size": len(raw),
+        "content_sha256": digest,
+        "inline_data_saved": True,
+        "inline_data_redacted": True,
+    }
+
+
 def _safe_write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    safe_payload = _redact_large_inline_data(payload, max_string_chars=_MAX_SNAPSHOT_BYTES)
+    data = _json_bytes(safe_payload, compact=False)
+    if len(data) > _MAX_SNAPSHOT_BYTES:
+        safe_payload = {
+            "truncated": True,
+            "reason": "json_payload_too_large",
+            "original_bytes": len(data),
+            "preview": _redact_large_inline_data(payload, max_string_chars=1200, depth=0),
+        }
+        data = _json_bytes(safe_payload, compact=False)
+    _safe_write_bytes(path, data)
 
 
 def _safe_write_json_compact(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    safe_payload = _redact_large_inline_data(payload)
+    data = _json_bytes(safe_payload, compact=True)
+    if len(data) > _MAX_STATE_BYTES:
+        safe_payload = {
+            "session_id": _as_dict(payload).get("session_id") if isinstance(payload, dict) else "",
+            "created_at_ms": _as_dict(payload).get("created_at_ms") if isinstance(payload, dict) else _now_ms(),
+            "updated_at_ms": _now_ms(),
+            "truncated": True,
+            "reason": "state_payload_too_large",
+            "original_bytes": len(data),
+            "messages": _as_list(_as_dict(payload).get("messages"))[-20:] if isinstance(payload, dict) else [],
+            "thoughts": _as_list(_as_dict(payload).get("thoughts"))[-12:] if isinstance(payload, dict) else [],
+            "turns": _as_list(_as_dict(payload).get("turns"))[-8:] if isinstance(payload, dict) else [],
+            "snapshots": _as_list(_as_dict(payload).get("snapshots"))[-12:] if isinstance(payload, dict) else [],
+            "outbound": _as_dict(_as_dict(payload).get("outbound")) if isinstance(payload, dict) else {},
+        }
+        safe_payload = _redact_large_inline_data(safe_payload, max_string_chars=1600)
+        data = _json_bytes(safe_payload, compact=True)
+    _safe_write_bytes(path, data)
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    _rotate_jsonl_if_needed(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    row = _redact_large_inline_data(payload, max_string_chars=2000)
+    line = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+    if len(line) > _MAX_JSON_ROW_CHARS:
+        row = {
+            "ts": _as_dict(payload).get("ts", _now_ms()),
+            "event": _short(_as_dict(payload).get("event") or path.stem, 160),
+            "level": _short(_as_dict(payload).get("level") or "info", 40),
+            "truncated": True,
+            "reason": "jsonl_row_too_large",
+            "original_chars": len(line),
+            "preview": _short(line, 4000),
+        }
+        line = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        fh.write(line + "\n")
+    _rotate_jsonl_if_needed(path)
 
 
 def _read_jsonl_tail(path: Path, *, limit: int = 80) -> list[dict[str, Any]]:
@@ -1991,6 +2186,9 @@ def _normalize_attachment(raw: Any, *, index: int = 0, max_text_chars: int = 120
     name = _short(raw.get("name") or raw.get("filename") or raw.get("file_name") or raw.get("file") or f"attachment_{index}", 120)
     text = _clean_text(raw.get("text") or raw.get("content") or raw.get("ocr") or raw.get("summary") or "", max_chars=max_text_chars)
     data_url = str(raw.get("data_url") or raw.get("url") or raw.get("file_url") or raw.get("src") or "")
+    inline_saved = _persist_inline_attachment_data_url(data_url, index=index, name=name) if data_url.startswith("data:") else {}
+    if inline_saved.get("mime_type") and not mime:
+        mime = str(inline_saved.get("mime_type") or "")
     kind = str(raw.get("kind") or "").strip().lower()
     known_kinds = {"image", "file", "audio", "video", "text", "sticker", "record"}
     if not kind and raw_kind_or_type in known_kinds:
@@ -2054,12 +2252,18 @@ def _normalize_attachment(raw: Any, *, index: int = 0, max_text_chars: int = 120
         out["sticker_like"] = True
     if source_fields:
         out["source_fields"] = source_fields
-    if data_url:
+    if inline_saved:
+        out.update(inline_saved)
+        if str(inline_saved.get("file") or ""):
+            out["file"] = str(inline_saved.get("file") or "")
+    elif data_url:
         if data_url.startswith("data:"):
-            out["data_url"] = data_url
+            redacted = _redact_large_inline_data(data_url)
+            out["data_url"] = redacted
+            out["inline_data_redacted"] = True
         else:
             out["url"] = data_url
-    if file_value not in (None, "", [], {}):
+    if file_value not in (None, "", [], {}) and not str(inline_saved.get("file") or ""):
         out["file"] = str(file_value)
     if raw.get("thumbnail") not in (None, "", [], {}):
         out["thumbnail"] = str(raw.get("thumbnail"))
@@ -4278,6 +4482,8 @@ class AgentRuntime:
         self._last_compact_packet: dict[str, Any] = {}
         self._last_status_compact: dict[str, Any] = {}
         self._last_prompt_section_budgets: dict[str, Any] = {}
+        self._last_output_maintenance_ms = 0
+        _trim_output_files()
         self._refresh_compact_status_cache()
 
     def set_app_lock(self, lock: Any) -> None:
@@ -5165,6 +5371,9 @@ class AgentRuntime:
         self.state["updated_at_ms"] = _now_ms()
         self._refresh_compact_status_cache()
         _safe_write_json_compact(_state_path(), self.state)
+        if started_ms - int(getattr(self, "_last_output_maintenance_ms", 0) or 0) > 60_000:
+            _trim_output_files()
+            self._last_output_maintenance_ms = started_ms
         self._last_save_wall_ms = max(0, _now_ms() - started_ms)
 
     def _snapshot_to_compact_packet(self, snapshot: dict[str, Any] | None) -> dict[str, Any]:

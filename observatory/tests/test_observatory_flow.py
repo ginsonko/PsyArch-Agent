@@ -169,6 +169,72 @@ def app():
     shutil.rmtree(temp_hdb_dir, ignore_errors=True)
 
 
+def test_cycle_export_defaults_keep_outputs_bounded(tmp_path):
+    reset_id_generator()
+    temp_hdb_dir = tempfile.mkdtemp(prefix="observatory_export_hdb_")
+    instance = ObservatoryApp(
+        config_override={
+            "export_html": True,
+            "export_json": True,
+            "auto_open_html_report": False,
+            "web_auto_open_browser": False,
+            "state_pool_enable_placeholder_interfaces": False,
+            "state_pool_enable_script_broadcast": False,
+            "hdb_enable_background_repair": False,
+            "hdb_data_dir": temp_hdb_dir,
+        }
+    )
+    instance.output_dir = tmp_path
+    try:
+        report = instance.run_cycle(text="你好，小澪")
+
+        latest_json = tmp_path / "latest.json"
+        latest_html = tmp_path / "latest.html"
+        assert latest_json.exists()
+        assert latest_html.exists()
+        assert latest_json.stat().st_size < 2 * 1024 * 1024
+        assert latest_html.stat().st_size < 4 * 1024 * 1024
+        assert not list(tmp_path.glob("cycle_*.json"))
+        assert not list(tmp_path.glob("cycle_*.html"))
+        exported = report.get("exports", {})
+        assert exported.get("cycle_json_history_enabled") is False
+        assert exported.get("cycle_html_history_enabled") is False
+    finally:
+        instance.close()
+        shutil.rmtree(temp_hdb_dir, ignore_errors=True)
+
+
+def test_cycle_export_cleanup_removes_legacy_huge_cycle_files(tmp_path):
+    temp_hdb_dir = tempfile.mkdtemp(prefix="observatory_cleanup_hdb_")
+    instance = ObservatoryApp(
+        config_override={
+            "export_html": False,
+            "export_json": False,
+            "auto_open_html_report": False,
+            "web_auto_open_browser": False,
+            "hdb_enable_background_repair": False,
+            "hdb_data_dir": temp_hdb_dir,
+            "export_cycle_json_max_bytes": 1024,
+            "export_cycle_html_max_bytes": 1024,
+            "outputs_cycle_max_total_bytes": 2048,
+        }
+    )
+    instance.output_dir = tmp_path
+    try:
+        huge_json = tmp_path / "cycle_0001.json"
+        huge_html = tmp_path / "cycle_0001.html"
+        huge_json.write_bytes(b"{" + (b"0" * 4096) + b"}")
+        huge_html.write_bytes(b"<html>" + (b"0" * 4096) + b"</html>")
+
+        instance._cleanup_output_reports()
+
+        assert not huge_json.exists()
+        assert not huge_html.exists()
+    finally:
+        instance.close()
+        shutil.rmtree(temp_hdb_dir, ignore_errors=True)
+
+
 def test_apply_packet_to_pool_observes_priority_neutralization(app):
     for sa_obj in (
         _seed_sa(sa_id="seed_sa_0", token=HI, er=0.0, ev=1.0),
