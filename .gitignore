@@ -1,0 +1,77 @@
+# =========================
+# PsyArch Agent Git ignore rules
+# =========================
+# Keep source/config templates in Git, but never publish runtime outputs,
+# private API keys, chat logs, downloaded adapters, or generated caches.
+
+# ---- Python / cache ----
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- IDE / local environment ----
+.idea/
+.vscode/
+.gitconfig_codex
+.env
+.env.*
+*.local
+*.secret
+*.secrets
+secrets/
+
+# ---- Runtime outputs / logs / private history ----
+observatory/outputs/
+reports/
+local_notes/
+**/logs/
+*.log
+*.jsonl
+
+# ---- Private LLM/API configs and audit outputs ----
+observatory/outputs/agent/
+observatory/outputs/**/agent_config*.json
+observatory/outputs/llm_review_config.json
+observatory/outputs/auto_tuner/llm_config.json
+observatory/outputs/auto_tuner/llm_suggestions/
+observatory/outputs/auto_tuner/audit*.jsonl
+
+# ---- Frontend dependencies / build cache ----
+node_modules/
+observatory/frontend/node_modules/
+observatory/frontend/dist/
+observatory/frontend/vite.config.js
+observatory/frontend/vite.config.d.ts
+
+# ---- Downloaded external adapters ----
+NapCatQQ/
+
+# ---- Bench logs ----
+bench_logs_pool/
+bench_logs_sensor/
+
+# ---- HDB / state pool runtime data ----
+hdb/data/
+
+# ---- Rule editor history/backups ----
+**/config/rules_history/
+
+# ---- Large/private work documents ----
+*.docx
+txt版本的理论核心.txt
+当前模块实现情况报告.md
+Artificial PsyArch 原型阶段总技术规范.md
+Artificial PsyArch 模块代码实现通用提示文件.md
+HDB模块设计文档.md
+文本感受器设计文档.md
+状态池模块设计文档.md
+通用字段标准.md
+

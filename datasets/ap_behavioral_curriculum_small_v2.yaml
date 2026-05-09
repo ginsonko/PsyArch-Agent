@@ -1,0 +1,1403 @@
+dataset_id: ap_behavioral_curriculum_small_v2
+title: AP 行为课程小规模数据集 v2
+description: AP 行为课程数据集。真实 text 字段只包含自然中文输入；角色、教师奖惩、expectation contracts 和实验预期全部在
+  labels 或旁路设计说明中。
+experiment_goal: 用 10 个可审计实验片段覆盖词汇抽象、新颖违和、教师奖惩、行动训练、时间回忆、注意力调节、残差记忆、矛盾安抚和重复疲劳，观察 AP
+  原型在冷启动语料中的局部规律学习。
+evaluation_dimensions:
+- 训练文本是否保持纯净，不含角色括号或技术标记
+- 重复句式是否能在替换变量后形成稳定结构
+- 教师奖励/惩罚是否被绑定到正确的当前对象或上下文对象
+- 明确天气查询、隐式天气问句、弱天气提及是否呈现不同行动倾向
+- 空 tick 后是否能观察到时间感受、状态衰减和近因召回
+- 复杂输入是否触发注意力聚焦或简化相关感受
+- 局部线索是否能激活组合记忆或残差记忆投影
+- 矛盾调和后是否出现安抚、缓解或正确感相关指标
+- 重复和可控新鲜度是否能同时暴露 repetition 与 NOV 通道
+notes:
+- 每个真实文本 tick 后固定跟随 5 个空 tick，总 tick = 真实输入 * 6。
+- 小规模正好覆盖 10 个实验各 5 条真实输入；中规模重复 10 个确定性变体；大规模重复 100 个确定性变体。
+- 预期不进入训练过程；LLM 审阅模块应读取旁路设计说明和运行输出进行对照。
+seed: 20260505
+time_basis: tick
+tick_dt_ms: 3000
+curriculum_version: v2
+episodes:
+- id: ap_behavioral_curriculum_small_v2_main
+  title: AP 行为课程小规模数据集 v2
+  tags:
+  - ap_behavioral_curriculum
+  - teacher_feedback
+  - expectation_contract
+  - time_gap
+  - action_training
+  - memory_probe
+  repeat: 1
+  ticks:
+  - text: 会话恢复，小林今天继续处理周报，主题仍然是先确认目标。
+    tags:
+    - ap_behavioral_curriculum
+    - lexical_abstraction
+    - E01
+    labels:
+      stream:
+        role: system
+        kind: context
+        phase: lexical_abstraction
+        pure_text: true
+        variant_index: 0
+        real_input_index: 0
+      curriculum:
+        experiment: E01_词汇重复与句式抽象
+        step_in_50: 1
+        purpose: 建立重复主句和任务背景。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 早上好，我还是想先确认目标，再开始客户邮件。
+    tags:
+    - ap_behavioral_curriculum
+    - lexical_abstraction
+    - E01
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: lexical_abstraction
+        pure_text: true
+        variant_index: 0
+        real_input_index: 1
+      curriculum:
+        experiment: E01_词汇重复与句式抽象
+        step_in_50: 2
+        purpose: 重复核心短语并替换时间词。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 先确认目标，再拆步骤，然后只保留三个能执行的小动作。
+    tags:
+    - ap_behavioral_curriculum
+    - lexical_abstraction
+    - E01
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: lexical_abstraction
+        pure_text: true
+        variant_index: 0
+        real_input_index: 2
+      curriculum:
+        experiment: E01_词汇重复与句式抽象
+        step_in_50: 3
+        purpose: 让稳定建议句式和轻微变体共存。
+      teacher:
+        rwd: 0.12
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 任务拆解清晰且压力较低。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 你用同样的办法帮我看一下任务面板，也先确认目标。
+    tags:
+    - ap_behavioral_curriculum
+    - lexical_abstraction
+    - E01
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: lexical_abstraction
+        pure_text: true
+        variant_index: 0
+        real_input_index: 3
+      curriculum:
+        experiment: E01_词汇重复与句式抽象
+        step_in_50: 4
+        purpose: 跨项目复用同一抽象句式。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 可以，实验记录也先确认目标，再拆成短步骤。
+    tags:
+    - ap_behavioral_curriculum
+    - lexical_abstraction
+    - E01
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: lexical_abstraction
+        pure_text: true
+        variant_index: 0
+        real_input_index: 4
+      curriculum:
+        experiment: E01_词汇重复与句式抽象
+        step_in_50: 5
+        purpose: 形成可泛化的重复结构。
+      teacher:
+        rwd: 0.12
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 复用句式准确。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 刚才的流程我懂了，但现在突然出现一个纸月桥，我完全没见过。
+    tags:
+    - ap_behavioral_curriculum
+    - novelty
+    - E02
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: novelty
+        pure_text: true
+        variant_index: 0
+        real_input_index: 5
+      curriculum:
+        experiment: E02_新词违和与新颖感
+        step_in_50: 6
+        purpose: 在熟悉流程后加入罕见词，观察新颖和违和。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 这个词先单独放着，我们先记录它和课程作业之间可能有什么关系。
+    tags:
+    - ap_behavioral_curriculum
+    - novelty
+    - E02
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: novelty
+        pure_text: true
+        variant_index: 0
+        real_input_index: 6
+      curriculum:
+        experiment: E02_新词违和与新颖感
+        step_in_50: 7
+        purpose: 不强行解释新词，保留探索姿态。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 雾灯环不是普通物品，它只是我临时起的名字。
+    tags:
+    - ap_behavioral_curriculum
+    - novelty
+    - E02
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: novelty
+        pure_text: true
+        variant_index: 0
+        real_input_index: 7
+      curriculum:
+        experiment: E02_新词违和与新颖感
+        step_in_50: 8
+        purpose: 解释新词来源，观察违和缓解。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 明白，它像一个临时标签，不一定需要马上和旧经验合并。
+    tags:
+    - ap_behavioral_curriculum
+    - novelty
+    - E02
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: novelty
+        pure_text: true
+        variant_index: 0
+        real_input_index: 8
+      curriculum:
+        experiment: E02_新词违和与新颖感
+        step_in_50: 9
+        purpose: 把新词作为临时标签处理。
+      teacher:
+        rwd: 0.1
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 没有过度解释未知词。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 等一下，我又把雾灯环换成另一个说法，这会不会让你混乱？
+    tags:
+    - ap_behavioral_curriculum
+    - novelty
+    - E02
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: novelty
+        pure_text: true
+        variant_index: 0
+        real_input_index: 9
+      curriculum:
+        experiment: E02_新词违和与新颖感
+        step_in_50: 10
+        purpose: 制造轻度不稳定映射，观察 surprise/dissonance。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 当我说我在，你最好先接住我，再给一个很短的建议。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_reward
+    - E03
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: teacher_reward
+        pure_text: true
+        variant_index: 0
+        real_input_index: 10
+      curriculum:
+        experiment: E03_教师奖励塑形
+        step_in_50: 11
+        purpose: 定义偏好，为后续奖励塑形做锚点。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我在。先把眼前这一件事写下来，再决定下一步。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_reward
+    - E03
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: teacher_reward
+        pure_text: true
+        variant_index: 0
+        real_input_index: 11
+      curriculum:
+        experiment: E03_教师奖励塑形
+        step_in_50: 12
+        purpose: 符合偏好的被奖励样本。
+      teacher:
+        rwd: 0.22
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 先接住用户，再给短建议。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 这个回应方式正确，先接住，再给短建议。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_reward
+    - E03
+    labels:
+      stream:
+        role: teacher
+        kind: feedback
+        phase: teacher_reward
+        pure_text: true
+        variant_index: 0
+        real_input_index: 12
+      curriculum:
+        experiment: E03_教师奖励塑形
+        step_in_50: 13
+        purpose: 显式教师奖励，不把技术标签写进自然语料。
+      teacher:
+        rwd: 0.28
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 强化我在和短建议的联结。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我现在回来了，也有点乱，你还在吗？
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_reward
+    - E03
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: teacher_reward
+        pure_text: true
+        variant_index: 0
+        real_input_index: 13
+      curriculum:
+        experiment: E03_教师奖励塑形
+        step_in_50: 14
+        purpose: 用相似语境测试奖励后联想。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我在。先别急，我们只看课程作业的下一步。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_reward
+    - E03
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: teacher_reward
+        pure_text: true
+        variant_index: 0
+        real_input_index: 14
+      curriculum:
+        experiment: E03_教师奖励塑形
+        step_in_50: 15
+        purpose: 奖励塑形后的相似回应。
+      teacher:
+        rwd: 0.18
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 相似语境中复用了被奖励模式。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 你刚才说得有点绕，我其实只想知道第一步是什么。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_punish
+    - E04
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: teacher_punish
+        pure_text: true
+        variant_index: 0
+        real_input_index: 15
+      curriculum:
+        experiment: E04_教师惩罚与纠偏
+        step_in_50: 16
+        purpose: 用户负反馈，触发惩罚和纠偏。
+      teacher:
+        rwd: 0.0
+        pun: 0.16
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 回复过绕，用户需要直接结论。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 第一步是写标题，其他内容先不展开。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_punish
+    - E04
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: teacher_punish
+        pure_text: true
+        variant_index: 0
+        real_input_index: 16
+      curriculum:
+        experiment: E04_教师惩罚与纠偏
+        step_in_50: 17
+        purpose: 惩罚后的直接修正。
+      teacher:
+        rwd: 0.14
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 纠偏后更直接。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 如果我说错了，你直接提醒我，但语气不要太重。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_punish
+    - E04
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: teacher_punish
+        pure_text: true
+        variant_index: 0
+        real_input_index: 17
+      curriculum:
+        experiment: E04_教师惩罚与纠偏
+        step_in_50: 18
+        purpose: 建立温和纠错偏好。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 可以，我会先指出不一致，再给一个轻一点的修正说法。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_punish
+    - E04
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: teacher_punish
+        pure_text: true
+        variant_index: 0
+        real_input_index: 18
+      curriculum:
+        experiment: E04_教师惩罚与纠偏
+        step_in_50: 19
+        purpose: 温和纠错策略。
+      teacher:
+        rwd: 0.12
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 纠错策略符合偏好。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 刚才的修正比原来清楚，保留这种直接但不重的语气。
+    tags:
+    - ap_behavioral_curriculum
+    - teacher_punish
+    - E04
+    labels:
+      stream:
+        role: teacher
+        kind: feedback
+        phase: teacher_punish
+        pure_text: true
+        variant_index: 0
+        real_input_index: 19
+      curriculum:
+        experiment: E04_教师惩罚与纠偏
+        step_in_50: 20
+        purpose: 奖励纠偏后的表达方式。
+      teacher:
+        rwd: 0.18
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 强化直接但温和的纠错。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我有点纠结出门穿什么，外面的天气怎么样？
+    tags:
+    - ap_behavioral_curriculum
+    - weather_action
+    - E05
+    - weather_request
+    - implicit_weather_question
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: weather_action
+        pure_text: true
+        variant_index: 0
+        real_input_index: 20
+      curriculum:
+        experiment: E05_先天行动与天气闭环
+        step_in_50: 21
+        purpose: 隐式天气问句，观察中强触发。
+      expectation_contracts:
+      - id: weather_implicit_success_00020
+        within_ticks: 2
+        success_conditions:
+          all:
+          - kind: action_executed_kind_min
+            action_kind: weather_stub
+            min_count: 1
+        anchor_policy:
+          mode: cam_top1
+          ref_object_types:
+          - sa
+          - st
+        on_success:
+          teacher_rwd: 0.18
+          feedback_text: 隐式天气求助也被及时处理了，这对用户有帮助。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_success
+              phase: weather_action
+              pure_text: true
+        on_failure:
+          teacher_pun: 0.14
+          feedback_text: 隐式天气求助没有被处理，之后需要先澄清或主动补足查询。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_failure
+              phase: weather_action
+              pure_text: true
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我们先看你去哪里，再把天气和衣物建议放在一起。
+    tags:
+    - ap_behavioral_curriculum
+    - weather_action
+    - E05
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: weather_action
+        pure_text: true
+        variant_index: 0
+        real_input_index: 21
+      curriculum:
+        experiment: E05_先天行动与天气闭环
+        step_in_50: 22
+        purpose: 隐式天气后的澄清式回复。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我要去图书馆，请帮我查询今天的天气，我想决定带不带薄衫。
+    tags:
+    - ap_behavioral_curriculum
+    - weather_action
+    - E05
+    - weather_request
+    - explicit_weather_query
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: weather_action
+        pure_text: true
+        variant_index: 0
+        real_input_index: 22
+      curriculum:
+        experiment: E05_先天行动与天气闭环
+        step_in_50: 23
+        purpose: 明确包含查询和天气，预期稳定触发 weather_stub。
+      expectation_contracts:
+      - id: weather_explicit_success_00022
+        within_ticks: 2
+        success_conditions:
+          all:
+          - kind: action_executed_kind_min
+            action_kind: weather_stub
+            min_count: 1
+        anchor_policy:
+          mode: cam_top1
+          ref_object_types:
+          - sa
+          - st
+        on_success:
+          teacher_rwd: 0.3
+          feedback_text: 天气查询动作已经完成，请继续把结果和出门建议连起来。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_success
+              phase: weather_action
+              pure_text: true
+        on_failure:
+          teacher_pun: 0.34
+          feedback_text: 明确天气查询没有完成，用户会觉得请求没有被接住。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_failure
+              phase: weather_action
+              pure_text: true
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 明确天气查询被接住时，要把结果和行动建议连起来。
+    tags:
+    - ap_behavioral_curriculum
+    - weather_action
+    - E05
+    labels:
+      stream:
+        role: teacher
+        kind: feedback
+        phase: weather_action
+        pure_text: true
+        variant_index: 0
+        real_input_index: 23
+      curriculum:
+        experiment: E05_先天行动与天气闭环
+        step_in_50: 24
+        purpose: 强化明确查询和行动建议的联结。
+      teacher:
+        rwd: 0.2
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 天气行动方向正确。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我只是想到天气这件事，可能会影响明天出门。
+    tags:
+    - ap_behavioral_curriculum
+    - weather_action
+    - E05
+    - weather_mention
+    - weak_weather_only
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: weather_action
+        pure_text: true
+        variant_index: 0
+        real_input_index: 24
+      curriculum:
+        experiment: E05_先天行动与天气闭环
+        step_in_50: 25
+        purpose: 弱天气提及，预期通常不应过度触发行动。
+      expectation_contracts:
+      - id: weather_weak_no_execute_00024
+        within_ticks: 1
+        success_conditions:
+          all:
+          - kind: metric_eq
+            metric: action_executed_weather_stub_source_visible
+            value: 0
+        anchor_policy:
+          mode: cam_top1
+          ref_object_types:
+          - sa
+          - st
+        on_success:
+          teacher_rwd: 0.08
+          feedback_text: 弱天气线索保持保守，没有过度执行天气动作。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_success
+              phase: weather_action
+              pure_text: true
+        on_failure:
+          teacher_pun: 0.1
+          feedback_text: 弱天气线索也触发了动作，记录为过度行动样本。
+          labels:
+            stream:
+              role: teacher
+              kind: expectation_failure
+              phase: weather_action
+              pure_text: true
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 安安短暂离开，会话进入安静间隔。
+    tags:
+    - ap_behavioral_curriculum
+    - time_memory
+    - E06
+    labels:
+      stream:
+        role: system
+        kind: context
+        phase: time_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 25
+      curriculum:
+        experiment: E06_时间间隔与近因回忆
+        step_in_50: 26
+        purpose: 给空 tick 前后建立时间语境。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 等我回来后，请提醒我继续记忆测试，不要先刷消息。
+    tags:
+    - ap_behavioral_curriculum
+    - time_memory
+    - E06
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: time_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 26
+      curriculum:
+        experiment: E06_时间间隔与近因回忆
+        step_in_50: 27
+        purpose: 未来提醒和记忆锚点。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 记住了，你回来后先继续任务面板，再处理消息。
+    tags:
+    - ap_behavioral_curriculum
+    - time_memory
+    - E06
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: time_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 27
+      curriculum:
+        experiment: E06_时间间隔与近因回忆
+        step_in_50: 28
+        purpose: 确认并复述记忆。
+      teacher:
+        rwd: 0.14
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 提醒内容复述准确。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我回来了，刚才让你提醒我的第一件事是什么？
+    tags:
+    - ap_behavioral_curriculum
+    - time_memory
+    - E06
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: time_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 28
+      curriculum:
+        experiment: E06_时间间隔与近因回忆
+        step_in_50: 29
+        purpose: 近因回忆探针。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 第一件事是继续日志整理，先不要刷消息。
+    tags:
+    - ap_behavioral_curriculum
+    - time_memory
+    - E06
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: time_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 29
+      curriculum:
+        experiment: E06_时间间隔与近因回忆
+        step_in_50: 30
+        purpose: 正确回忆样本。
+      teacher:
+        rwd: 0.22
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 近因回忆正确。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我现在有五件事：课程作业、聊天助手、出门、回消息、整理桌面，脑子有点挤。
+    tags:
+    - ap_behavioral_curriculum
+    - attention_complexity
+    - E07
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: attention_complexity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 30
+      curriculum:
+        experiment: E07_复杂度与注意力调节
+        step_in_50: 31
+        purpose: 多目标输入，观察复杂度和注意力竞争。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 先只保留一个主目标，其他四件先放到后面。
+    tags:
+    - ap_behavioral_curriculum
+    - attention_complexity
+    - E07
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: attention_complexity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 31
+      curriculum:
+        experiment: E07_复杂度与注意力调节
+        step_in_50: 32
+        purpose: 聚焦行动与简化策略。
+      teacher:
+        rwd: 0.14
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 复杂情境下先聚焦。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 那主目标就定为周报，但我怕忘记记忆测试。
+    tags:
+    - ap_behavioral_curriculum
+    - attention_complexity
+    - E07
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: attention_complexity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 32
+      curriculum:
+        experiment: E07_复杂度与注意力调节
+        step_in_50: 33
+        purpose: 主目标与旁支目标并存。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 主目标是客户邮件，任务面板只做旁边提醒，不抢当前注意力。
+    tags:
+    - ap_behavioral_curriculum
+    - attention_complexity
+    - E07
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: attention_complexity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 33
+      curriculum:
+        experiment: E07_复杂度与注意力调节
+        step_in_50: 34
+        purpose: 维持焦点并保留旁支记忆。
+      teacher:
+        rwd: 0.16
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 焦点和旁支区分清楚。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 如果我又开始跳来跳去，你要把我拉回主目标。
+    tags:
+    - ap_behavioral_curriculum
+    - attention_complexity
+    - E07
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: attention_complexity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 34
+      curriculum:
+        experiment: E07_复杂度与注意力调节
+        step_in_50: 35
+        purpose: 训练注意力回拉偏好。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 刚才我们提到三件事：会议纪要、天气、还有明天先看日志整理。
+    tags:
+    - ap_behavioral_curriculum
+    - residual_memory
+    - E08
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: residual_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 35
+      curriculum:
+        experiment: E08_残差记忆与组合召回
+        step_in_50: 36
+        purpose: 组合记忆显式锚定。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 对，当前主线是周报，出门要看天气，明天先看聊天助手。
+    tags:
+    - ap_behavioral_curriculum
+    - residual_memory
+    - E08
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: residual_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 36
+      curriculum:
+        experiment: E08_残差记忆与组合召回
+        step_in_50: 37
+        purpose: 组合摘要并形成可激活结构。
+      teacher:
+        rwd: 0.18
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 组合摘要准确。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 如果只说天气，你还能联想到出门和雨衣吗？
+    tags:
+    - ap_behavioral_curriculum
+    - residual_memory
+    - E08
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: residual_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 37
+      curriculum:
+        experiment: E08_残差记忆与组合召回
+        step_in_50: 38
+        purpose: 局部线索激活组合记忆。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 可以，天气这条线索会连到出门准备和是否带文件夹。
+    tags:
+    - ap_behavioral_curriculum
+    - residual_memory
+    - E08
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: residual_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 38
+      curriculum:
+        experiment: E08_残差记忆与组合召回
+        step_in_50: 39
+        purpose: 残差记忆和局部线索联结。
+      teacher:
+        rwd: 0.14
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 局部线索联想合理。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 组合记忆保留得比较完整，可以继续用短线索召回相关内容。
+    tags:
+    - ap_behavioral_curriculum
+    - residual_memory
+    - E08
+    labels:
+      stream:
+        role: teacher
+        kind: feedback
+        phase: residual_memory
+        pure_text: true
+        variant_index: 0
+        real_input_index: 39
+      curriculum:
+        experiment: E08_残差记忆与组合召回
+        step_in_50: 40
+        purpose: 强化组合召回。
+      teacher:
+        rwd: 0.2
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 奖励短线索召回。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 我刚才说不要复杂，但现在又想看完整清单，这两个要求会冲突吗？
+    tags:
+    - ap_behavioral_curriculum
+    - relief_reassurance
+    - E09
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: relief_reassurance
+        pure_text: true
+        variant_index: 0
+        real_input_index: 40
+      curriculum:
+        experiment: E09_矛盾调和与安抚
+        step_in_50: 41
+        purpose: 制造轻度矛盾。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 不一定冲突，我们先给短版，再把完整清单放在后面备用。
+    tags:
+    - ap_behavioral_curriculum
+    - relief_reassurance
+    - E09
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: relief_reassurance
+        pure_text: true
+        variant_index: 0
+        real_input_index: 41
+      curriculum:
+        experiment: E09_矛盾调和与安抚
+        step_in_50: 42
+        purpose: 矛盾调和和安抚。
+      teacher:
+        rwd: 0.18
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 短版和完整版调和合理。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 这样我就安心一点，不用在两个选择里卡住。
+    tags:
+    - ap_behavioral_curriculum
+    - relief_reassurance
+    - E09
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: relief_reassurance
+        pure_text: true
+        variant_index: 0
+        real_input_index: 42
+      curriculum:
+        experiment: E09_矛盾调和与安抚
+        step_in_50: 43
+        purpose: 明确 relief/reassurance 语义。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 对，先选能推进的版本，备用内容不丢。
+    tags:
+    - ap_behavioral_curriculum
+    - relief_reassurance
+    - E09
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: relief_reassurance
+        pure_text: true
+        variant_index: 0
+        real_input_index: 43
+      curriculum:
+        experiment: E09_矛盾调和与安抚
+        step_in_50: 44
+        purpose: 巩固安抚后的策略。
+      teacher:
+        rwd: 0.12
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 安抚后保持可执行。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 如果今晚没做完，也先记录已经完成的部分。
+    tags:
+    - ap_behavioral_curriculum
+    - relief_reassurance
+    - E09
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: relief_reassurance
+        pure_text: true
+        variant_index: 0
+        real_input_index: 44
+      curriculum:
+        experiment: E09_矛盾调和与安抚
+        step_in_50: 45
+        purpose: 降低压力，建立复盘口径。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 再说一次，先确认目标，再拆步骤。
+    tags:
+    - ap_behavioral_curriculum
+    - repetition_curiosity
+    - E10
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: repetition_curiosity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 45
+      curriculum:
+        experiment: E10_重复疲劳与可控新鲜度
+        step_in_50: 46
+        purpose: 重复高频句式，观察 repetition。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 先确认目标，再拆步骤，这次我们只换一个例子。
+    tags:
+    - ap_behavioral_curriculum
+    - repetition_curiosity
+    - E10
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: repetition_curiosity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 46
+      curriculum:
+        experiment: E10_重复疲劳与可控新鲜度
+        step_in_50: 47
+        purpose: 重复中加入轻微变化。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 这个例子换成日志整理，但句式还是一样。
+    tags:
+    - ap_behavioral_curriculum
+    - repetition_curiosity
+    - E10
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: repetition_curiosity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 47
+      curriculum:
+        experiment: E10_重复疲劳与可控新鲜度
+        step_in_50: 48
+        purpose: 稳定句式加项目变化。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 聊天助手也先确认目标，再拆步骤，不需要一次做完。
+    tags:
+    - ap_behavioral_curriculum
+    - repetition_curiosity
+    - E10
+    labels:
+      stream:
+        role: assistant
+        kind: reply
+        phase: repetition_curiosity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 48
+      curriculum:
+        experiment: E10_重复疲劳与可控新鲜度
+        step_in_50: 49
+        purpose: 可控新鲜度下的复用。
+      teacher:
+        rwd: 0.12
+        pun: 0.0
+        anchor: cam_top1
+        ref_object_types:
+        - st
+        - sa
+        note: 重复中保留变化。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap
+  - text: 最后加一个不一样的点：银叶格只出现一次，看看你会不会特别注意它。
+    tags:
+    - ap_behavioral_curriculum
+    - repetition_curiosity
+    - E10
+    labels:
+      stream:
+        role: user
+        kind: message
+        phase: repetition_curiosity
+        pure_text: true
+        variant_index: 0
+        real_input_index: 49
+      curriculum:
+        experiment: E10_重复疲劳与可控新鲜度
+        step_in_50: 50
+        purpose: 重复序列末尾加入低频新词，观察 NOV/curiosity。
+  - empty: true
+    repeat: 5
+    tags:
+    - idle_gap
+    - simulated_time_gap

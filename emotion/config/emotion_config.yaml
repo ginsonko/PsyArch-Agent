@@ -1,0 +1,194 @@
+# ======================================================================
+# AP 情绪管理器配置（EMgr, Emotion Manager）与递质通道（NT, NeuroTransmitter channels）
+# AP Emotion Manager (EMgr) configuration
+#
+# 本文件既供 EmotionManager.reload_config() 热加载，
+# 也作为观测台“设置”页的字段说明来源。
+#
+# 注：界面与注释尽量中文优先；出现简写（EMgr/NT/DA/COR 等）时请附中文全称。
+# ======================================================================
+
+# enabled / 总开关
+enabled: true
+
+# global_decay_ratio / 全局衰减系数
+# 作用（Purpose）: 若通道未单独指定 decay_ratio，则使用该值。
+global_decay_ratio: 0.92
+
+# cfs_to_nt_source_mode / CFS -> NT 来源模式
+# - iesm_rules（默认新口径）：主要由 IESM emotion_update 规则驱动递质增量
+# - builtin：继续使用本文件里的 cfs_to_nt_gains 硬映射
+# - hybrid：两者同时启用（仅建议联调/对照时使用，容易双计数）
+cfs_to_nt_source_mode: iesm_rules
+
+# soft_cap_enabled / 是否启用“软上限”极限算法
+# 作用（Purpose）: 让数值“无限逼近上限但不达到”，避免轻易打满（爆表）导致调制失去区分度。
+# 意义（Meaning）:
+#   - 当通道值接近 max 时，正向增量的有效增幅会越来越小（渐近），从而只能逼近 max。
+#   - 这比简单 clamp 更平滑，也更利于长期运行的稳定调制。
+soft_cap_enabled: true
+
+# soft_cap_eps / 上限 epsilon（永远不达到 max）
+# 说明：若 max=1.0，则实际最大值为 1.0 - eps
+soft_cap_eps: 0.000001
+
+# soft_cap_k_default / 软上限强度参数（默认）
+# 说明：k 越大，“越接近线性”；k 越小，“越容易饱和”。该值单位与 delta（通道增量）一致。
+soft_cap_k_default: 0.35
+
+# nt_channels / 通道定义（min/max/decay_ratio）
+# 字段说明：
+# - base: 基准值/基线值（Baseline）。衰减会“回归”到 base，而不是回归到 0。
+# - soft_cap_k: 可选，覆盖 soft_cap_k_default（对该通道单独调节饱和速度）。
+nt_channels:
+  # Notes:
+  # - base is a neutral baseline (decay regresses to base, not to 0).
+  # - decay_ratio is per-tick retention of deviation from base (lower => faster return).
+  # - We keep the steady band below ~0.5 most of the time, reserving high band for strong events.
+  DA: { min: 0.0, max: 1.0, decay_ratio: 0.91, base: 0.12, soft_cap_k: 0.35 }
+  ADR: { min: 0.0, max: 1.0, decay_ratio: 0.85, base: 0.05, soft_cap_k: 0.35 }
+  OXY: { min: 0.0, max: 1.0, decay_ratio: 0.93, base: 0.12, soft_cap_k: 0.35 }
+  SER: { min: 0.0, max: 1.0, decay_ratio: 0.94, base: 0.18, soft_cap_k: 0.35 }
+  END: { min: 0.0, max: 1.0, decay_ratio: 0.91, base: 0.10, soft_cap_k: 0.35 }
+  COR: { min: 0.0, max: 1.0, decay_ratio: 0.86, base: 0.06, soft_cap_k: 0.35 }
+  NOV: { min: 0.0, max: 1.0, decay_ratio: 0.89, base: 0.08, soft_cap_k: 0.33 }
+  FOC: { min: 0.0, max: 1.0, decay_ratio: 0.92, base: 0.10, soft_cap_k: 0.34 }
+
+# cfs_to_nt_gains / CFS -> NT 通道增益映射（delta = strength * coef）
+cfs_to_nt_gains:
+  # Gains are intentionally small: CFS strengths are in [0,1], and NT channels are slow states.
+  dissonance: { COR: 0.09, ADR: 0.03, FOC: 0.02 }
+  correct_event: { DA: 0.12, OXY: 0.08, SER: 0.05, FOC: 0.03 }
+  surprise: { ADR: 0.07, NOV: 0.10, COR: 0.015, FOC: -0.02 }
+  expectation: { DA: 0.06, NOV: 0.025 }
+  pressure: { COR: 0.11, END: 0.04, ADR: 0.04, FOC: 0.06, NOV: -0.02 }
+  # 期待/压力验证态（对齐理论 3.8.2）：验证/不验不是二极管，而是连续渐变对抗。
+  # 这些信号用于让 EMgr 也能“感到验证/落空”的差异，从而影响递质通道。
+  expectation_verified: { DA: 0.09, SER: 0.04, OXY: 0.03, FOC: 0.03 }
+  expectation_unverified: { COR: 0.04, ADR: 0.02, NOV: 0.05, SER: -0.015 }
+  pressure_verified: { COR: 0.07, ADR: 0.04, END: 0.03, FOC: 0.04 }
+  pressure_unverified: { END: 0.05, COR: -0.02, SER: 0.02, NOV: 0.03, FOC: -0.015 }
+  complexity: { ADR: 0.015, FOC: 0.04, COR: 0.015, NOV: 0.02 }
+  repetition: { COR: 0.02, SER: -0.015, NOV: -0.05, END: 0.025 }
+  grasp: { SER: 0.05, FOC: 0.08, COR: -0.02, NOV: -0.015 }
+  simplicity: { SER: 0.04, END: 0.035, DA: 0.02, COR: -0.02, ADR: -0.015 }
+  relief: { END: 0.07, SER: 0.045, OXY: 0.025, COR: -0.04, ADR: -0.025, FOC: -0.01 }
+  reassurance: { SER: 0.06, OXY: 0.05, END: 0.03, DA: 0.025, FOC: 0.02, COR: -0.035, ADR: -0.02 }
+
+# cfs_to_rwd_pun / CFS -> 奖励/惩罚汇总（用于审计/后续 Drive 驱动力模块）
+cfs_to_rwd_pun:
+  correct_event: { rwd: 1.0, pun: 0.0 }
+  pressure: { rwd: 0.0, pun: 0.8 }
+  dissonance: { rwd: 0.0, pun: 0.3 }
+  simplicity: { rwd: 0.15, pun: 0.0 }
+  relief: { rwd: 0.08, pun: 0.0 }
+  reassurance: { rwd: 0.12, pun: 0.0 }
+
+# rwd_pun_source_mode / 奖励-惩罚信号（Rwd/Pun）来源模式
+# 说明：
+# - pool（推荐）：从状态池对象的“绑定属性 + EV/ER 关系”自然汇总（更贴近理论 3.8.2/3.9）
+# - cfs（过渡/对照）：从 CFS(kind) 做硬映射汇总（使用上面的 cfs_to_rwd_pun）
+#
+# 注意：EMgr（情绪管理器）本身不直接读取 StatePool（状态池），因此当使用 pool 模式时，
+# 需要上层（Observatory）在每个 tick 把计算结果通过 rwd_pun_override 传入 update_emotion_state()。
+rwd_pun_source_mode: pool
+
+# rwd_pun_to_nt_source_mode / 奖励-惩罚 -> 递质来源模式
+# - iesm_rules（默认新口径）：主要由 IESM emotion_post 规则驱动递质增量
+# - builtin：继续使用本文件里的 rwd_pun_to_nt_gains 硬映射
+# - hybrid：两者同时启用（仅建议联调/对照时使用，容易双计数）
+rwd_pun_to_nt_source_mode: iesm_rules
+
+# rwd_pun_to_nt_gains / Rwd/Pun -> NT 通道增益映射（delta = value * coef）
+# 目的（对齐理论 3.9.3）：
+# - 即便没有显式生成 expectation CFS，只要 reward_signal 获得 ER（现实验证），全局 Rwd 也应推动 DA 上升；
+# - 同理 Pun 应推动 COR/ADR 等“警戒/唤醒”通道变化。
+#
+# 说明：
+# - rwd/pun 的取值通常已被上层（Observatory）软饱和到 0~1，因此这里系数无需过大。
+# - 允许出现负系数（表示“抑制/下降”），但建议保持小幅，避免震荡。
+rwd_pun_to_nt_gains:
+  rwd: { DA: 0.09, OXY: 0.04, SER: 0.03, FOC: 0.02, NOV: 0.01 }
+  pun: { COR: 0.08, ADR: 0.04, END: 0.05, FOC: 0.02, NOV: -0.02, OXY: -0.01 }
+
+# rwd_pun_pool_aggregation / pool 汇总参数（由上层计算时使用，EMgr 只透传/展示）
+# 汇总逻辑（简述）：
+# - 预测项：对“带 reward_signal/punish_signal 的对象”累加 EV（虚能量/预测能量）
+# - 验证项：对“带 reward_signal/punish_signal 的对象”累加 max(0, ΔER)（实能量上升）
+# - 然后对两项分别做软饱和 softcap(x)=x/(x+k)，再按权重混合并 clamp 到 0~1
+rwd_pun_pool_aggregation:
+  reward_attr_name: reward_signal
+  punish_attr_name: punish_signal
+  ev_min: 0.0
+  # attribute_value_weight_enabled / 是否按属性数值强度加权
+  # 说明：
+  # - 新口径下，reward_signal / punish_signal 不只是“有或没有”，还可以带强度；
+  # - 当对象上绑定了数值型属性刺激元时，这里会用 attribute_value 作为该对象对全局奖惩汇总的权重；
+  # - 若只有旧口径的“存在型”属性而没有数值，则回退到 attribute_value_fallback。
+  attribute_value_weight_enabled: true
+  attribute_value_fallback: 1.0
+  # softcap parameters / 软饱和参数（k 越大越“线性”，越小越“易饱和”）
+  k_pred: 1.0
+  k_got: 0.5
+  # blend weights / 混合权重（会自动归一化）
+  w_pred: 0.7
+  w_got: 0.3
+
+# modulation / 调制输出（原型阶段先对 attention 注意力过滤器生效）
+modulation:
+  attention:
+    base_top_n: 16
+    adr_topn_gain: 6
+    cor_topn_suppress: 2
+    base_priority_weight_cp_abs: 0.35
+    cor_cp_weight_gain: 0.20
+    ser_cp_weight_suppress: 0.10
+    base_priority_weight_fatigue: 0.00
+    cor_fatigue_weight_gain: 0.25
+    base_min_total_energy: 0.0
+    field_specs:
+      top_n: { base: 16, min: 4, max: 64, round_to_int: true, adr_gain: 5.5, nov_gain: 4.0, da_gain: 1.0, cor_suppress: 3.0, ser_suppress: 1.2, foc_suppress: 4.0 }
+      min_cam_items: { base: 2, min: 1, max: 12, round_to_int: true, adr_gain: 1.0, nov_gain: 1.0, foc_suppress: 1.0 }
+      priority_weight_total_energy: { base: 1.25, min: 0.0, max: 4.0, foc_gain: 0.55, oxy_gain: 0.25, cor_gain: 0.18, da_gain: 0.10, nov_suppress: 0.18 }
+      priority_weight_cp_abs: { base: 0.35, min: 0.0, max: 2.0, cor_gain: 0.28, adr_gain: 0.10, foc_gain: 0.08, ser_suppress: 0.12, end_suppress: 0.08, oxy_suppress: 0.04 }
+      priority_weight_salience: { base: 0.15, min: 0.0, max: 2.0, adr_gain: 0.32, nov_gain: 0.24, cor_gain: 0.06, ser_suppress: 0.05 }
+      priority_weight_fatigue: { base: 0.0, min: 0.0, max: 2.0, cor_gain: 0.25, ser_gain: 0.06, end_suppress: 0.16, da_suppress: 0.05 }
+      priority_weight_recency_gain: { base: 0.0, min: 0.0, max: 2.0, nov_gain: 0.40, da_gain: 0.14, adr_gain: 0.08, ser_suppress: 0.10, foc_suppress: 0.12, cor_suppress: 0.08 }
+      focus_boost_weight: { base: 1.0, min: 0.0, max: 4.0, foc_gain: 0.65, adr_gain: 0.22, oxy_gain: 0.18, ser_suppress: 0.06 }
+      # attention_energy_budget / 注意力能量资源预算
+      # 含义：滤波后 CAM 总能量相对未滤波基础 CAM 的净增加上限。
+      # ADR/NOV/DA 会增加可用资源，FOC 提升集中资源，COR/SER/END 抑制过度放大。
+      attention_energy_budget: { base: 8.0, min: 0.0, max: 26.0, adr_gain: 6.5, foc_gain: 3.0, nov_gain: 3.0, da_gain: 2.2, oxy_gain: 1.4, cor_suppress: 2.4, ser_suppress: 2.0, end_suppress: 1.25 }
+      min_total_energy: { base: 0.0, min: 0.0, max: 1.0, cor_gain: 0.18, foc_gain: 0.08, end_suppress: 0.08, oxy_suppress: 0.05 }
+      keep_score_ratio_base: { base: 0.28, min: 0.12, max: 0.85, foc_gain: 0.14, cor_gain: 0.10, ser_gain: 0.08, nov_suppress: 0.10, adr_suppress: 0.04 }
+      keep_score_ratio_concentration_gain: { base: 0.22, min: 0.0, max: 0.6, foc_gain: 0.08, cor_gain: 0.05, nov_suppress: 0.05 }
+      keep_score_ratio_min: { base: 0.18, min: 0.05, max: 0.6, foc_gain: 0.04, nov_suppress: 0.03 }
+      keep_score_ratio_max: { base: 0.72, min: 0.3, max: 0.95, foc_gain: 0.08, ser_gain: 0.05, nov_suppress: 0.05 }
+  # hdb / HDB 调制输出（对齐理论 3.9.2：情绪递质应调制学习力度与能量传播系数）
+  # 输出口径：提供“缩放系数 scale”，由上层（Observatory）在下一 tick 应用到 HDB 配置：
+  #   effective_value = base_value * scale
+  #
+  # 注意：scale 会被 clamp 到 [clamp_min, clamp_max]，避免极端调制导致系统不稳定。
+  hdb:
+    clamp_min: 0.40
+    clamp_max: 2.50
+    scales:
+      # base_weight_er_gain / 实验证增强基础权重
+      # - DA 高 -> 学习更积极（gain 更大）
+      # - COR/SER 高 -> 更保守/更稳定（gain 更小）
+      base_weight_er_gain: { base: 1.00, da_gain: 0.85, oxy_gain: 0.35, foc_gain: 0.18, cor_suppress: 0.35, ser_suppress: 0.18, end_suppress: 0.08 }
+      # base_weight_ev_wear / 虚循环磨损基础权重
+      # - COR 高 -> 对“纯虚重复”更警惕（wear 更大）
+      # - DA 高 -> 更愿意探索/容忍（wear 略降低）
+      base_weight_ev_wear: { base: 1.00, cor_gain: 0.75, foc_gain: 0.18, ser_gain: 0.12, da_suppress: 0.18, oxy_suppress: 0.12, nov_suppress: 0.08 }
+      # ev_propagation_ratio / 虚能量传播预算比例（想象/联想扩散强度）
+      ev_propagation_ratio: { base: 1.00, da_gain: 0.45, adr_gain: 0.30, oxy_gain: 0.40, nov_gain: 0.45, cor_suppress: 0.35, ser_suppress: 0.20, foc_suppress: 0.35 }
+      # ev_propagation_threshold / 虚能量传播阈值（越低越容易扩散）
+      ev_propagation_threshold: { base: 1.00, cor_gain: 0.55, foc_gain: 0.45, ser_gain: 0.18, da_suppress: 0.25, oxy_suppress: 0.22, nov_suppress: 0.30 }
+      # er_induction_ratio / 实能量诱发比例（现实触发的结构/记忆赋能强度）
+      er_induction_ratio: { base: 1.00, adr_gain: 0.40, da_gain: 0.18, oxy_gain: 0.28, foc_gain: 0.22, cor_suppress: 0.15 }
+
+# ---- Logging / 日志 ----
+log_dir: ""
+log_max_file_bytes: 5242880
+stdout_fallback_when_log_fail: true

@@ -1,0 +1,92 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "state_item.schema.json",
+  "title": "StateItem / 状态池项",
+  "description": "AP 状态池运行态对象的标准结构定义",
+  "type": "object",
+  "required": ["id", "object_type", "ref_object_type", "ref_object_id", "energy", "dynamics", "binding_state", "lifecycle", "source", "trace_id", "created_at", "updated_at", "status"],
+  "properties": {
+    "id": { "type": "string", "description": "状态池项唯一ID / State item unique ID" },
+    "object_type": { "type": "string", "const": "state_item" },
+    "sub_type": { "type": "string", "enum": ["sa_runtime_item", "csa_runtime_item", "st_runtime_item", "cfs_runtime_item", "action_runtime_item", "csa_binding_item"] },
+    "schema_version": { "type": "string" },
+    "ref_object_type": { "type": "string", "enum": ["sa", "csa", "st", "cfs_signal", "action_node"] },
+    "ref_object_id": { "type": "string" },
+    "ref_snapshot": {
+      "type": "object",
+      "properties": {
+        "content_display": { "type": "string" },
+        "role": { "type": "string" },
+        "source_module": { "type": "string" }
+      }
+    },
+    "energy": {
+      "type": "object",
+      "required": ["er", "ev", "cognitive_pressure_delta", "cognitive_pressure_abs"],
+      "properties": {
+        "er": { "type": "number", "minimum": 0, "description": "实能量 / Real energy" },
+        "ev": { "type": "number", "minimum": 0, "description": "虚能量 / Virtual energy" },
+        "ownership_level": { "type": "string" },
+        "computed_from_children": { "type": "boolean" },
+        "fatigue": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recency_gain": { "type": "number", "minimum": 0 },
+        "salience_score": { "type": "number" },
+        "cognitive_pressure_delta": { "type": "number", "description": "认知压方向 = er - ev" },
+        "cognitive_pressure_abs": { "type": "number", "minimum": 0, "description": "认知压幅值 = |er - ev|" },
+        "last_decay_tick": { "type": "integer" },
+        "last_decay_at": { "type": "integer" }
+      }
+    },
+    "dynamics": {
+      "type": "object",
+      "required": ["prev_er", "prev_ev", "delta_er", "delta_ev", "last_update_tick", "last_update_at", "update_count"],
+      "properties": {
+        "prev_er": { "type": "number" }, "prev_ev": { "type": "number" },
+        "delta_er": { "type": "number" }, "delta_ev": { "type": "number" },
+        "er_change_rate": { "type": "number" }, "ev_change_rate": { "type": "number" },
+        "prev_cp_delta": { "type": "number" }, "prev_cp_abs": { "type": "number" },
+        "delta_cp_delta": { "type": "number" }, "delta_cp_abs": { "type": "number" },
+        "cp_delta_rate": { "type": "number" }, "cp_abs_rate": { "type": "number" },
+        "last_update_tick": { "type": "integer" }, "last_update_at": { "type": "integer" },
+        "update_count": { "type": "integer" }
+      }
+    },
+    "binding_state": {
+      "type": "object",
+      "properties": {
+        "bound_csa_item_id": { "type": ["string", "null"] },
+        "bound_attribute_sa_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "properties": {
+        "created_in_tick": { "type": "integer" },
+        "last_active_tick": { "type": "integer" },
+        "last_recency_refresh_tick": { "type": "integer" },
+        "recency_hold_ticks_remaining": { "type": "integer", "minimum": 0 },
+        "last_maintenance_tick": { "type": "integer" },
+        "recent_activation_ticks": { "type": "array", "items": { "type": "integer" } },
+        "elimination_candidate": { "type": "boolean" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "module": { "type": "string" },
+        "interface": { "type": "string" },
+        "origin": { "type": "string" },
+        "origin_id": { "type": "string" },
+        "parent_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "trace_id": { "type": "string" },
+    "tick_id": { "type": "string" },
+    "created_at": { "type": "integer" },
+    "updated_at": { "type": "integer" },
+    "status": { "type": "string", "enum": ["active", "eliminated", "merged"] },
+    "ext": { "type": "object" },
+    "meta": { "type": "object" }
+  }
+}
+

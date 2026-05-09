@@ -1,0 +1,449 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AP 研究观测台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <button id="floatingRefreshBtn" class="floating-refresh" type="button">强制刷新界面（更新前端）</button>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="eyebrow">Artificial PsyArch</div>
+        <h1>研究观测台</h1>
+        <p>可视化输入、观测、配置与联调界面</p>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="#overview">总览</a>
+        <a href="#composer">输入控制</a>
+        <a href="#sensor">文本感受器</a>
+        <a href="#time_sensor">时间感受器</a>
+        <a href="#flow">流程日志</a>
+        <a href="#action_runtime">行动监控</a>
+        <a href="#state">状态池</a>
+        <a href="#hdb">全息深度数据库（HDB）</a>
+        <a href="#inspector">检视器</a>
+        <a href="#settings">设置</a>
+        <a href="#innate_rules">先天规则</a>
+        <a href="/next/">新版研究仪表盘（/next）</a>
+        <a href="/experiment.html">实验与论文图表</a>
+      </nav>
+      <button id="shutdownBtn" class="ghost danger full">关闭本地观测台</button>
+    </aside>
+
+    <main class="main">
+      <section id="overview" class="hero panel">
+        <div class="eyebrow">AP Prototype Observatory</div>
+        <h2>面向研究与联调的实时观测前端</h2>
+        <p>这里统一展示文本感受器、状态池、结构级查存、刺激级查存、感应赋能、HDB 与运行态联调信息，并允许直接在前端触发运行与查看细节。</p>
+        <div id="overviewCards" class="card-grid"></div>
+      </section>
+
+      <section id="composer" class="panel">
+        <div class="section-head">
+          <h3>输入与控制</h3>
+          <div class="toolbar">
+            <button id="refreshBtn" class="ghost">刷新</button>
+            <button id="reloadBtn" class="ghost">热加载</button>
+            <button id="openReportBtn" class="ghost">打开报告</button>
+          </div>
+        </div>
+        <div class="composer-grid">
+          <div class="subpanel">
+            <h4>文本输入</h4>
+            <textarea id="inputText" placeholder="输入文本后点击执行完整循环"></textarea>
+            <div class="actions">
+              <button id="runCycleBtn" class="primary">执行完整循环</button>
+              <button id="tickBtn" class="ghost">空输入 Tick</button>
+            </div>
+          </div>
+          <div class="subpanel">
+            <h4>Tick 与重置</h4>
+            <input id="tickCount" type="number" min="1" step="1" value="1" />
+            <div class="actions">
+              <button id="runTicksBtn" class="secondary">执行 N 轮 Tick</button>
+              <button id="clearHdbBtn" class="ghost danger">清空 HDB</button>
+              <button id="clearAllBtn" class="ghost danger">清空全部</button>
+            </div>
+          </div>
+          <div class="subpanel">
+            <h4>自检与修复</h4>
+            <input id="checkTarget" type="text" placeholder="例如 st_000012" />
+            <input id="repairJobId" type="text" placeholder="修复任务 ID，例如 repair_job_0003" />
+            <div class="actions">
+              <button id="checkBtn" class="secondary">执行自检</button>
+              <button id="repairBtn" class="ghost">局部修复</button>
+              <button id="repairAllBtn" class="ghost">全局快速修复</button>
+              <button id="idleConsolidateBtn" class="ghost">闲时巩固/压缩</button>
+              <button id="stopRepairBtn" class="ghost danger">停止修复</button>
+            </div>
+          </div>
+          <div class="subpanel">
+            <h4>流程开关（认知拼接 / 结构级查存一体 / 能量平衡 / 时间延迟任务）</h4>
+            <div class="soft-note">
+              说明：这里提供“本地联调”常用的流程阶段开关，便于你在不改代码的情况下快速做对照实验。开关会写入配置文件并热加载生效。
+              <br />
+              术语说明：认知拼接（Cognitive Stitching，缩写 CS）用于把多个结构拼成更长的事件链；结构级查存一体（Structure-level Retrieval-Storage）是旧链路中的结构级检索与局部库存储阶段。
+              <br />
+              能量平衡控制器（Energy Balance Controller，缩写 EBC）用于把“实能量（Reality Energy，缩写 ER）/虚能量（Virtual Energy，缩写 EV）比例”拉回目标附近，避免长期偏虚或偏实导致系统失稳。
+              <br />
+              时间感受器延迟任务（Delayed Tasks）用于“节奏感”实验：把未来应当发生的赋能/反应以任务形式延迟执行，而不是每 tick 都立即触发。
+            </div>
+            <label class="toggle-row">
+              <input id="pipelineEnableCognitiveStitchingChk" type="checkbox" />
+              <span>启用认知拼接（Cognitive Stitching，缩写 CS）</span>
+            </label>
+            <label class="toggle-row">
+              <input id="pipelineEnableStructureLevelChk" type="checkbox" />
+              <span>启用结构级查存一体（Structure-level Retrieval-Storage）</span>
+            </label>
+            <label class="toggle-row">
+              <input id="pipelineEnableGoalBCharSaStringModeChk" type="checkbox" />
+              <span>使用字符串方案（字符串作为顺序敏感结构）</span>
+            </label>
+            <label class="toggle-row">
+              <input id="pipelineEnableEnergyBalanceChk" type="checkbox" />
+              <span>启用能量平衡控制器（Energy Balance Controller，缩写 EBC）</span>
+            </label>
+            <label class="toggle-row">
+              <input id="pipelineEnableDelayedTasksChk" type="checkbox" />
+              <span>启用时间感受器延迟任务（Delayed Tasks）</span>
+            </label>
+            <div class="actions">
+              <button id="pipelineSwitchApplyBtn" class="primary" type="button">应用并热加载</button>
+              <button id="pipelineSwitchResetBtn" class="ghost" type="button">重置为当前生效值</button>
+            </div>
+            <div id="pipelineSwitchFeedback" class="meta"></div>
+          </div>
+        </div>
+        <div id="actionFeedback" class="feedback"></div>
+      </section>
+
+      <section id="sensor" class="panel">
+        <div class="section-head"><h3>最近文本感受器输入</h3><span id="sensorMeta" class="meta"></span></div>
+        <div id="sensorCards" class="card-grid compact"></div>
+        <div class="dual-grid">
+          <div class="subpanel"><h4>特征刺激元（SA）/ 切分结果</h4><div id="sensorUnits" class="scroll-shell"></div></div>
+          <div class="subpanel"><h4>刺激组与 Echo</h4><div id="sensorGroups" class="scroll-shell"></div></div>
+        </div>
+      </section>
+
+      <section id="time_sensor" class="panel">
+        <div class="section-head"><h3>时间感受器（Time Sensor）</h3><span id="timeSensorMeta" class="meta"></span></div>
+        <div class="note-box">
+          <div><strong>说明</strong></div>
+          <div class="soft-note">对齐理论 4.2.6~4.2.7（原型落地口径）：当记忆被重新接触并进入当前记忆路径后，系统会根据“当前时间 - 记忆时间戳”计算时间间隔，并以“数值桶节点（时间感受 SA）”的形式为相邻桶赋能（双表赋能）。同时，同一时间感受也会作为“运行态属性刺激元”绑定到本轮时间显著对象上（锚点），便于 IESM 以“对象 + 时间感受”作为参数触发回忆（recall）等行动。两种形态不冲突：时间感受既可作为独立 SA 进入状态池参与查存，也可作为属性绑定进入 CSA/结构学习。</div>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <h4>本 tick 时间感受绑定（运行态属性）</h4>
+            <div id="timeSensorBuckets" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <h4>参与计算的记忆样本（来自当前记忆路径）</h4>
+            <div id="timeSensorMemories" class="stack scroll-shell"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="flow" class="panel">
+        <div class="section-head"><h3>最新流程日志</h3><span id="flowMeta" class="meta"></span></div>
+        <div id="flowTimeline" class="timeline"></div>
+        <div class="dual-grid">
+          <div class="subpanel"><h4>最近轮次</h4><div id="recentCycles" class="scroll-shell"></div></div>
+          <details class="details-panel subpanel">
+            <summary><h4>高级调试：最近一次操作返回</h4></summary>
+            <div class="details-body">
+              <div class="soft-note">说明：这里仅用于调试，不作为“验收展示”。观测台的验收信息应以流程卡片、表格与中文说明为准。</div>
+              <pre id="actionResult" class="result-box">等待操作…</pre>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section id="action_runtime" class="panel">
+        <div class="section-head">
+          <h3>行动监控（实时运行态）</h3>
+          <div class="toolbar">
+            <button id="actionRuntimeRefreshBtn" class="ghost">刷新行动快照</button>
+            <label class="toggle-row muted-inline"><input id="actionRuntimeAutoChk" type="checkbox" /><span>自动刷新</span></label>
+          </div>
+        </div>
+        <div class="note-box">
+          <div><strong>说明</strong></div>
+          <div class="soft-note">这里展示行动管理模块（Action/Drive）的运行态快照：已注册行动器（行动接口）、行动节点（Drive=驱动力/行动阈值/疲劳）、触发来源等。用于验收“注意力与回忆是否作为行动器注册，并按阈值竞争触发”。</div>
+        </div>
+        <div id="actionRuntimeMeta" class="meta"></div>
+        <div class="subpanel">
+          <div class="section-head">
+            <h4>行动停止接口（Stop/Cancel）</h4>
+            <div class="toolbar">
+              <button id="actionStopAllBtn" class="ghost danger" type="button" title="停止全部行动节点（会把 drive 清零，并在若干 tick 内禁止执行）">停止全部（All）</button>
+            </div>
+          </div>
+          <div class="soft-note">对齐理论 4.2.1.1：必须存在“行动停止/取消接口”。原型阶段 stop 的含义：把目标行动节点的 drive 清零，并在 hold_ticks 个 tick 内门控其执行（stop_until_tick）。未来接入外部行动器时，该接口也应支持真实取消。</div>
+          <div class="settings-grid">
+            <article class="setting-item">
+              <label>停止模式（mode）</label>
+              <select id="actionStopMode">
+                <option value="action_kind">按行动器类型（action_kind）</option>
+                <option value="action_id">按行动节点 ID（action_id）</option>
+              </select>
+              <small>提示：action_kind 通常代表行动器类型，例如 attention_focus（注意力聚焦）、recall（回忆）。</small>
+            </article>
+            <article class="setting-item">
+              <label>停止目标（value）</label>
+              <input id="actionStopValue" type="text" placeholder="选择或输入 action_kind / action_id" list="actionStopValueList" />
+              <datalist id="actionStopValueList"></datalist>
+              <small>会根据“停止模式”提供候选列表；也支持手动输入。</small>
+            </article>
+            <article class="setting-item">
+              <label>停止 tick 数（hold_ticks）</label>
+              <input id="actionStopHoldTicks" type="number" min="0" max="10000" step="1" value="2" />
+              <small>0 表示只清零 drive，不做门控。</small>
+            </article>
+            <article class="setting-item">
+              <label>原因（reason，可选）</label>
+              <input id="actionStopReason" type="text" value="manual_stop" />
+              <small>仅用于审计与观测，不影响逻辑。</small>
+            </article>
+          </div>
+          <div class="toolbar">
+            <button id="actionStopBtn" class="ghost danger" type="button">执行停止</button>
+            <span id="actionStopFeedback" class="meta"></span>
+          </div>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <h4>行动器注册表（Executors Registry）</h4>
+            <div id="actionRuntimeExecutors" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <h4>行动节点列表（Action Nodes / Drive）</h4>
+            <div id="actionRuntimeNodes" class="stack scroll-shell"></div>
+          </div>
+        </div>
+        <div class="subpanel">
+          <h4>最近执行记录（Executed Actions）</h4>
+          <div class="soft-note">用于验收：哪些行动被触发、阈值是多少、来源是先天触发（IESM）还是内驱触发（非 IESM）。</div>
+          <div id="actionRuntimeExecuted" class="stack scroll-shell"></div>
+        </div>
+      </section>
+
+      <section id="state" class="panel">
+        <div class="section-head"><h3>实时状态池与能量分布</h3><span id="stateMeta" class="meta"></span></div>
+        <div id="stateCards" class="card-grid compact"></div>
+        <div class="dual-grid">
+          <div class="subpanel"><h4>分类能量</h4><div id="stateEnergyByType"></div></div>
+          <div class="subpanel"><h4>Top 对象</h4><div id="stateItems" class="scroll-shell"></div></div>
+        </div>
+      </section>
+
+      <section id="hdb" class="panel">
+        <div class="section-head"><h3>HDB 概览</h3><span id="hdbMeta" class="meta"></span></div>
+        <div id="hdbCards" class="card-grid compact"></div>
+        <div class="triple-grid">
+          <div class="subpanel"><h4>最近结构</h4><div id="recentStructures" class="scroll-shell"></div></div>
+          <div class="subpanel"><h4>最近结构组</h4><div id="recentGroups" class="scroll-shell"></div></div>
+          <div class="subpanel"><h4>最近情景记忆 / Issue / Repair</h4><div id="recentEpisodic" class="scroll-shell"></div><div id="repairJobs" class="stack scroll-shell"></div><div id="recentIssues" class="stack scroll-shell"></div></div>
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>残差对象 / MAP 兼容视图</h4>
+              <select id="memoryActivationSort">
+                <option value="energy_desc">按能量降序 / Energy ↓</option>
+                <option value="recent_desc">按时间降序 / Recent ↓</option>
+              </select>
+            </div>
+            <div id="memoryActivationList" class="scroll-shell"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="inspector" class="panel">
+        <div class="section-head"><h3>结构 / 结构组 / 情景记忆检视器</h3></div>
+        <div class="inspector-controls">
+          <input id="structureQuery" type="text" placeholder="结构 ID，例如 st_000012" />
+          <button id="queryStructureBtn" class="primary">查询结构</button>
+          <input id="groupQuery" type="text" placeholder="结构组 ID，例如 sg_000003" />
+          <button id="queryGroupBtn" class="secondary">查询结构组</button>
+          <input id="episodicLimit" type="number" min="1" step="1" value="10" />
+          <button id="queryEpisodicBtn" class="ghost">最近情景记忆</button>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel"><h4>结构详情</h4><div id="structureDetail" class="stack scroll-shell"></div></div>
+          <div class="subpanel"><h4>结构组 / 情景记忆详情</h4><div id="groupDetail" class="stack scroll-shell"></div><div id="episodicDetail" class="stack scroll-shell"></div></div>
+        </div>
+      </section>
+
+      <section id="settings" class="panel">
+        <div class="section-head"><h3>设置</h3><span class="meta">支持注释读取、字段编辑、保存并热加载 / Read annotations, edit, save and hot reload</span></div>
+        <div class="settings-layout">
+          <div id="settingsTabs" class="settings-tabs"></div>
+          <div id="settingsPanel" class="settings-panel"></div>
+        </div>
+      </section>
+
+      <section id="innate_rules" class="panel">
+        <div class="section-head">
+          <h3>先天规则（先天编码脚本管理器 IESM）</h3>
+          <div class="toolbar">
+            <button id="innateRulesRefreshBtn" class="ghost">刷新</button>
+            <button id="innateRulesValidateBtn" class="ghost">校验</button>
+            <button id="innateRulesSaveBtn" class="primary">保存并热加载</button>
+            <button id="innateRulesSimulateBtn" class="secondary">用最近一轮模拟</button>
+          </div>
+        </div>
+        <div class="note-box">
+          <div><strong>如何使用</strong></div>
+          <div class="soft-note">这里提供两种编辑方式：左侧表单适合快速搭建典型规则；下方 YAML 适合高级自由编辑。保存前建议先校验；模拟会用“最近一轮 cycle”的上下文进行 dry-run（不改变系统状态）。</div>
+          <div class="soft-note">缩写对照：IESM=先天编码脚本管理器；CFS=认知感受信号；ER=实能量；EV=虚能量；CP=认知压（ER-EV）；SP=状态池；MAP=旧记忆赋能兼容池（默认主链已关闭）；NT=情绪递质通道。</div>
+        </div>
+        <div id="innateRulesMeta" class="meta"></div>
+        <div id="innateRulesFeedback" class="inline-feedback">等待操作…</div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>规则列表</h4>
+              <div class="toolbar">
+                <button id="innateRulesAddFocusBtn" class="ghost">模板: 认知感受（CFS）→聚焦</button>
+                <button id="innateRulesAddWindowBtn" class="ghost">模板: 窗口→触发</button>
+                <button id="innateRulesAddTimerBtn" class="ghost">模板: 定时→日志</button>
+              </div>
+            </div>
+            <div id="innateRulesList" class="stack"></div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>表单编辑器</h4>
+              <span class="meta">选择一条规则后编辑。规则 id 建议稳定，用于审计与引用。</span>
+            </div>
+            <div id="innateRulesEditor" class="stack"></div>
+          </div>
+        </div>
+        <details id="innateRulesYamlDetails" class="subpanel details-panel">
+          <summary class="details-summary">
+            <div class="section-head">
+              <h4>高级：YAML 自由编辑（可选）</h4>
+              <span class="meta">默认建议用上面的表单或图形编辑器，减少手写配置。</span>
+            </div>
+          </summary>
+          <div class="details-body">
+            <div class="section-head">
+              <h4>YAML 工具</h4>
+              <div class="toolbar">
+                <button id="innateRulesImportYamlBtn" class="ghost">从 YAML 导入到表单</button>
+                <button id="innateRulesExportYamlBtn" class="ghost">从表单导出 YAML</button>
+              </div>
+            </div>
+            <textarea id="innateRulesYaml" class="config-textarea" placeholder="在这里编辑先天规则 YAML（仅高级用途）…"></textarea>
+            <div class="soft-note">提示：导入会先校验 YAML；导出会生成规范化 YAML（带头部注释）。</div>
+          </div>
+        </details>
+        <div id="innateRulesResult" class="result-box">等待操作…</div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- =============================================================== -->
+  <!-- Innate Rules Graph Editor (Phase B) / 先天规则图形编辑器（B目标） -->
+  <!-- =============================================================== -->
+  <div id="irGraphModal" class="modal hidden" aria-hidden="true">
+    <div id="irGraphScrim" class="modal-scrim"></div>
+    <div class="modal-card">
+      <div class="section-head ir-graph-head">
+        <h3>先天规则图形编辑器</h3>
+        <div class="toolbar">
+          <div class="ir-graph-zoom">
+            <span class="meta">缩放</span>
+            <button id="irGraphZoomOutBtn" class="ghost" type="button">-</button>
+            <input id="irGraphZoomRange" class="ir-graph-zoom-range" type="range" min="0.25" max="1.75" step="0.05" value="1" />
+            <button id="irGraphZoomInBtn" class="ghost" type="button">+</button>
+            <button id="irGraphZoomResetBtn" class="ghost" type="button">100%</button>
+            <button id="irGraphZoomFitBtn" class="ghost" type="button">适配</button>
+            <span id="irGraphZoomLabel" class="meta">100%</span>
+          </div>
+          <button id="irGraphTogglePaletteBtn" class="ghost" type="button">隐藏节点库</button>
+          <button id="irGraphTogglePropsBtn" class="ghost" type="button">隐藏属性面板</button>
+          <button id="irGraphDeleteSelectedBtn2" class="ghost danger" type="button" title="删除选中节点/连线（Delete/Backspace）">删除选中（Del）</button>
+          <button id="irGraphFullscreenBtn" class="ghost" type="button" title="全屏/退出全屏（适合小窗口/分屏）">全屏</button>
+          <button id="irGraphSyncBtn" class="ghost" type="button">从规则生成（Sync）</button>
+          <button id="irGraphApplyBtn" class="primary" type="button">应用到规则（Apply）</button>
+          <button id="irGraphCloseBtn" class="ghost" type="button">关闭（Close）</button>
+        </div>
+      </div>
+      <div class="modal-card-body">
+        <div class="note-box">
+          <div><strong>操作提示</strong></div>
+          <div class="soft-note">点击左侧按钮添加节点；拖拽节点移动；点击节点端口连接（先点输出，再点输入）。删除：选中节点后按 Delete/Backspace，或点击节点右上角「删除」，也可点顶部「删除选中」。空格键按住可拖拽平移视图；Ctrl/⌘ + 滚轮可缩放，也可使用顶部缩放滑块与「适配」按钮。窗口太小看不全时可点顶部「全屏」。建议：条件节点接到「条件汇总」节点，再由它连接到动作节点。</div>
+          <div class="soft-note">缩写对照：IESM=先天编码脚本管理器；CFS=认知感受信号；ER=实能量；EV=虚能量；CP=认知压（ER-EV）；SP=状态池；MAP=旧记忆赋能兼容池（默认主链已关闭）；NT=情绪递质通道。</div>
+          <div id="irGraphFeedback" class="inline-feedback">等待操作…</div>
+        </div>
+        <div id="irGraphLayout" class="ir-graph-layout">
+          <aside class="ir-graph-palette">
+            <div class="settings-head">
+              <h4>节点库</h4>
+              <div class="meta">拖拽连线生成 when/then</div>
+            </div>
+            <div class="stack">
+              <div class="mini-row">
+                <div class="title">条件 / When</div>
+                <div class="compact-actions">
+                  <button id="irGraphAddCfsBtn" class="ghost" type="button">+ 认知感受（CFS）</button>
+                  <button id="irGraphAddWindowBtn" class="ghost" type="button">+ 状态窗口</button>
+                  <button id="irGraphAddTimerBtn" class="ghost" type="button">+ 定时器</button>
+                  <button id="irGraphAddMetricBtn" class="ghost" type="button">+ 指标条件（metric）</button>
+                </div>
+              </div>
+              <div class="mini-row">
+                <div class="title">动作 / Then</div>
+                <div class="compact-actions">
+                  <button id="irGraphAddCfsEmitBtn" class="ghost" type="button">+ 认知感受生成（cfs_emit）</button>
+                  <button id="irGraphAddFocusBtn" class="ghost" type="button">+ 聚焦指令（focus）</button>
+                  <button id="irGraphAddEmitBtn" class="ghost" type="button">+ 触发记录（emit_script）</button>
+                  <button id="irGraphAddEmotionBtn" class="ghost" type="button">+ 情绪更新（emotion_update）</button>
+                  <button id="irGraphAddTriggerBtn" class="ghost" type="button">+ 行动触发（action_trigger）</button>
+                  <button id="irGraphAddPoolEnergyBtn" class="ghost" type="button">+ 对对象赋能量（ER/EV）（pool_energy）</button>
+                  <button id="irGraphAddBindAttrBtn" class="ghost" type="button">+ 绑定属性（pool_bind_attribute）</button>
+                  <button id="irGraphAddDelayBtn" class="ghost" type="button">+ 延时（delay）</button>
+                  <button id="irGraphAddBranchBtn" class="ghost" type="button">+ 分支（branch）</button>
+                  <button id="irGraphAddLogBtn" class="ghost" type="button">+ 日志（log）</button>
+                </div>
+              </div>
+              <div class="mini-row">
+                <div class="title">编辑</div>
+                <div class="compact-actions">
+                  <button id="irGraphDeleteNodeBtn" class="ghost danger" type="button">删除节点</button>
+                  <button id="irGraphDeleteEdgeBtn" class="ghost danger" type="button">删除连线</button>
+                </div>
+              </div>
+              <div id="irGraphHint" class="meta"></div>
+            </div>
+          </aside>
+
+          <section class="ir-graph-canvas-wrap">
+            <div id="irGraphCanvas" class="ir-graph-canvas" tabindex="0">
+              <div id="irGraphWorld" class="ir-graph-world">
+                <svg id="irGraphEdges" class="ir-graph-edges" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div id="irGraphNodes" class="ir-graph-nodes"></div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="ir-graph-props">
+            <div class="settings-head">
+              <h4>属性面板</h4>
+              <div class="meta">选中节点后可编辑</div>
+            </div>
+            <div id="irGraphProps" class="stack"></div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
+

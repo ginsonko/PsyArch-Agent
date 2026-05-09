@@ -1,0 +1,771 @@
+# ======================================================================
+# AP State Pool configuration
+# AP 状态池运行配置
+#
+# This file is both the StatePool hot-reload source and the annotation
+# source used by the Observatory settings panel.
+# 本文件既供 StatePool.reload_config() 热加载，也作为观测台设置页的字段说明来源。
+# ======================================================================
+
+# ---- Capacity / 容量与基础写入 ----
+
+# pool_max_items / 状态池最大对象数
+# Purpose / 作用: Hard upper bound for active state items kept in the pool.
+# Meaning / 意义: Higher values increase observation breadth but also raise memory use, maintenance cost, and render volume.
+# Reference / 参考: Default 5000. Routine debugging usually works well in the 2000-10000 range.
+pool_max_items: 5000
+
+# insert_zero_energy_object / 是否允许插入零能对象
+# Purpose / 作用: Controls whether objects with ER=0 and EV=0 may still be inserted.
+# Meaning / 意义: Useful for testing and placeholder injection, but less meaningful in strict runtime realism.
+# Reference / 参考: Default true. Turn off if you want the pool to reject purely empty runtime nodes.
+insert_zero_energy_object: true
+
+# allow_negative_energy / 是否允许负能量
+# Purpose / 作用: Controls whether ER or EV is allowed to go below zero after updates.
+# Meaning / 意义: Negative energy is usually undesirable in the current prototype and may break intuition when inspecting reports.
+# Reference / 参考: Default false. Keep false unless you are explicitly testing signed-energy variants.
+allow_negative_energy: false
+
+# energy_update_floor_to_zero / 更新后是否截断到零
+# Purpose / 作用: Floors ER and EV to zero when an update would otherwise push them negative.
+# Meaning / 意义: This keeps the current energy interpretation simple and prevents underflow-like drift.
+# Reference / 参考: Default true. Strongly recommended when negative energy is disabled.
+energy_update_floor_to_zero: true
+
+# ---- Energy Injection Fatigue / 正向赋能疲劳 ----
+
+# energy_injection_fatigue_enabled / 是否启用正向赋能疲劳
+# Purpose / 作用: Scale down positive ER/EV injection when the target state item is already high-energy.
+# Meaning / 意义: Valid SA such as punctuation, feelings and reward/punish signals stay usable, but repeated injection becomes progressively less dominant.
+energy_injection_fatigue_enabled: true
+
+# energy_injection_fatigue_same_side_knee_er / ER 同侧饱和拐点
+# Meaning / 意义: Higher values make ER injection less fatigued at the same current ER.
+energy_injection_fatigue_same_side_knee_er: 4.0
+
+# energy_injection_fatigue_same_side_knee_ev / EV 同侧饱和拐点
+# Meaning / 意义: EV is slightly more sensitive by default because induction may revisit the same predictive SA often.
+energy_injection_fatigue_same_side_knee_ev: 3.0
+
+# energy_injection_fatigue_total_knee / 总能量弱饱和拐点
+# Meaning / 意义: Applies a weak total-energy guard in addition to same-side ER/EV saturation.
+energy_injection_fatigue_total_knee: 8.0
+
+# energy_injection_fatigue_saturation_power / 饱和曲线指数
+# Meaning / 意义: Larger values make the curve flatter below the knee and sharper above it.
+energy_injection_fatigue_saturation_power: 1.25
+
+# energy_injection_fatigue_total_weight / 总能量饱和权重
+# Meaning / 意义: 0 disables total-energy saturation; 1 lets total saturation fully contribute.
+energy_injection_fatigue_total_weight: 0.35
+
+# energy_injection_fatigue_min_scale / 最小注入比例
+# Meaning / 意义: Positive injection is damped but not hard-blocked, preserving short-term top peaks.
+energy_injection_fatigue_min_scale: 0.18
+
+# energy_injection_repeat_fatigue_enabled / 是否启用同对象重复赋能疲劳
+energy_injection_repeat_fatigue_enabled: true
+
+# energy_injection_repeat_fatigue_identity_enabled / 是否按“同特征+同上下文”共享重复赋能疲劳
+energy_injection_repeat_fatigue_identity_enabled: true
+
+# energy_injection_repeat_fatigue_step / 每次正向赋能增加的重复疲劳
+energy_injection_repeat_fatigue_step: 0.35
+
+# energy_injection_repeat_fatigue_decay_per_tick / 重复疲劳每 tick 保留比例
+# Meaning / 意义: 0.86 means repeated injection fatigue mostly recovers over a few dozen ticks.
+energy_injection_repeat_fatigue_decay_per_tick: 0.9
+
+# energy_injection_repeat_fatigue_floor_scale / 重复疲劳导致的最低比例
+energy_injection_repeat_fatigue_floor_scale: 0.04
+
+# energy_injection_repeat_fatigue_identity_weight / 语义上下文身份疲劳参与比例
+energy_injection_repeat_fatigue_identity_weight: 1.0
+
+# energy_injection_fatigue_stats_keep_ticks / 注入疲劳分 tick 统计保留窗口
+energy_injection_fatigue_stats_keep_ticks: 256
+
+# energy_injection_fatigue_bypass_reasons / 不参与正向赋能疲劳的原因
+energy_injection_fatigue_bypass_reasons:
+  - tick_decay
+  - attention_memory_extract
+  - priority_stimulus_real_verification
+  - priority_stimulus_virtual_confirmation
+  - priority_neutralization_sa_projection_sync
+  - priority_event_component_neutralization
+
+# tick_time_floor_ms / Tick 时间差最小值
+# Purpose / 作用: Minimum time delta used when computing rates to avoid divide-by-zero behavior.
+# Meaning / 意义: This only affects rate estimation, not the ER/EV values themselves.
+# Reference / 参考: Default 1 ms. Leave as-is unless a custom clock needs a different safety floor.
+tick_time_floor_ms: 1
+
+# ---- Runtime Modulation / 近因增益与疲劳 ----
+
+# recency_gain_peak / 近因增益上限
+# Purpose / 作用: Peak Grecency written into a state item when it is newly created or explicitly re-activated.
+# Meaning / 意义: This is the StatePool-side short-term real-time weight boost. In the current theory-aligned setup it should jump high after a fresh activation, then gradually decay back toward 1.
+# Suggested / 建议: Default 10.0. Use together with recency_gain_decay_ratio if you want the classic “rise to 10x, then slowly fall back to 1x” waveform.
+recency_gain_peak: 10.0
+
+# recency_gain_hold_ticks / 近因增益保持 Tick 数
+# Purpose / 作用: Number of maintenance ticks the peak Grecency is held before decay starts.
+# Meaning / 意义: This models the short “high plateau” stage in the theory recency waveform.
+# Suggested / 建议: Default 2. Raise it only if you want a visibly longer peak-hold phase.
+recency_gain_hold_ticks: 2
+
+# recency_gain_decay_ratio / 近因增益每 Tick 保留系数
+# Purpose / 作用: Multiplicative retention ratio applied to recency gain after the hold stage.
+# Meaning / 意义: Values closer to 1 decay more slowly; recency gain is always floored back to 1.0 and never drops below it.
+# Suggested / 建议: Default 0.9999976974. This makes 10x recency decay back near 1x over roughly 1,000,000 ticks. For a shorter ~100,000-tick tail, use about 0.9999769744.
+recency_gain_decay_ratio: 0.9999976974
+
+# fatigue_window_ticks / 疲劳统计窗口 Tick 数
+# Purpose / 作用: Sliding window size used to count repeated activations of the same runtime item.
+# Meaning / 意义: StatePool fatigue must come from short-time repeated use, not from simple object age.
+# Suggested / 建议: Default 12. This is a short-window runtime suppression profile. If you want a slower “100 ticks / threshold 10” style fatigue window, raise this together with fatigue_threshold_count.
+fatigue_window_ticks: 12
+
+# fatigue_threshold_count / 疲劳触发阈值次数
+# Purpose / 作用: Repeated-activation count inside the fatigue window required before fatigue begins.
+# Meaning / 意义: Counts below the threshold keep fatigue at 0, so ordinary sparse activations are not suppressed.
+# Suggested / 建议: Default 3. If you raise fatigue_window_ticks to 100, a matching theory-style threshold is often 10.
+fatigue_threshold_count: 3
+
+# fatigue_max_value / 疲劳最大值
+# Purpose / 作用: Upper bound of runtime fatigue.
+# Meaning / 意义: 1.0 means fully fatigued inside the StatePool runtime modulation layer; lower values cap the suppression effect.
+# Suggested / 建议: Default 1.0. Keep 1.0 if you want sustained repetition to be allowed to saturate the suppression curve.
+fatigue_max_value: 1.0
+
+# ---- Decay / 衰减 ----
+
+# default_er_decay_ratio / ER 默认每 Tick 保留系数
+# Purpose / 作用: Default multiplicative retention ratio applied to ER during maintenance.
+# Meaning / 意义: Higher values preserve real activation longer; lower values clear it faster.
+# Reference / 参考: Default 0.95. Typical tuning range is 0.85-0.99.
+default_er_decay_ratio: 0.95
+
+# default_ev_decay_ratio / EV 默认每 Tick 保留系数
+# Purpose / 作用: Default multiplicative retention ratio applied to EV during maintenance.
+# Meaning / 意义: EV should usually stay slightly more persistent than ER, so predictive context does not get washed out too early.
+# Reference / 参考: Default 0.98. Lower it only when EV is visibly over-retained and begins to flood the pool.
+default_ev_decay_ratio: 0.98
+
+# ---- Runtime-Bound Attributes / 运行态绑定属性 ----
+
+# bound_attribute_apply_decay / 是否对 runtime-bound attributes 执行衰减
+# Purpose / 作用: Treat bound attributes as persistent runtime state (CFS/time-feeling/reward tags, etc.) that decays every tick.
+# Meaning / 意义: When enabled, bound attribute ER/EV will decay in maintenance, so feelings are not just "peak triggers".
+# Reference / 参考: Default true. Disable only for debugging (to observe raw accumulation).
+bound_attribute_apply_decay: true
+
+# bound_attribute_er_decay_ratio / bound attribute ER 每 Tick 保留系数
+# Purpose / 作用: Retention ratio for ER inside each bound attribute.
+# Meaning / 意义: Higher preserves positive feelings longer; lower clears faster.
+# Reference / 参考: Default 0.97.
+bound_attribute_er_decay_ratio: 0.97
+
+# bound_attribute_ev_decay_ratio / bound attribute EV 每 Tick 保留系数
+# Purpose / 作用: Retention ratio for EV inside each bound attribute.
+# Meaning / 意义: Higher preserves negative feelings longer; lower clears faster.
+# Reference / 参考: Default 0.97.
+bound_attribute_ev_decay_ratio: 0.97
+
+# bound_attribute_decay_ignore_names / 衰减忽略名单
+# Purpose / 作用: Attribute names in this list will not be decayed by the bound-attribute decay pass.
+# Meaning / 意义: Use this to keep constant tags stable while still decaying real feelings.
+# Reference / 参考: Default [].
+bound_attribute_decay_ignore_names: []
+
+# enable_cfs_correctness_transfer / 是否启用“违和下降 -> 正确感上升”的守恒式转换
+# Purpose / 作用: When dissonance (EV) drops on an object, transfer the same amount into correctness (ER).
+# Meaning / 意义: This models mismatch resolved -> correctness gained without inventing extra energy.
+# Reference / 参考: Default true.
+enable_cfs_correctness_transfer: true
+
+# cfs_dissonance_attribute_name / 守恒转换的“违和感”属性名
+# Purpose / 作用: Attribute name used as the EV source for correctness transfer.
+# Reference / 参考: Default "cfs_dissonance".
+cfs_dissonance_attribute_name: "cfs_dissonance"
+
+# cfs_correctness_attribute_name / 守恒转换的“正确感”属性名
+# Purpose / 作用: Attribute name used as the ER sink for correctness transfer.
+# Reference / 参考: Default "cfs_correctness".
+cfs_correctness_attribute_name: "cfs_correctness"
+
+# snapshot_bound_attribute_energy_top_n / 快照中 bound attributes 能量 TopN
+# Purpose / 作用: Limit bound attribute entries in StatePool snapshots to keep payload size stable.
+# Meaning / 意义: Only the strongest bound attributes (by total energy) are included in snapshot detail.
+# Reference / 参考: Default 64.
+snapshot_bound_attribute_energy_top_n: 64
+
+# enable_snapshot_item_summary_cache / 是否启用状态项摘要缓存
+# Purpose / 作用: Reuses StatePool item summary materialization across repeated runtime snapshots in the same/nearby ticks.
+# Meaning / 意义: The cache key includes current energy, dynamics, attributes and display signature, so stale summaries are avoided while IESM/final snapshot can reuse the expensive static parts.
+# Reference / 参考: Default true. Disable only when debugging summary serialization itself.
+enable_snapshot_item_summary_cache: true
+
+# snapshot_item_summary_cache_max_entries / 状态项摘要缓存容量
+# Purpose / 作用: Bounds the StatePool snapshot item-summary cache.
+# Meaning / 意义: Higher values improve repeated IESM/report snapshot performance at a small memory cost.
+# Reference / 参考: Default 8192.
+snapshot_item_summary_cache_max_entries: 8192
+
+# snapshot_item_summary_copy_mode / 状态项摘要缓存返回拷贝模式
+# Purpose / 作用: Controls how aggressively cached state-item summaries are copied when reused.
+# Meaning / 意义: "shallow" protects top-level fields while avoiding repeated large sequence/list copying; "deep" restores the legacy defensive copy mode.
+# Rollback / 回退: Set to "deep" if a downstream experiment intentionally mutates nested summary lists.
+# Reference / 参考: Default "shallow".
+snapshot_item_summary_copy_mode: shallow
+
+# ---- Soft Capacity / 软上限衰减调制（资源约束） ----
+
+# soft_capacity_enabled / 是否启用“软上限衰减调制”
+# Purpose / 作用: When the pool grows beyond a soft cap, increase decay aggressiveness to self-tighten.
+# Meaning / 意义: This is a stability guardrail for prototype runs to avoid uncontrolled pool growth.
+# Reference / 参考: Default true.
+soft_capacity_enabled: true
+
+# soft_capacity_start_items / 软上限起点（对象数）
+# Purpose / 作用: When active_item_count > this value, decay modulation starts to kick in.
+# Meaning / 意义: Below this, maintenance decay behaves as the base default_er/default_ev ratios.
+# Suggested / 建议: Current baseline 100. Start early but ramp slowly, so the pool fluctuates more softly.
+soft_capacity_start_items: 100
+
+# soft_capacity_full_items / 软上限满载点（对象数）
+# Purpose / 作用: When active_item_count >= this value, decay modulation reaches the maximum power.
+# Meaning / 意义: Between start_items and full_items, decay_power increases linearly.
+# Suggested / 建议: Current baseline 800. Keep it > start_items; a wider ramp avoids abrupt pool shocks.
+soft_capacity_full_items: 800
+
+# soft_capacity_decay_power_max / 最大衰减幂指数（>=1）
+# Purpose / 作用: Controls how aggressive the soft-cap decay becomes at full load.
+# Meaning / 意义: We use ratio' = ratio ** decay_power. decay_power ranges from 1 -> power_max.
+# Example / 例子:
+#   base ER ratio=0.95, power_max=30 => 0.95**30≈0.214 (about 79% decay per tick at full load)
+#   base EV ratio=0.90, power_max=30 => 0.90**30≈0.042 (about 96% decay per tick at full load)
+# Note / 注意:
+# - 该参数越大，在“对象数量严重超载”时衰减越激进（更容易把池子压回可控规模）。
+# - 若觉得过猛，可降低该值，或把 soft_capacity_full_items 提高（让强衰减更晚触发）。
+soft_capacity_decay_power_max: 30.0
+
+# per_object_type_decay_override / 按对象类型覆写衰减
+# Purpose / 作用: Optional per-type decay overrides for ER and EV.
+# Meaning / 意义: This lets specific runtime object types decay faster or slower than the global defaults.
+# Reference / 参考: Default empty dict. Example: action_node: {er: 0.97, ev: 0.92}.
+per_object_type_decay_override: {}
+
+# ---- Neutralization / 中和 ----
+
+# enable_neutralization / 是否启用中和
+# Purpose / 作用: Turns ER/EV neutralization logic on or off during maintenance or immediate apply stages.
+# Meaning / 意义: Neutralization is part of how the current prototype reduces mismatched activation pressure.
+# Reference / 参考: Default true. Disable only when isolating raw accumulation behavior.
+enable_neutralization: true
+
+# neutralization_mode / 中和模式
+# Purpose / 作用: Selects the concrete neutralization strategy.
+# Meaning / 意义: Different modes define whether both sides cancel symmetrically or whether only pressure-reducing logic is applied.
+# Reference / 参考: Default "simple_min_cancel". Keep this unless you are testing alternative neutralization semantics.
+neutralization_mode: "simple_min_cancel"
+
+# neutralization_apply_stage / 中和执行阶段
+# Purpose / 作用: Controls when neutralization is applied in the StatePool pipeline.
+# Meaning / 意义: "maintenance" keeps it in the normal tick phase; "immediate" applies it as soon as packets land; "both" combines the two.
+# Reference / 参考: Default "maintenance". Use "both" only if you explicitly want more aggressive stabilization.
+neutralization_apply_stage: "maintenance"
+
+# neutralization_min_effect_threshold / 中和最小生效阈值
+# Purpose / 作用: Ignores neutralization effects smaller than this threshold.
+# Meaning / 意义: This suppresses tiny noisy events and keeps logs cleaner.
+# Reference / 参考: Default 0.01. Lower it for finer-grained observation; raise it to reduce event clutter.
+neutralization_min_effect_threshold: 0.01
+
+# maintenance_emit_decay_events_enabled / 维护衰减是否为每个对象生成事件
+# Purpose / 作用: Controls whether ordinary tick decay materializes one history event per StatePool item.
+# Meaning / 意义: Decay still updates ER/EV, dynamics, fatigue and recency. Default false keeps summaries and real state changes while avoiding thousands of observability-only events.
+# Rollback / 回退: Set to true if you need legacy per-item decay event dumps in the history window.
+# Reference / 参考: Default false.
+maintenance_emit_decay_events_enabled: false
+
+# enable_priority_stimulus_neutralization / 是否启用优先刺激中和
+# Purpose / 作用: Lets full incoming stimulus packets first try to verify or neutralize selected high-pressure state items before normal apply.
+# Meaning / 意义: This is the current “缓存中和” related path and changes how much packet energy survives into later stages.
+# Reference / 参考: Default true. Keep enabled for the current observatory loop.
+enable_priority_stimulus_neutralization: true
+
+# priority_stimulus_target_ref_types / 优先中和目标对象类型
+# Purpose / 作用: Restricts which runtime object types may be targeted by priority stimulus neutralization.
+# Meaning / 意义: This prevents the early neutralization path from touching every object indiscriminately.
+# Reference / 参考: Default ["st"]. Expand only when more object types should participate in this path.
+priority_stimulus_target_ref_types: ["st"]
+
+# priority_neutralization_settlement_mode / 优先中和结算粒度
+# Purpose / 作用: Keeps structure-level matching/scoring while deciding which runtime objects receive the actual neutralization energy.
+# Meaning / 意义: 默认新口径为 structure_match_sa_settlement，即“结构负责匹配打分，真正的中和落到命中的 SA 上”；legacy_structure_apply 仅用于回滚调试。
+# Reference / 参考: Default structure_match_sa_settlement.
+priority_neutralization_settlement_mode: structure_match_sa_settlement
+
+# priority_neutralization_min_effect_threshold / 优先中和最小生效阈值
+# Purpose / 作用: Threshold below which priority neutralization events are ignored.
+# Meaning / 意义: Keeps the packet-delta diagnostics focused on meaningful verification rather than micro-cancellation.
+# Reference / 参考: Default 0.01. Lower for fine debugging, higher for cleaner logs.
+priority_neutralization_min_effect_threshold: 0.01
+
+# priority_neutralization_soft_matching_enabled / 是否启用优先中和软匹配
+# Purpose / 作用: Allow cache-neutralization to use partial/soft structure matches instead of requiring an exact full-structure hit.
+# Meaning / 意义: 这是当前“缓存中和”主口径：优先让高认知压对象把能命中的刺激当作缓存命中来降压，同时对低匹配度对象进行剪枝。
+# Reference / 参考: Default true. Turn off only when you need the legacy exact-only behavior for debugging.
+priority_neutralization_soft_matching_enabled: true
+
+# priority_neutralization_candidate_cp_min / 参与优先中和的最小认知压
+# Purpose / 作用: Skip low-CP items before doing cache-neutralization matching.
+# Meaning / 意义: CP 太低的对象对“最小认知压”趋势帮助很小，不值得在这里消耗匹配成本。
+# Reference / 参考: Default 0.05.
+priority_neutralization_candidate_cp_min: 0.05
+
+# priority_neutralization_min_match_score / 优先中和最低软匹配分
+# Purpose / 作用: Minimum soft-match score required before a packet may spend energy to neutralize a StatePool item.
+# Meaning / 意义: Prevents weak/noisy overlaps from consuming packet energy while still allowing partial cache hits.
+# Reference / 参考: Default 0.35.
+priority_neutralization_min_match_score: 0.35
+
+# priority_neutralization_min_structure_coverage / 优先中和最低结构覆盖率
+# Purpose / 作用: Minimum structure coverage ratio required for cache-neutralization to engage.
+# Meaning / 意义: Keep neutralization tied to a sufficiently covered structure instead of a tiny token coincidence.
+# Reference / 参考: Default 0.45.
+priority_neutralization_min_structure_coverage: 0.45
+
+# priority_neutralization_candidate_top_k / 优先中和候选 TopK
+# Purpose / 作用: Limit the number of highest-CP candidates inspected by cache-neutralization per packet.
+# Meaning / 意义: This is the main compute guardrail for the soft-matching path.
+# Reference / 参考: Default 48.
+priority_neutralization_candidate_top_k: 48
+
+# priority_neutralization_emit_pruned_diagnostics / 是否输出被剪枝候选的诊断
+# Purpose / 作用: Keep skipped/shortfall candidates visible in observability even when they do not produce a neutralization event.
+# Meaning / 意义: Useful for验收“为什么没有发生缓存中和”，尤其是 packet 没有对向能量、覆盖率太低、或匹配分过低时。
+# Reference / 参考: Default false. Turn on when diagnosing why skipped candidates did not neutralize.
+priority_neutralization_emit_pruned_diagnostics: false
+
+# priority_neutralization_common_part_cache_enabled / 优先中和共同切割结果缓存
+# Purpose / 作用: Controls the full maximum-common-part result cache inside the per-packet priority neutralization matcher.
+# Meaning / 意义: On the current companion-bot benchmark this cache stores many per-packet results but has near-zero hits because incoming SA ids change across ticks, so the key-building cost is larger than the reuse benefit. Keep it as an opt-in profiling switch for workloads with repeated identical priority-neutralization comparisons.
+# Rollback / 回退: Set to true only when cache_priority_cut_cache_hit_count becomes meaningfully nonzero in the target workload.
+# Reference / 参考: Default false.
+priority_neutralization_common_part_cache_enabled: false
+
+# priority_neutralization_common_part_cache_deepcopy_enabled / 优先中和共同切割缓存深拷贝
+# Purpose / 作用: Optionally deep-copy cached common-part results before returning them.
+# Meaning / 意义: Default false uses the same zero-copy performance path as HDB matching; current neutralization callers treat common_part as read-only. Turn true only for conservative mutation debugging.
+# Rollback / 回退: Set true if a future caller is suspected of mutating cached common_part payloads.
+# Reference / 参考: Default false.
+priority_neutralization_common_part_cache_deepcopy_enabled: false
+
+# priority_neutralization_common_part_cache_max_entries / 优先中和共同切割缓存容量
+# Purpose / 作用: Bounds the dedicated CutEngine common-part LRU used by priority neutralization.
+# Meaning / 意义: Larger values help recurring state-pool/stimulus comparisons; lower values reduce memory.
+# Reference / 参考: Default 512.
+priority_neutralization_common_part_cache_max_entries: 512
+
+# priority_neutralization_common_group_length_cache_max_entries / 优先中和组长度缓存容量
+# Purpose / 作用: Keeps the cheaper group-pair common-length cache available inside the same neutralization CutEngine.
+# Meaning / 意义: This preserves inner DP memoization even when the full common-part result cache is disabled for debugging.
+# Reference / 参考: Default 4096. Set 0 only for low-level matcher debugging.
+priority_neutralization_common_group_length_cache_max_entries: 4096
+
+# enable_event_component_neutralization / 是否启用事件组分优先中和
+# Purpose / 作用: Allows priority packet neutralization to complement matched components inside cognitive stitching events.
+# Meaning / 意义: Only the smaller side of a matched component ledger is filled, so this path reduces component CP instead of smearing same-direction energy into the whole event.
+# Reference / 参考: Default true. Recommended for the current conservative CS rollout.
+enable_event_component_neutralization: true
+
+# event_component_neutralization_ratio_cap / 事件组分单个 Tick 补足比例上限
+# Purpose / 作用: Caps how much of a component deficit may be filled during one priority-neutralization pass.
+# Meaning / 意义: 1.0 allows full complementary fill when packet energy is sufficient; smaller values slow down event verification for a more conservative rollout.
+# Reference / 参考: Default 1.0.
+event_component_neutralization_ratio_cap: 1.0
+
+# ---- Pruning / 淘汰 ----
+
+# er_elimination_threshold / ER 淘汰阈值
+# Purpose / 作用: Objects below this ER threshold become pruning candidates.
+# Meaning / 意义: Combined with EV and CP conditions, this determines when weak items stop occupying space.
+# Reference / 参考: Default 0.05. Raise to keep the pool tighter, lower to preserve more weak traces.
+er_elimination_threshold: 0.05
+
+# ev_elimination_threshold / EV 淘汰阈值
+# Purpose / 作用: Objects below this EV threshold become pruning candidates.
+# Meaning / 意义: This works together with the ER threshold and pruning mode.
+# Reference / 参考: Default 0.05.
+ev_elimination_threshold: 0.05
+
+# cp_elimination_ignore_below / 低认知压忽略阈值
+# Purpose / 作用: Below this CP amplitude, cognitive pressure alone will not block pruning.
+# Meaning / 意义: This prevents tiny ER/EV differences from keeping otherwise dead objects alive.
+# Reference / 参考: Default 0.02.
+cp_elimination_ignore_below: 0.02
+
+# prune_if_both_energy_low / 双低能时是否淘汰
+# Purpose / 作用: Controls whether an object is pruned when both ER and EV are below their thresholds.
+# Meaning / 意义: This is the main fast-cleanup path for weak residual runtime items.
+# Reference / 参考: Default true.
+prune_if_both_energy_low: true
+
+# pool_overflow_strategy / 容量溢出策略
+# Purpose / 作用: Defines what happens when pool_max_items is exceeded.
+# Meaning / 意义: Different strategies trade off accepting new items versus preserving existing weak items.
+# Reference / 参考: Default "prune_lowest_then_reject". Other expected values include "reject_new" and "prune_lowest_then_insert".
+pool_overflow_strategy: "prune_lowest_then_reject"
+
+# ---- Change Tracking / 变化监测 ----
+
+# enable_change_rate_tracking / 是否启用变化率追踪
+# Purpose / 作用: Enables per-item rate calculations such as ER change rate, EV change rate, and CP change rate.
+# Meaning / 意义: These values are mainly for observability and future script/feeling modules.
+# Reference / 参考: Default true.
+enable_change_rate_tracking: true
+
+# rate_window_mode / 变化率窗口模式
+# Purpose / 作用: Chooses how the elapsed time for rate calculation is measured.
+# Meaning / 意义: "last_update" uses the time since the previous item update; "tick_interval" is more tied to tick cadence.
+# Reference / 参考: Default "last_update".
+rate_window_mode: "last_update"
+
+# fast_cp_rise_threshold / 认知压快速上升阈值
+# Purpose / 作用: Threshold for labeling CP amplitude as rising rapidly.
+# Meaning / 意义: Mainly influences diagnostics, event labeling, and future hooks rather than core energy math.
+# Reference / 参考: Default 0.5.
+fast_cp_rise_threshold: 0.5
+
+# fast_cp_drop_threshold / 认知压快速下降阈值
+# Purpose / 作用: Threshold for labeling CP change as a rapid drop.
+# Meaning / 意义: Negative values indicate downward movement of cognitive pressure.
+# Reference / 参考: Default -0.5.
+fast_cp_drop_threshold: -0.5
+
+# fast_er_rise_threshold / ER 快速上升阈值
+# Purpose / 作用: Threshold for flagging a rapid ER increase.
+# Meaning / 意义: Useful for diagnostics when external validation strongly boosts a state item.
+# Reference / 参考: Default 0.5.
+fast_er_rise_threshold: 0.5
+
+# fast_ev_rise_threshold / EV 快速上升阈值
+# Purpose / 作用: Threshold for flagging a rapid EV increase.
+# Meaning / 意义: Useful when speculative or projected activation ramps up quickly.
+# Reference / 参考: Default 0.5.
+fast_ev_rise_threshold: 0.5
+
+# rate_smoothing_alpha / 变化率平滑系数
+# Purpose / 作用: Reserved smoothing factor for rate estimation.
+# Meaning / 意义: 1.0 means effectively unsmoothed in the current prototype.
+# Reference / 参考: Default 1.0. Keep as-is unless you extend the rate engine.
+rate_smoothing_alpha: 1.0
+
+# ---- Merge And Reconcile / 合并与对齐 ----
+
+# merge_duplicate_items / 是否合并重复对象
+# Purpose / 作用: Enables merging of duplicate runtime items instead of keeping separate pool entries.
+# Meaning / 意义: This is essential for avoiding unnecessary pool explosion.
+# Reference / 参考: Default true.
+merge_duplicate_items: true
+
+# merge_only_same_ref_object / 是否仅按同一 ref_object 合并
+# Purpose / 作用: Restricts duplicate merging to items that share the same ref_object_id.
+# Meaning / 意义: With semantic merge enabled, this becomes the conservative ID-level merge layer.
+# Reference / 参考: Default true.
+merge_only_same_ref_object: true
+
+# enable_semantic_same_object_merge / 是否启用语义同一对象合并
+# Purpose / 作用: Allows separate runtime items that represent the same semantic object to merge.
+# Meaning / 意义: This is important because sensor and projection paths often create new object IDs for semantically identical content.
+# Reference / 参考: Default false. Keep disabled in the current prototype so
+# same-content objects under different contexts stay separate by default.
+enable_semantic_same_object_merge: true
+
+# enable_semantic_context_same_object_merge / 启用“同特征+同上下文”对象合并
+# Purpose / 作用: 将内容相同且上下文相同的运行态对象视为同一对象；空上下文也作为明确上下文参与合并。
+# Meaning / 意义: 防止同一个无上下文 SA（例如多个来源投影出的“问”）以不同 ref_id 长期并存，同时保留不同上下文下的独立对象。
+enable_semantic_context_same_object_merge: true
+
+# allow_global_semantic_fallback_merge / 允许无视上下文的全局语义兜底合并
+# Purpose / 作用: 兼容旧实验的强合并模式。
+# Meaning / 意义: 默认关闭；理论上不同上下文的同内容对象不应被强制合并。
+allow_global_semantic_fallback_merge: false
+
+# allow_weak_semantic_merge / 是否允许弱语义合并
+# Purpose / 作用: Allows a looser merge criterion than exact semantic-signature equality.
+# Meaning / 意义: This may reduce duplication further, but it also carries more risk of accidental conflation.
+# Reference / 参考: Default false. Keep off unless you are testing fuzzy merge behavior.
+allow_weak_semantic_merge: false
+
+# aggregate_same_semantic_incoming_objects / 是否先聚合同包内语义同一对象
+# Purpose / 作用: Aggregates semantically identical objects inside one stimulus packet before they hit the pool.
+# Meaning / 意义: This prevents same-packet duplicates from being applied multiple times independently.
+# Reference / 参考: Default false. Keep disabled in the current prototype so
+# same-packet same-content candidates are not pre-collapsed by default.
+aggregate_same_semantic_incoming_objects: true
+
+# runtime_structure_root_identity_merge_enabled / 运行态结构按根身份合并
+# Purpose / 作用: Lets different StatePool resolution views of the same complete ST identity merge into one live object.
+# Meaning / 意义: 结构退化只是运行态分辨率下降；对象仍是原来的完整结构，不重新查存一体、不创建新的 HDB id。
+# Safety / 安全: 只使用对象自己的 ST id 或显式 runtime_resolution.root_structure_id；growth source/owner 只作来源审计，不参与身份合并。
+# Reference / 参考: Default true for the current growth-projection philosophy.
+runtime_structure_root_identity_merge_enabled: true
+
+# runtime_structure_resolution_degradation_enabled / 运行态结构分辨率退化元数据
+# Purpose / 作用: Tracks active/dropped component-energy views when an ST loses runtime energy detail.
+# Meaning / 意义: 低能组件在状态池视图里淡出，但 HDB 中的正式结构身份不改变，也不写入新的退化结构。
+# Reference / 参考: Default true.
+runtime_structure_resolution_degradation_enabled: true
+
+# runtime_structure_resolution_component_energy_floor / 组件分辨率能量地板
+# Purpose / 作用: Component ER/EV below this floor is treated as faded from the current StatePool resolution view.
+# Meaning / 意义: 这是解释与合并用的运行态阈值，不是 HDB 创建阈值。
+# Reference / 参考: Default 0.05, aligned with StatePool elimination floors.
+runtime_structure_resolution_component_energy_floor: 0.05
+
+# runtime_structure_resolution_update_display_enabled / 是否按活动组件改写展示
+# Purpose / 作用: Reserved switch for future UI experiments that display only active runtime components.
+# Meaning / 意义: Default false keeps the complete structure text readable and avoids confusing the formal HDB identity with the temporary low-resolution view.
+runtime_structure_resolution_update_display_enabled: false
+
+# enable_state_item_template_cache / 是否启用 state_item 候选模板缓存
+# Purpose / 作用: Reuses immutable candidate-shape work for repeated induction SA projections.
+# Meaning / 意义: Only the static snapshot/signature template is cached; each hit is re-materialized with current id, ER/EV, tick, trace and packet origin.
+# Reference / 参考: Default true. Safe for induction packets because it does not merge or skip any incoming SA.
+enable_state_item_template_cache: true
+
+# state_item_template_cache_max_entries / state_item 候选模板缓存容量
+# Purpose / 作用: Bounds the cross-packet template cache in StatePool.
+# Meaning / 意义: Higher values reduce repeated candidate construction in induction-heavy cycles, at a small memory cost.
+# Reference / 参考: Default 8192.
+state_item_template_cache_max_entries: 8192
+
+# sensor_input_reconcile_mode / 感受器输入对齐模式
+# Purpose / 作用: Controls how incoming sensor energy is reconciled against existing pool items.
+# Meaning / 意义: "max" treats packet energy as current presence strength instead of always adding on top of existing state.
+# Reference / 参考: Default "max". Keep it for the current echo-aware pipeline.
+sensor_input_reconcile_mode: "max"
+
+# memory_feedback_packet_additive_merge_enabled / 记忆回放包命中已有对象时是否改用加法并入
+# Purpose / 作用: Lets memory-feedback stimulus packets replay their EV/ER on top of existing runtime items instead of being treated like fresh sensor presence that only raises items to the current packet max.
+# Meaning / 意义: Keep this on when you want recall / replay to behave like“再激活预算”而不是“当前感受器存在度覆盖”。Turn it off for rollback comparison.
+# Reference / 参考: Default true.
+memory_feedback_packet_additive_merge_enabled: true
+
+# induction_packet_additive_merge_enabled / 感应投影包命中已有对象时是否叠加
+# Purpose / 作用: Lets HDB induction packets add ER/EV to an existing same-ref StatePool item instead of using the sensor-style max reconcile.
+# Meaning / 意义: Sensor packets still use max by default; induction is an internal expectation/propagation channel, so repeated same-context induction updates the same SA carrier additively.
+# Rollback / 回退: Set to false to restore legacy sensor_input_reconcile_mode=max behavior for hdb_induction packets.
+# Reference / 参考: Default true.
+induction_packet_additive_merge_enabled: true
+
+# induction_packet_ref_hit_fast_apply_enabled / 感应投影包 ref 命中快路径
+# Purpose / 作用: When an HDB induction packet targets a StatePool ref that already exists, apply the ER/EV delta directly instead of rebuilding a full candidate snapshot/signature.
+# Meaning / 意义: Misses still use the normal path, so new SA carriers are materialized exactly as before; exact ref hits keep SA 粒度 and only skip redundant static work.
+# Rollback / 回退: Set to false to restore the full apply_stimulus_packet candidate path for every induction object.
+# Reference / 参考: Default true.
+induction_packet_ref_hit_fast_apply_enabled: true
+
+# induction_packet_new_sa_fast_materialize_enabled / 感应投影新 SA 轻量入池
+# Purpose / 作用: Materializes new SA carriers from HDB induction packets with a lightweight StatePool item builder.
+# Meaning / 意义: The projected SA already contains stable content, context and residual metadata; this keeps SA 粒度 and skips redundant UI-grade snapshot/signature work. Non-SA objects and rollback use the normal path.
+# Rollback / 回退: Set to false to route every new induction SA through build_state_item().
+# Reference / 参考: Default true.
+induction_packet_new_sa_fast_materialize_enabled: true
+
+# induction_packet_fast_event_materialization_enabled / 感应快路径是否物化逐 SA 事件
+# Purpose / 作用: Controls whether hdb_induction fast ref-hit/new-SA paths build one history event per affected SA.
+# Meaning / 意义: Default false keeps actual StatePool energy/lifecycle updates and counters, while avoiding event objects for internal induction propagation. Turn on for forensic debugging.
+# Rollback / 回退: Set to true to restore per-SA created/energy_update events on induction fast paths.
+# Reference / 参考: Default false.
+induction_packet_fast_event_materialization_enabled: false
+
+# insert_csa_as_state_item / 是否将 CSA（组合刺激元）写入状态池作为独立对象
+# Purpose / 作用: Controls whether CSA bundles from stimulus packets are inserted as standalone runtime state items.
+# Meaning / 意义:
+# - true: CSA 会作为独立 state_item 出现在状态池中，便于直接观测其聚合视图，但会增加对象数量并引入“SA 与 CSA 同时存在”的展示复杂度。
+# - false: CSA 仅作为“绑定/匹配约束信息”存在于 packet/HDB 与锚点对象的绑定状态中（更接近理论语义，且更清爽）。
+# Reference / 参考: Default false (recommended for the current prototype).
+insert_csa_as_state_item: false
+
+# insert_attribute_sa_as_state_item / 是否将属性 SA 写入状态池作为独立对象
+# Purpose / 作用: Controls whether attribute SA (stimulus.role == attribute) from stimulus packets are inserted as standalone runtime items.
+# Meaning / 意义:
+# - true: 属性 SA 会作为独立 state_item 出现在状态池中，便于观察属性能量，但会产生大量类似 "stimulus_intensity:1.1" 的噪音对象。
+# - false: 属性 SA 不入池；它们会被折叠到锚点对象的 binding_state.packet_attribute_by_name 与 ref_snapshot.attribute_displays（推荐，更清爽）。
+# Reference / 参考: Default false (recommended for the current prototype).
+insert_attribute_sa_as_state_item: true
+
+# attribute_binding_runtime_mode / 属性绑定接口默认运行语义
+# - state_item: 把属性 SA 作为一等运行态对象入池，并附带锚点上下文（新口径默认）
+# - legacy_bind: 仅写入锚点对象的 runtime binding（旧口径兼容）
+attribute_binding_runtime_mode: state_item
+
+# ---- Attribute Binding / 属性绑定 ----
+
+# allow_auto_create_csa_on_attribute_bind / 绑定属性时是否自动建 CSA
+# Purpose / 作用: When binding an attribute to an SA target, allows the pool to auto-build a CSA wrapper if needed.
+# Meaning / 意义: This keeps attribute binding compatible with CSA-centric downstream logic.
+# Reference / 参考: Default true.
+# Runtime note / 当前实现说明: CSA 在当前原型里主要承担 packet 内部分组、匹配和展示作用，不作为默认运行态 StatePool 对象，因此这里默认关闭自动创建。
+allow_auto_create_csa_on_attribute_bind: false
+
+# attribute_bind_deduplicate_by_id / 属性绑定是否按 ID 去重
+# Purpose / 作用: Prevents adding the same attribute node repeatedly when its ID matches an existing binding.
+# Meaning / 意义: This is the strict deduplication path.
+# Reference / 参考: Default true.
+attribute_bind_deduplicate_by_id: true
+
+# attribute_bind_deduplicate_by_content / 属性绑定是否按内容去重
+# Purpose / 作用: Prevents repeated bindings when attribute content is identical even if IDs differ.
+# Meaning / 意义: Stronger deduplication reduces clutter but may hide intentionally separate attribute instances.
+# Reference / 参考: Default false.
+attribute_bind_deduplicate_by_content: false
+
+# attribute_bind_replace_by_attribute_name / 是否按属性名替换（同名只保留最新）
+# Purpose / 作用: When binding runtime attributes, replace older attributes with the same attribute_name.
+# Meaning / 意义:
+# - true: 同一目标对象上的同名属性只保留最新值（推荐，避免 runtime_attrs 堆叠导致前端难以验收）。
+# - false: 允许同名属性累积（仅当你确实需要“同名多实例”时使用）。
+# Reference / 参考: Default true.
+attribute_bind_replace_by_attribute_name: true
+
+# attribute_binding_supported_target_types / 可绑定属性的目标类型
+# Purpose / 作用: Lists the runtime object types that may receive attribute bindings.
+# Meaning / 意义: This is an explicit safety gate for future extensibility.
+# Reference / 参考: Default ["sa", "csa"].
+# Runtime note / 当前实现说明:
+# - 当前原型运行态池默认以 ST/SA 为主，因此这里允许对 ST 做属性绑定，用于 CFS 等元认知属性的对接与观测。
+attribute_binding_supported_target_types: ["sa", "csa", "st"]
+
+# ---- Script Broadcast / 脚本广播 ----
+
+# enable_script_broadcast / 是否启用脚本广播
+# Purpose / 作用: Enables emitting script-check packets from StatePool events.
+# Meaning / 意义: Useful for observability and future higher modules, but unnecessary for pure core-loop tests.
+# Reference / 参考: Default true.
+enable_script_broadcast: true
+
+# script_broadcast_stage_after_apply / Apply 后是否广播
+# Purpose / 作用: Emits a script packet right after stimulus apply completes.
+# Meaning / 意义: This captures immediate input impact before maintenance changes the pool further.
+# Reference / 参考: Default true.
+script_broadcast_stage_after_apply: true
+
+# script_broadcast_stage_after_maintenance / 维护后是否广播
+# Purpose / 作用: Emits a script packet after maintenance finishes.
+# Meaning / 意义: This captures the stabilized post-maintenance state.
+# Reference / 参考: Default true.
+script_broadcast_stage_after_maintenance: true
+
+# script_broadcast_include_full_event_dump / 是否附带完整事件列表
+# Purpose / 作用: Controls whether the broadcast payload includes the full event dump.
+# Meaning / 意义: Full dumps improve traceability but make payloads heavier.
+# Reference / 参考: Default true.
+script_broadcast_include_full_event_dump: true
+
+# script_broadcast_top_k_items / 广播携带的 Top-K 状态项
+# Purpose / 作用: Limits how many state items are included in each script packet summary.
+# Meaning / 意义: Higher values give more context but increase payload size.
+# Reference / 参考: Default 128.
+script_broadcast_top_k_items: 128
+
+# script_broadcast_min_event_count / 最少事件数仍广播阈值
+# Purpose / 作用: Minimum event count required before a script packet is emitted.
+# Meaning / 意义: Raising this can suppress low-signal broadcasts.
+# Reference / 参考: Default 1.
+script_broadcast_min_event_count: 1
+
+# ---- Placeholder Interfaces / 占位接口 ----
+
+# enable_placeholder_interfaces / 是否启用占位接口
+# Purpose / 作用: Master switch for placeholder interfaces reserved for future modules.
+# Meaning / 意义: Useful for end-to-end integration testing, but not required for pure current-loop debugging.
+# Reference / 参考: Default true.
+enable_placeholder_interfaces: true
+
+# placeholder_hdb_enabled / HDB 占位接口开关
+# Purpose / 作用: Enables the HDB placeholder interface channel inside StatePool.
+# Meaning / 意义: Reserved for extension points and integration checks.
+# Reference / 参考: Default true.
+placeholder_hdb_enabled: true
+
+# placeholder_script_enabled / 脚本占位接口开关
+# Purpose / 作用: Enables the script placeholder interface channel.
+# Meaning / 意义: Reserved for future script-side modules.
+# Reference / 参考: Default true.
+placeholder_script_enabled: true
+
+# placeholder_attention_enabled / 注意力占位接口开关
+# Purpose / 作用: Enables the attention placeholder interface channel.
+# Meaning / 意义: Reserved for the formal attention module handoff path.
+# Reference / 参考: Default true.
+placeholder_attention_enabled: true
+
+# placeholder_emotion_enabled / 情绪占位接口开关
+# Purpose / 作用: Enables the emotion placeholder interface channel.
+# Meaning / 意义: Reserved for future emotion-layer integration.
+# Reference / 参考: Default true.
+placeholder_emotion_enabled: true
+
+# placeholder_action_enabled / 行动占位接口开关
+# Purpose / 作用: Enables the action placeholder interface channel.
+# Meaning / 意义: Reserved for future action-layer integration.
+# Reference / 参考: Default true.
+placeholder_action_enabled: true
+
+# ---- Logging / 日志与历史窗口 ----
+
+# detail_log_dump_full_object / Detail 日志是否写完整对象
+# Purpose / 作用: Controls whether detail logs dump full object payloads.
+# Meaning / 意义: Helpful for deep debugging, but increases log size substantially.
+# Reference / 参考: Default true.
+detail_log_dump_full_object: true
+
+# detail_log_dump_change_event / Detail 日志是否写变化事件
+# Purpose / 作用: Controls whether detail logs dump full state change events.
+# Meaning / 意义: Good for event-level trace reconstruction, but very expensive during induction/maintenance-heavy runs. History events remain in memory/report even when this detail dump is off.
+# Reference / 参考: Default false for current performance-oriented runtime. Turn on for short forensic traces.
+detail_log_dump_change_event: false
+
+# history_window_max_events / 历史窗口最大事件数
+# Purpose / 作用: Upper bound for recent state-change events kept in the in-memory history window.
+# Meaning / 意义: Higher values improve observability but increase memory and payload size.
+# Reference / 参考: Default 5000.
+history_window_max_events: 5000
+
+# log_dir / 日志目录
+# Purpose / 作用: Overrides the default StatePool log directory.
+# Meaning / 意义: Leave empty to use the module default path.
+# Reference / 参考: Default empty.
+log_dir: ""
+
+# log_max_file_bytes / 单个日志文件上限
+# Purpose / 作用: Maximum size of each log file before rollover or replacement.
+# Meaning / 意义: Larger files keep longer continuous traces but are less convenient to inspect manually.
+# Reference / 参考: Default 5242880 (5 MB).
+log_max_file_bytes: 5242880
+
+# log_archive_keep_per_level / 每层保留的历史归档日志数
+# Purpose / 作用: Caps how many rotated or spill log files are retained for each level directory.
+# Meaning / 意义:
+# - Only archived/spill files are pruned.
+# - The active current file (for example detail_current.log or the current spill file in use) is never removed by this policy.
+# - Use 0 to disable pruning for a level.
+# Reference / 参考:
+# - Defaults favor keeping enough recent evidence for debugging while preventing multi-GB historical buildup.
+# - detail is the hottest path, so its default retention is tighter than error.
+log_archive_keep_per_level:
+  error: 64
+  brief: 24
+  detail: 24
+
+# stdout_fallback_when_log_fail / 日志失败时是否回退到 stdout
+# Purpose / 作用: Prints critical log output to stdout if file logging fails.
+# Meaning / 意义: This protects debugging visibility when paths or permissions are misconfigured.
+# Reference / 参考: Default true.
+stdout_fallback_when_log_fail: true

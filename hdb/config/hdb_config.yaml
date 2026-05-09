@@ -1,0 +1,1992 @@
+﻿# ======================================================================
+# AP HDB configuration
+# AP 全息深度数据库 HDB 运行配置
+#
+# This file is the hot-reload source for HDB and the annotation source
+# for the Observatory settings panel.
+# 本文件既供 HDB.reload_config() 热加载，也作为观测台设置页的字段注释来源。
+# ======================================================================
+
+# ---- Storage And Logs / 存储与日志 ----
+
+# data_dir / HDB 数据目录
+# Purpose / 作用: Root directory used to store structures, groups, episodic memories, indexes, repair data, and memory activation files.
+# Meaning / 意义: Changing this effectively relocates the persistent prototype memory store.
+# Reference / 参考: Default empty, which means using the module-local default data directory.
+data_dir: ''
+
+# log_dir / HDB 日志目录
+# Purpose / 作用: Overrides the default HDB log directory.
+# Meaning / 意义: Leave empty to use the module default path; set a custom path only when you need centralized logging.
+# Reference / 参考: Default empty.
+log_dir: ''
+
+# log_max_file_bytes / 单个 HDB 日志文件上限
+# Purpose / 作用: Limits each HDB log file size before rollover or replacement.
+# Meaning / 意义: Larger files preserve longer continuous traces but become heavier to inspect manually.
+# Reference / 参考: Default 5242880 (5 MB).
+log_max_file_bytes: 5242880
+
+# ---- Stimulus-Level Retrieval / 刺激级查存一体 ----
+
+# stimulus_level_max_rounds / 刺激级最大轮次
+# Purpose / 作用: Upper bound on greedy stimulus-level retrieval/storage rounds per cycle.
+# Meaning / 意义: Larger values let more anchors continue searching and cutting, but also increase runtime and log volume.
+# Reference / 参考: Default 48 after the growth-era transfer audit. Long source ticks often need more than
+# 8 atomic/short-structure rounds before matched-object energy can dominate the raw tail; early-stop still
+# prevents empty low-progress tails from running forever.
+stimulus_level_max_rounds: 48
+
+# stimulus_early_stop_enabled / 刺激级早停总开关
+# Purpose / 作用: Enables additional early-termination checks beyond the hard max rounds.
+# Meaning / 意义: When enabled, the stimulus-level loop can stop early if each round makes very little progress and no high-energy stimulus remains.
+# Reference / 参考: Default true.
+stimulus_early_stop_enabled: true
+
+# stimulus_early_stop_patience_rounds / 刺激级早停耐心轮次
+# Purpose / 作用: Requires this many consecutive "low progress" rounds before early-stop triggers.
+# Meaning / 意义: Higher values reduce the chance of stopping due to a single unlucky match; lower values stop faster but may skip weak tails.
+# Reference / 参考: Default 2.
+stimulus_early_stop_patience_rounds: 2
+
+# stimulus_early_stop_min_progress_ratio / 刺激级早停最低进展比
+# Purpose / 作用: Defines "low progress" as consumed_energy / remaining_energy below this ratio.
+# Meaning / 意义: Small values make early-stop less aggressive; larger values stop sooner when the loop keeps nibbling tiny fragments.
+# Reference / 参考: Default 0.03 (3%). Higher values stop sooner when the loop keeps nibbling tiny fragments.
+stimulus_early_stop_min_progress_ratio: 0.10
+
+# stimulus_early_stop_high_energy_unit_threshold / 刺激级早停“高能刺激”阈值
+# Purpose / 作用: If any remaining unit has total_energy >= this threshold, early-stop is suppressed.
+# Meaning / 意义: Prevents early stopping when the residual packet still contains a clearly high-energy stimulus that deserves more processing.
+# Reference / 参考: Default 0.8. Tune with your typical SA energy scale.
+stimulus_early_stop_high_energy_unit_threshold: 0.8
+
+# stimulus_object_projection_dominance_early_stop_enabled / 对象投影占优早停
+# Purpose / 作用: Stops stimulus-level atomic tail rounds once growth-era object projection already dominates the remaining raw tail.
+# Meaning / 意义: Full seed/matched/relation projections plus the memory-id tail path are the new main mouth; after they dominate, more atomic fallback rounds mostly add audit cost.
+# Reference / 参考: Default true. Turn off for exhaustive old-mouth residual audits.
+stimulus_object_projection_dominance_early_stop_enabled: true
+
+# stimulus_object_projection_dominance_min_rounds / 对象投影占优早停最小轮次
+# Purpose / 作用: Requires at least this many completed stimulus rounds before the dominance stop can fire.
+# Meaning / 意义: Keeps the first few source anchors available for real structure hits, then cuts off long low-value atomic tails.
+# Reference / 参考: Default 8.
+stimulus_object_projection_dominance_min_rounds: 8
+
+# stimulus_object_projection_dominance_ratio / 对象投影占优早停比例
+# Purpose / 作用: object_projection_total / remaining_raw_tail must reach this ratio before early-stop.
+# Meaning / 意义: Higher values are more conservative; lower values stop sooner.
+# Reference / 参考: Default 1.25.
+stimulus_object_projection_dominance_ratio: 1.25
+
+# stimulus_object_projection_dominance_min_remaining_energy / 占优早停残余分母下限
+# Purpose / 作用: Floors the remaining-tail denominator so near-zero tails do not create noisy infinite ratios.
+# Meaning / 意义: This is only for the early-stop decision and does not change energy transfer.
+# Reference / 参考: Default 0.05.
+stimulus_object_projection_dominance_min_remaining_energy: 0.05
+
+# stimulus_object_projection_dominance_require_memory_id_enabled / 占优早停要求记忆 id
+# Purpose / 作用: Require the current stimulus to have an episodic memory_id before using object-projection dominance early-stop.
+# Meaning / 意义: Preserves the new rule that the unabsorbed stimulus tail is still landed through the complete memory object, not silently dropped.
+# Reference / 参考: Default true.
+stimulus_object_projection_dominance_require_memory_id_enabled: true
+
+# stimulus_object_projection_dominance_require_transfer_dominance_enabled / 占优早停要求逐轮命中赋能也占优
+# Purpose / 作用: When object-projection early-stop is about to fire, also require the selected-match transfer total to dominate the current raw tail.
+# Meaning / 意义: Keeps the growth-era object projection path as the main landing mouth, while ensuring stimulus-level retrieval itself visibly assigns most explainable energy to matched objects instead of always leaving a large raw tail for memory-id absorption.
+# Reference / 参考: Default true. Set false to restore the faster object-projection-only early-stop.
+stimulus_object_projection_dominance_require_transfer_dominance_enabled: true
+
+# stimulus_object_projection_dominance_transfer_ratio / 逐轮命中赋能占优比例
+# Purpose / 作用: cumulative_selected_match_transfer / remaining_raw_tail must reach this ratio before object-projection early-stop can fire.
+# Meaning / 意义: 1.0 means matched transfer must be at least as large as the raw residual tail; higher values are more conservative, lower values stop sooner.
+# Reference / 参考: Default 1.0.
+stimulus_object_projection_dominance_transfer_ratio: 1.0
+
+# structure_level_max_rounds / 结构级最大轮次
+# Purpose / 作用: Upper bound on structure-level retrieval/storage rounds per cycle.
+# Meaning / 意义: Higher values let more ST-level combinations be explored before stimulus-level starts.
+# Reference / 参考: Default 4.
+structure_level_max_rounds: 4
+
+# top_n_attention_stub_default / 注意力占位默认 Top-N
+# Purpose / 作用: Default number of state-pool items passed into structure-level retrieval by the current attention stub.
+# Meaning / 意义: This is the HDB-side fallback default when the caller does not pass a custom top_n.
+# Reference / 参考: Default 16.
+top_n_attention_stub_default: 16
+
+# stimulus_match_transfer_ratio / 刺激命中转移比例
+# Purpose / 作用: Fraction of matched stimulus energy transferred into the selected structure during stimulus-level matching.
+# Meaning / 意义: Higher values make hits strengthen structures more aggressively.
+# Reference / 参考: Default 1.0. Reduce only if you want gentler reinforcement from each hit.
+stimulus_match_transfer_ratio: 1.0
+
+# stimulus_competition_noise_mid / 刺激竞争曲线中点
+# Purpose / 作用: Midpoint parameter for the stimulus-level competition shaping curve.
+# Meaning / 意义: Raising it means candidates need stronger raw support before the curve clearly separates them from noise.
+# Reference / 参考: Default 0.01.
+stimulus_competition_noise_mid: 0.01
+
+# stimulus_competition_noise_scale / 刺激竞争噪声尺度
+# Purpose / 作用: Scale parameter for the stimulus-level competition curve.
+# Meaning / 意义: This changes how sharply raw support values spread apart around the midpoint.
+# Reference / 参考: Default 0.004.
+stimulus_competition_noise_scale: 0.004
+
+# stimulus_competition_half_ratio / 刺激竞争半比率
+# Purpose / 作用: Half-response ratio used in stimulus competition shaping.
+# Meaning / 意义: Smaller values make the curve respond earlier to weak matches; larger values demand stronger evidence.
+# Reference / 参考: Default 0.1.
+stimulus_competition_half_ratio: 0.1
+
+# stimulus_competition_curve_power / 刺激竞争曲线幂次
+# Purpose / 作用: Power exponent for stimulus-level competition shaping.
+# Meaning / 意义: Higher values exaggerate winner-take-more behavior; lower values keep competition smoother.
+# Reference / 参考: Default 1.2.
+stimulus_competition_curve_power: 1.2
+
+# stimulus_competition_stimulus_ratio_power / 刺激覆盖率缓和幂次
+# Purpose / 作用: Reduces the suppressive effect of "matched energy / total stimulus energy" in stimulus-level competition.
+# Meaning / 意义: Values below 1 make a few valid matched SA in a longer stimulus receive a higher competition score, while 0 still means no match.
+# Reference / 参考: Default 0.35. This makes partial multi-character hits less likely to leave most energy in the residual tail.
+stimulus_competition_stimulus_ratio_power: 0.35
+
+# stimulus_competition_structure_ratio_power / 结构覆盖率缓和幂次
+# Purpose / 作用: Shapes the structure-side coverage contribution in the stimulus competition score.
+# Meaning / 意义: Slightly below 1 keeps partial structure hits usable without removing the preference for fuller structure inclusion.
+# Reference / 参考: Default 0.85.
+stimulus_competition_structure_ratio_power: 0.85
+
+# stimulus_competition_attribute_ratio_power / 属性锚点覆盖率幂次
+# Purpose / 作用: Keeps standalone attribute anchors from being lifted as strongly as visible feature matches.
+# Meaning / 意义: Attribute SAs remain valid anchors and scoring factors, but they should not repeatedly consume the main stimulus energy before visible structures get a chance to match.
+# Reference / 参考: Default 1.0.
+stimulus_competition_attribute_ratio_power: 1.0
+
+# stimulus_transfer_curve_enabled / 刺激命中转移曲线开关
+# Purpose / 作用: Uses a Hill-style curve to convert similarity into actual energy transfer fraction instead of multiplying directly.
+# Meaning / 意义: When true, ordinary non-zero matches transfer a clearer share of the covered SA energy, so matched objects usually receive more energy than the final residual keeps.
+# Reference / 参考: Default true.
+stimulus_transfer_curve_enabled: true
+
+# stimulus_transfer_curve_half_score / 刺激命中转移半分点
+# Purpose / 作用: Similarity score where the transfer curve reaches half of stimulus_match_transfer_ratio.
+# Meaning / 意义: Smaller values make weak-but-real matches transfer energy earlier, reducing extra tail rounds while keeping zero matches at zero.
+# Reference / 参考: Default 0.12.
+stimulus_transfer_curve_half_score: 0.12
+
+# stimulus_transfer_curve_power / 刺激命中转移曲线幂次
+# Purpose / 作用: Controls how soft or winner-taking the transfer curve is.
+# Meaning / 意义: Values below 1 lift medium-low similarities; values above 1 make transfer more conservative.
+# Reference / 参考: Default 0.38.
+stimulus_transfer_curve_power: 0.38
+
+# stimulus_transfer_curve_normalize_at_one / 刺激转移曲线满分归一化
+# Purpose / 作用: Normalizes the transfer curve so similarity 1.0 maps back to stimulus_match_transfer_ratio.
+# Meaning / 意义: Keeps exact or near-exact hits able to transfer almost all covered energy while still lifting medium-low matches.
+# Reference / 参考: Default true.
+stimulus_transfer_curve_normalize_at_one: true
+
+# stimulus_anchor_owner_residual_presence_cache_enabled / 锚点 owner 残差存在性缓存
+# Purpose / 作用: Reuses the per-run "does this owner DB have residual/common entries" answer during anchor scoring.
+# Meaning / 意义: This removes repeated diff_table scans while preserving dynamic ER/EV, fatigue, and same-packet repeat scoring.
+# Reference / 参考: Default true.
+stimulus_anchor_owner_residual_presence_cache_enabled: true
+
+# stimulus_anchor_owner_residual_presence_shared_cache_enabled / 锚点 owner 残差存在性跨 tick 缓存
+# Purpose / 作用: Reuses the read-only boolean "does this owner DB contain residual/common entries" across ticks.
+# Meaning / 意义: The cache key includes owner id, db id, updated_at, and diff_table length; DB edits naturally miss and rebuild. It never caches energy, fatigue, candidate score, or transfer amount.
+# Rollback / 回退: Set false to keep this presence scan scoped to one stimulus-level run.
+# Reference / 参考: Default true.
+stimulus_anchor_owner_residual_presence_shared_cache_enabled: true
+
+# stimulus_round_debug_full_text_rounds / 刺激逐轮调试完整文本保留轮数
+# Purpose / 作用: Keeps full before/after grouped text for the early high-value rounds, then stores compact previews.
+# Meaning / 意义: Metrics and selected-match audit remain complete; long source ticks avoid repeatedly formatting large debug strings.
+# Reference / 参考: Default 8; set 0 for full legacy text in every round.
+stimulus_round_debug_full_text_rounds: 8
+
+# stimulus_round_debug_token_preview_limit / 刺激逐轮调试 token 预览上限
+# Purpose / 作用: After full-text debug rounds are exhausted, keep only a compact token preview in round_details.
+# Meaning / 意义: Energy transfer metrics, selected match, and before/after energy totals remain complete; late-round raw token lists stop growing with long source text.
+# Reference / 参考: Default 24.
+stimulus_round_debug_token_preview_limit: 24
+
+# stimulus_round_debug_candidate_detail_limit / 刺激逐轮候选明细上限
+# Purpose / 作用: Caps per-round candidate debug rows after they are sorted.
+# Meaning / 意义: Keeps reports readable and cheaper without changing candidate competition or selected match.
+# Reference / 参考: Default 16; set 0 for all candidates.
+stimulus_round_debug_candidate_detail_limit: 16
+
+# stimulus_round_debug_shadow_candidate_detail_limit / 刺激逐轮影子候选明细上限
+# Purpose / 作用: Caps shadow raw-residual candidate debug rows.
+# Meaning / 意义: Shadow rows are diagnostic-only in the default growth path, so limiting display payload should not change cognition.
+# Reference / 参考: Default 8; set 0 for all shadow candidates.
+stimulus_round_debug_shadow_candidate_detail_limit: 8
+
+# match_scoring_v2_enabled / V2 统一匹配评分开关
+# Purpose / 作用: Enables the new soft-scoring layer for numeric / order / attribute / context / energy diagnostics.
+# Meaning / 意义: When ON, legacy eligibility is still preserved, but candidate ranking can be softly blended with V2 score.
+# Reference / 参考: Default true.
+match_scoring_v2_enabled: true
+
+# match_scoring_v2_shadow_only / V2 仅旁路观测
+# Purpose / 作用: Computes V2 score and debug breakdown without changing competition order.
+# Meaning / 意义: Turn this on when you want zero-behavior-risk diagnostics before letting V2 influence ranking.
+# Reference / 参考: Default false.
+match_scoring_v2_shadow_only: false
+
+# match_scoring_v2_blend_weight / V2 排序混合权重
+# Purpose / 作用: Controls how much V2 score influences the final competition score.
+# Meaning / 意义: 0 keeps pure legacy order; 1 lets V2 fully determine soft-scored ranking among still-eligible candidates.
+# Reference / 参考: Default 0.35.
+match_scoring_v2_blend_weight: 0.35
+
+# match_scoring_v2_min_score / V2 参考下限
+# Purpose / 作用: Reference threshold used for diagnostics such as threshold margin.
+# Meaning / 意义: This does not hard-gate matching by itself; it defines how far a candidate is from the expected V2 pass band.
+# Reference / 参考: Default 0.18.
+match_scoring_v2_min_score: 0.18
+
+# soft_partial_match_competition_enabled / 是否启用软部分匹配竞争
+# Purpose / 作用: Allows partial-but-strong candidate structures to stay in competition instead of requiring only the old all-or-nothing eligibility path.
+# Meaning / 意义: This is the default continuity path behind the current fuzzy matching philosophy; turn it off only for strict rollback comparison.
+# Reference / 参考: Default true.
+soft_partial_match_competition_enabled: true
+
+# match_scoring_v2_noise_mid / V2 去噪中点
+# Purpose / 作用: Midpoint used by the V2 denoise sigmoid.
+# Meaning / 意义: Larger values require a stronger blended component mean before V2 clearly rises above noise.
+# Reference / 参考: Default 0.02.
+match_scoring_v2_noise_mid: 0.02
+
+# match_scoring_v2_noise_scale / V2 去噪尺度
+# Purpose / 作用: Scale used by the V2 denoise sigmoid.
+# Meaning / 意义: Smaller values make V2 more decisive around the midpoint; larger values keep it smoother.
+# Reference / 参考: Default 0.01.
+match_scoring_v2_noise_scale: 0.01
+
+# match_scoring_v2_half_ratio / V2 半响应比率
+# Purpose / 作用: Half-response point used by the V2 hill curve.
+# Meaning / 意义: Lower values let moderately matched candidates rise sooner; larger values demand stronger evidence.
+# Reference / 参考: Default 0.14.
+match_scoring_v2_half_ratio: 0.14
+
+# match_scoring_v2_curve_power / V2 曲线幂次
+# Purpose / 作用: Power exponent for the V2 hill curve.
+# Meaning / 意义: Higher values sharpen the separation between medium and high quality candidates.
+# Reference / 参考: Default 1.25.
+match_scoring_v2_curve_power: 1.25
+
+# match_scoring_v2_*_weight / V2 子分权重
+# Purpose / 作用: Relative weights for the V2 component mean.
+# Meaning / 意义: Keep these weights moderate; the goal is soft evidence fusion, not replacing all legacy semantics at once.
+match_scoring_v2_base_weight: 0.42
+match_scoring_v2_numeric_weight: 0.16
+match_scoring_v2_order_weight: 0.16
+match_scoring_v2_attribute_weight: 0.12
+match_scoring_v2_context_weight: 0.07
+match_scoring_v2_energy_weight: 0.07
+match_scoring_v2_inclusion_weight: 0.08
+
+# match_scoring_v2_numeric_coverage_power / 数值家族覆盖惩罚幂次
+# Purpose / 作用: Penalizes cases where only part of the numeric families/slots can be aligned.
+# Meaning / 意义: 1.0 means linear coverage penalty; higher values punish missing numeric factors more strongly; lower values are more tolerant.
+# Reference / 参考: Default 1.0.
+match_scoring_v2_numeric_coverage_power: 1.0
+
+# residual_memory_as_structure_enabled / 残差记忆对象化双轨开关
+# Purpose / 作用: Lets residual-memory activations also project into the runtime chain as first-class objects instead of only staying inside the dedicated memory-activation pool.
+# Meaning / 意义: Keep this on for the new theory direction; turn it off for strict legacy MAP-only comparison.
+# Reference / 参考: Default true.
+residual_memory_as_structure_enabled: true
+
+# residual_memory_as_structure_shadow_mode / 残差记忆对象化是否仅走 shadow 模式
+# Purpose / 作用: Allows runtime memory objects to be inserted and observed without immediately letting them fully compete in CAM and downstream chains.
+# Meaning / 意义: Current theory default is false, because activated residual memory objects should normally be allowed into CAM; set true only for conservative observation / rollback.
+# Reference / 参考: Default false.
+residual_memory_as_structure_shadow_mode: false
+
+# residual_memory_runtime_object_type / 残差记忆运行态对象类型
+# Purpose / 作用: Controls whether the default residual-memory runtime projection enters StatePool as a structure-like object or stays on the legacy EM shell.
+# Meaning / 意义: Default "st" matches the new theory path; set "em" only for rollback/comparison with the older compatibility shell.
+# Reference / 参考: Default "em".
+residual_memory_runtime_object_type: "em"
+
+# unified_numeric_scoring_enabled / 是否启用统一数值软匹配评分
+# Purpose / 作用: Turns on the shared numeric-family scoring path for time/pressure/expectation and other numerical SA.
+# Meaning / 意义: Keep on for theory V2; turn off only for ablation against old non-unified matching.
+# Reference / 参考: Default true.
+unified_numeric_scoring_enabled: true
+
+# attribute_soft_scoring_enabled / 属性软评分开关
+# Purpose / 作用: Lets attribute-anchor compatibility contribute as a soft score instead of only surviving through legacy exact bundle gates.
+# Meaning / 意义: This keeps attribute understanding continuous instead of brittle.
+# Reference / 参考: Default true.
+attribute_soft_scoring_enabled: true
+
+# sequence_soft_scoring_enabled / 顺序软评分开关
+# Purpose / 作用: Lets order alignment contribute as a graded score instead of a binary gate.
+# Meaning / 意义: This keeps near-order candidates available when exact order is absent.
+# Reference / 参考: Default true.
+sequence_soft_scoring_enabled: true
+
+# time_factor_soft_bonus_enabled / 时间因子软加分开关
+# Purpose / 作用: Adds a soft bonus when time-like incoming cues are close to the age interval of a memory-like residual candidate.
+# Meaning / 意义: This models “时间越接近越像” without hard windows or forced exact attribution.
+# Reference / 参考: Default true.
+time_factor_soft_bonus_enabled: true
+
+# time_like_memory_wildcard_enabled / 记忆候选时间因子 wildcard 开关
+# Purpose / 作用: For memory-like residual candidates, treat time-like numeric units as a soft bonus factor instead of a hard numeric participation term.
+# Meaning / 意义: This keeps “时间感受” closer to a wildcard scoring modifier on the default theory path, while ordinary structures still use normal numeric matching.
+# Reference / 参考: Default true.
+time_like_memory_wildcard_enabled: true
+
+# stimulus_residual_memory_shadow_v2_enabled / 刺激级残差记忆影子 V2 可观测开关
+# Purpose / 作用: Scores owner-local raw residual memory candidates in a shadow path for metrics / charts without letting them steal the main runtime winner.
+# Meaning / 意义: Keep this on for theory-side observability of time wildcard / time bonus; turn off only for conservative rollback or noise isolation.
+# Reference / 参考: Default true.
+stimulus_residual_memory_shadow_v2_enabled: true
+
+# stimulus_residual_memory_shadow_skip_when_promotion_disabled_enabled / 晋升关闭时跳过残差影子精评分
+# Purpose / 作用: When residual-memory promotion is disabled, skip expensive shadow raw-residual common-part scoring.
+# Meaning / 意义: The shadow path is diagnostic unless promotion is enabled. Keeping this on preserves the main stimulus/growth result while removing a large observability-only cost.
+# Rollback / 回退: Set false when you need full time-wildcard / raw-residual shadow diagnostics with promotion off.
+# Reference / 参考: Default true.
+stimulus_residual_memory_shadow_skip_when_promotion_disabled_enabled: true
+
+# stimulus_residual_memory_promotion_enabled / 刺激级残差记忆受控晋升开关
+# Purpose / 作用: Lets strong shadow raw-residual memory candidates first obtain/create a real structure id, then re-enter the normal local candidate competition as promoted structures.
+# Meaning / 意义: This is the guarded “shadow -> mainline” bridge for the new theory path. It is currently kept off by default because the broad default-on path can still suppress the already-stable structure-level time-like visibility chain; turn it on for targeted time-wildcard experiments.
+# Reference / 参考: Default false.
+stimulus_residual_memory_promotion_enabled: false
+
+# stimulus_residual_memory_promotion_require_time_signal / 残差记忆晋升是否要求时间口径显影
+# Purpose / 作用: Restricts promotion to candidates that already show a time-like wildcard / time bonus / time-like numeric signal.
+# Meaning / 意义: Keeping this on narrows the bridge to the time-theory path first, reducing unintended promotion noise in unrelated cases.
+# Reference / 参考: Default true.
+stimulus_residual_memory_promotion_require_time_signal: true
+
+# stimulus_residual_memory_promotion_min_v2_score / 残差记忆晋升最低 V2 分
+# Purpose / 作用: Sets the minimum V2 soft score a shadow raw-residual memory candidate must reach before being materialized into the normal competition path.
+# Meaning / 意义: Higher values keep promotion conservative; lower values let more residual-memory candidates compete as real structures.
+# Reference / 参考: Default 0.28.
+stimulus_residual_memory_promotion_min_v2_score: 0.28
+
+# stimulus_residual_memory_promotion_max_candidates_per_owner / 每个 owner 最多晋升残差记忆候选数
+# Purpose / 作用: Caps how many promoted residual-memory candidates can be added back into the local child competition per owner / round.
+# Meaning / 意义: Keeping this small prevents noisy owner-local explosion while still allowing the strongest memory-like branch to surface.
+# Reference / 参考: Default 1.
+stimulus_residual_memory_promotion_max_candidates_per_owner: 1
+
+# stimulus_local_child_candidate_max_per_owner / 每个 owner 局部子候选上限
+# Purpose / 作用: Caps how many weighted local diff candidates from one owner DB enter expensive stimulus-level matching.
+# Meaning / 意义: Candidates are already sorted by local base weight, recency and fatigue before this guard. This prevents very thick local DBs from turning one tick into a wide scan while preserving the strongest local branches.
+# Reference / 参考: Default 48. Set 0 to disable this performance guard for exhaustive diagnosis.
+stimulus_local_child_candidate_max_per_owner: 48
+
+# stimulus_best_match_candidate_max_per_owner / 每个 owner 实际精评分候选上限
+# Purpose / 作用: Caps the final per-owner candidate list before maximum_common_part and V2 scoring.
+# Meaning / 意义: This is a second guard after local collection / shadow promotion, so pathological owners cannot force hundreds of DP cuts in one round.
+# Reference / 参考: Default 64. Set 0 to disable.
+stimulus_best_match_candidate_max_per_owner: 64
+
+# stimulus_shadow_raw_residual_candidate_max_per_owner / 每个 owner 残差影子评分上限
+# Purpose / 作用: Caps owner-local raw residual memory shadow candidates before expensive common-part scoring.
+# Meaning / 意义: Shadow memory scoring is mostly observability / guarded promotion. Keep the strongest raw residuals visible without letting old residual tails dominate stimulus-level time.
+# Reference / 参考: Default 32. Set 0 to score all shadow residuals.
+stimulus_shadow_raw_residual_candidate_max_per_owner: 32
+
+# owner_db_persistence_trim_enabled / 是否启用 owner 局部数据库持久裁表
+# Purpose / 作用: Controls whether diff_table / group_table are physically trimmed during maintenance and writeback.
+# Meaning / 意义: Default false keeps long-tail owner-local experience in persistence and moves cost control to runtime candidate budgeting, which better matches AP theory.
+# Reference / 参考: Default false.
+owner_db_persistence_trim_enabled: false
+
+# owner_db_runtime_budget_enabled / 是否启用 owner 局部数据库运行时候选视图
+# Purpose / 作用: Builds a bounded recent / strong / explore working set before expensive retrieval and induction work.
+# Meaning / 意义: Lets owner DB persistence remain rich while keeping per-tick local fan-out under control.
+# Reference / 参考: Default true.
+owner_db_runtime_budget_enabled: true
+
+# owner_db_runtime_recent_budget / owner 局部数据库近期条目预算
+# Purpose / 作用: Number of most recently updated / matched entries included in the runtime working set.
+# Reference / 参考: Default 50.
+owner_db_runtime_recent_budget: 50
+
+# owner_db_runtime_strong_budget / owner 局部数据库强项条目预算
+# Purpose / 作用: Number of strongest historical entries included after recent entries.
+# Meaning / 意义: Strength is base-weight first, then recent gain / fatigue / recency tie-break.
+# Reference / 参考: Default 28.
+owner_db_runtime_strong_budget: 28
+
+# owner_db_runtime_explore_budget / owner 局部数据库探索条目预算
+# Purpose / 作用: Number of reproducible pseudo-random long-tail entries sampled after recent and strong entries.
+# Reference / 参考: Default 50.
+owner_db_runtime_explore_budget: 50
+
+# time_factor_soft_bonus_max_factor / 时间软加分上限
+# Purpose / 作用: Caps how much interval closeness can amplify the final V2 score.
+# Meaning / 意义: Keep modest so time helps, but does not dominate content matching by itself.
+# Reference / 参考: Default 1.35.
+time_factor_soft_bonus_max_factor: 1.35
+
+# time_factor_soft_bonus_abs_tolerance / 时间软加分绝对容差
+# Purpose / 作用: Absolute tolerance used when comparing memory age seconds with time-like target interval seconds.
+# Meaning / 意义: Larger values make the time bonus more forgiving.
+# Reference / 参考: Default 0.35.
+time_factor_soft_bonus_abs_tolerance: 0.35
+
+# time_factor_soft_bonus_rel_tolerance / 时间软加分相对容差
+# Purpose / 作用: Relative tolerance used when comparing memory age seconds with time-like target interval seconds.
+# Meaning / 意义: Larger values broaden the human-like fuzzy time attribution band.
+# Reference / 参考: Default 0.55.
+time_factor_soft_bonus_rel_tolerance: 0.55
+
+# internal_stimulus_flatten_to_single_cooccurrence_group_enabled / 内源刺激压平为单一共现组
+# Purpose / 作用: Makes endogenous stimulus packets discard fragment-local temporal groups and keep one real co-occurrence group only.
+# Meaning / 意义: Keep this on for the new theory path where内源刺激流只保留一个真实共现组；turn it off to restore legacy per-fragment grouping for comparison.
+# Reference / 参考: Default true.
+internal_stimulus_flatten_to_single_cooccurrence_group_enabled: true
+
+# stimulus_residual_min_energy / 刺激残余停止阈值
+# Purpose / 作用: Stops further stimulus-level rounds when the remaining packet energy falls below this value.
+# Meaning / 意义: This is one of the main guards against overprocessing weak leftovers.
+# Reference / 参考: Default 0.05.
+stimulus_residual_min_energy: 0.12
+
+# stimulus_attribute_energy_scale / 属性刺激参与缩放
+# Purpose / 作用: Scales how strongly attribute SA energy contributes in stimulus-level matching and cutting.
+# Meaning / 意义: Higher values make attribute-bearing CSA parts more behaviorally visible.
+# Reference / 参考: Default 0.22.
+stimulus_attribute_energy_scale: 0.22
+
+# stimulus_placeholder_energy_scale / 占位刺激缩放
+# Purpose / 作用: Scales placeholder-like units when they appear in stimulus-level logic.
+# Meaning / 意义: Useful for preventing placeholder content from overwhelming or disappearing relative to ordinary stimulus content.
+# Reference / 参考: Default 1.0.
+stimulus_placeholder_energy_scale: 1.0
+
+# stimulus_anchor_er_weight / 锚点 ER 权重
+# Purpose / 作用: Multiplier applied to ER contribution when choosing or evaluating stimulus anchors.
+# Meaning / 意义: Higher values bias anchor choice toward reality-backed units.
+# Reference / 参考: Default 1.25.
+stimulus_anchor_er_weight: 1.25
+
+# stimulus_anchor_ev_weight / 锚点 EV 权重
+# Purpose / 作用: Multiplier applied to EV contribution in stimulus anchor evaluation.
+# Meaning / 意义: Lower than ER weight means speculative energy helps, but less than reality-backed activation.
+# Reference / 参考: Default 0.9.
+stimulus_anchor_ev_weight: 0.9
+
+# stimulus_anchor_external_bonus / 外源锚点加成
+# Purpose / 作用: Bonus applied when the anchor comes from externally sourced current stimulus rather than weaker internal traces.
+# Meaning / 意义: Helps current-input anchors beat stale residual fragments when appropriate.
+# Reference / 参考: Default 0.08.
+stimulus_anchor_external_bonus: 0.08
+
+# stimulus_anchor_non_punctuation_bonus / 非标点锚点加成
+# Purpose / 作用: Bonus applied to non-punctuation anchors during anchor selection.
+# Meaning / 意义: Helps semantic units outrank punctuation-only anchors.
+# Reference / 参考: Default 0.05.
+stimulus_anchor_non_punctuation_bonus: 0.05
+
+# stimulus_anchor_hidden_attribute_score_scale / 隐藏属性主锚点缩放
+# Purpose / 作用: Scales hidden attribute SAs when choosing the main stimulus-level anchor.
+# Meaning / 意义: Attribute SAs still participate in matching, numeric similarity, and anchor scoring, but should not repeatedly monopolize the primary retrieval-storage rounds before visible structures receive energy.
+# Reference / 参考: Default 0.22.
+stimulus_anchor_hidden_attribute_score_scale: 0.22
+
+# stimulus_anchor_existing_structure_bonus / 已有锚点结构加成
+# Purpose / 作用: Prefer anchors that already resolve to a reusable structure over freshly preseeded atoms when scores are otherwise close.
+# Meaning / 意义: Keeps stimulus retrieval centered on known seeds instead of letting every new single SA immediately steal the current match path.
+# Reference / 参考: Default 0.18.
+stimulus_anchor_existing_structure_bonus: 0.18
+
+# stimulus_anchor_owner_residual_bonus / 锚点已有 owner-local 残差库加成
+# Purpose / 作用: Prefer anchors whose structure DB already has residual/common entries, because they can expand into longer known memories.
+# Meaning / 意义: Helps A in A+B keep driving A+B+C expansion even when B also exists as an atom.
+# Reference / 参考: Default 0.85.
+stimulus_anchor_owner_residual_bonus: 0.85
+
+# stimulus_anchor_owner_residual_bonus_energy_half / owner 残差加成半能量点
+# Purpose / 作用: Dynamically scales owner-residual anchor bonus by the anchor SA's current remaining energy.
+# Meaning / 意义: A visible anchor that has already been mostly absorbed should not keep winning only because its owner DB is rich; this gives still-active residual/attribute SAs a chance to write their own owner-local evidence.
+# Reference / 参考: Default 0.12.
+stimulus_anchor_owner_residual_bonus_energy_half: 0.12
+
+# stimulus_anchor_current_packet_preseed_penalty / 本包新原子预种子锚点惩罚
+# Purpose / 作用: Softly demote atoms just preseeded from the current packet, without forbidding first-time learning.
+# Meaning / 意义: If no better known seed exists, the new atom can still become anchor and write its residual DB.
+# Reference / 参考: Default 0.12.
+stimulus_anchor_current_packet_preseed_penalty: 0.12
+
+# stimulus_anchor_left_to_right_bias_enabled / 锚点从左到右稳定偏置
+# Purpose / 作用: Prefer earlier stimulus anchors before later newly preseeded atoms when energy and memory evidence are close.
+# Meaning / 意义: Keeps first-time learning centered on the left seed of the current stream, while owner-residual bonus and fatigue can still redirect attention when there is stronger evidence.
+# Reference / 参考: Enabled for round 1; group penalty 0.35 and sequence penalty 0.18.
+stimulus_anchor_left_to_right_bias_enabled: true
+stimulus_anchor_left_to_right_bias_rounds: 1
+stimulus_anchor_group_position_penalty: 0.35
+stimulus_anchor_sequence_position_penalty: 0.18
+
+# stimulus_anchor_punctuation_penalty / 标点锚点惩罚
+# Purpose / 作用: Penalty applied to punctuation anchors during selection and competition.
+# Meaning / 意义: Keeps punctuation visible without letting it dominate anchor choice too often.
+# Reference / 参考: Default 0.35.
+stimulus_anchor_punctuation_penalty: 0.35
+
+# stimulus_anchor_fatigue_enabled / 刺激级初始锚点疲劳
+# Purpose / 作用: Repeatedly selected anchors share a cross-tick fatigue by token + context.
+# Meaning / 意义: Prevents a single high-energy SA from monopolizing every retrieval round while still allowing it to recover.
+# Reference / 参考: Enabled; 0.90 decay is nearly recovered after about 50 ticks.
+stimulus_anchor_fatigue_enabled: true
+stimulus_anchor_fatigue_decay_per_tick: 0.9
+stimulus_anchor_fatigue_step: 0.75
+stimulus_anchor_fatigue_cap: 32.0
+stimulus_anchor_fatigue_floor_scale: 0.03
+stimulus_anchor_fatigue_keep_ticks: 256
+stimulus_anchor_fatigue_max_entries: 4096
+stimulus_anchor_same_packet_repeat_fatigue_enabled: true
+stimulus_anchor_same_packet_repeat_fatigue_step: 2.5
+
+# stimulus_residual_projection_ratio / 刺激残余投影比例
+# Purpose / 作用: Ratio used when projecting remaining stimulus content back into runtime structures or packets.
+# Meaning / 意义: Higher values make residual projections stronger and more visible downstream.
+# Reference / 参考: Default 0.35.
+stimulus_residual_projection_ratio: 0.16
+
+# stimulus_atomic_seed_confidence / 原子锚种子置信度
+# Purpose / 作用: Initial confidence assigned to atomic stimulus-derived seed structures.
+# Meaning / 意义: Higher confidence makes newly seeded atomic structures more willing to participate in later competition.
+# Reference / 参考: Default 0.95.
+stimulus_atomic_seed_confidence: 0.95
+
+# stimulus_anchor_seed_confidence / 锚点种子置信度
+# Purpose / 作用: Initial confidence for seed structures created from anchor-aligned cuts.
+# Meaning / 意义: Controls how boldly anchor-based seeds enter the structure space.
+# Reference / 参考: Default 0.9.
+stimulus_anchor_seed_confidence: 0.9
+
+# stimulus_focus_seed_confidence / 焦点种子置信度
+# Purpose / 作用: Initial confidence for seed structures created from focus-group cuts.
+# Meaning / 意义: Lets focus-group fragments become new structures without requiring full perfect matches.
+# Reference / 参考: Default 0.9.
+stimulus_focus_seed_confidence: 0.9
+
+# stimulus_max_common_confidence / 最大共同结构置信度
+# Purpose / 作用: Initial confidence for new common structures created from maximum-common-part cuts.
+# Meaning / 意义: Higher values make newly created common structures more assertive immediately after birth.
+# Reference / 参考: Default 0.86.
+stimulus_max_common_confidence: 0.86
+
+# stimulus_overlap_residual_confidence / 重叠残差置信度
+# Purpose / 作用: Initial confidence for overlap-style residual structures.
+# Meaning / 意义: This tunes how strongly partially overlapping residual memory traces are trusted.
+# Reference / 参考: Default 0.68.
+stimulus_overlap_residual_confidence: 0.68
+
+# stimulus_residual_common_confidence / 残差公共部分置信度
+# Purpose / 作用: Initial confidence for common structures born from residual-vs-residual comparison.
+# Meaning / 意义: Larger values make these shared residual patterns enter the structure space more prominently.
+# Reference / 参考: Default 0.78.
+stimulus_residual_common_confidence: 0.78
+
+# stimulus_residual_context_confidence / 残差上下文置信度
+# Purpose / 作用: Initial confidence for context structures extracted from residual context.
+# Meaning / 意义: This affects how much contextual fragments matter versus exact matched cores.
+# Reference / 参考: Default 0.7.
+stimulus_residual_context_confidence: 0.7
+
+# stimulus_extension_confidence / 扩展结构置信度
+# Purpose / 作用: Initial confidence for fresh extension structures created along the chain path.
+# Meaning / 意义: Larger values make path extensions more assertive immediately after being added.
+# Reference / 参考: Default 0.74.
+stimulus_extension_confidence: 0.74
+
+# stimulus_overlap_residual_link_base_weight / 重叠残差链接基础权重
+# Purpose / 作用: Base weight assigned to links created for overlap residual relations.
+# Meaning / 意义: Higher values make overlap residual routes more discoverable later.
+# Reference / 参考: Default 0.7.
+stimulus_overlap_residual_link_base_weight: 0.7
+
+# stimulus_extension_link_base_weight / 扩展链接基础权重
+# Purpose / 作用: Base weight for links created when a fresh extension path is added.
+# Meaning / 意义: Higher values favor rediscovering those extension routes in later matching.
+# Reference / 参考: Default 0.75.
+stimulus_extension_link_base_weight: 0.75
+
+# stimulus_memory_structure_energy_profile_mode / 刺激记忆结构权重模式
+# Purpose / 作用: Controls how stimulus-packet episodic memories assign weights to `structure_refs` for later memory-feedback structure projection.
+# Meaning / 意义: `runtime_projection_energy` reuses the actual runtime projection energy of matched/new structures in this tick, reducing equal-share dilution; `uniform` keeps the old equal-share fallback.
+# Reference / 参考: Default `runtime_projection_energy`.
+stimulus_memory_structure_energy_profile_mode: runtime_projection_energy
+
+# stimulus_atomic_extension_link_base_weight / 原子扩展链接基础权重
+# Purpose / 作用: Base weight for links created from atomic extension logic.
+# Meaning / 意义: Lets atomic fallback growth remain discoverable without overpowering richer paths.
+# Reference / 参考: Default 0.72.
+stimulus_atomic_extension_link_base_weight: 0.72
+
+# ---- Structure-Level Retrieval / 结构级查存一体 ----
+
+# structure_competition_noise_mid / 结构竞争曲线中点
+# Purpose / 作用: Midpoint parameter for structure-level competition shaping.
+# Meaning / 意义: Similar to the stimulus-side curve but applied to ST/SG level candidate competition.
+# Reference / 参考: Default 0.01.
+structure_competition_noise_mid: 0.01
+
+# structure_competition_noise_scale / 结构竞争噪声尺度
+# Purpose / 作用: Scale parameter for structure-level competition shaping.
+# Meaning / 意义: Controls how quickly close candidate scores diverge after shaping.
+# Reference / 参考: Default 0.004.
+structure_competition_noise_scale: 0.004
+
+# structure_competition_half_ratio / 结构竞争半比率
+# Purpose / 作用: Half-response ratio used in structure-level competition.
+# Meaning / 意义: Lower values make weaker structural matches more eligible; higher values demand stronger evidence.
+# Reference / 参考: Default 0.1.
+structure_competition_half_ratio: 0.1
+
+# structure_competition_curve_power / 结构竞争曲线幂次
+# Purpose / 作用: Power exponent for structure-level competition shaping.
+# Meaning / 意义: Higher values strengthen winner separation; lower values keep more candidates near each other.
+# Reference / 参考: Default 1.15.
+structure_competition_curve_power: 1.15
+
+# structure_path_runtime_scale / 结构路径运行时放大
+# Purpose / 作用: Scale applied to path-derived runtime strength during structure-level matching.
+# Meaning / 意义: Higher values favor routes discovered through local DB chains.
+# Reference / 参考: Default 1.35.
+structure_path_runtime_scale: 1.35
+
+# structure_path_runtime_gain / 结构路径运行时增益
+# Purpose / 作用: Additive or gain-like support applied to path-derived structure scores.
+# Meaning / 意义: Helps local path continuity matter in candidate selection.
+# Reference / 参考: Default 0.3.
+structure_path_runtime_gain: 0.3
+
+# structure_anchor_runtime_scale / 结构锚点运行时放大
+# Purpose / 作用: Scale applied to anchor-side runtime contribution during structure-level matching.
+# Meaning / 意义: Larger values make the currently selected anchor structure more influential.
+# Reference / 参考: Default 1.35.
+structure_anchor_runtime_scale: 1.35
+
+# structure_anchor_runtime_gain / 结构锚点运行时增益
+# Purpose / 作用: Gain applied to anchor-side runtime strength during structure-level matching.
+# Meaning / 意义: Helps the selected anchor structure stay central in group formation.
+# Reference / 参考: Default 0.22.
+structure_anchor_runtime_gain: 0.22
+
+# structure_anchor_temp_fatigue_step / 结构锚点临时疲劳步长
+# Purpose / 作用: Temporary fatigue step added when a structure anchor is reused in the same round chain.
+# Meaning / 意义: This discourages the same anchor from monopolizing all rounds.
+# Reference / 参考: Default 0.55.
+structure_anchor_temp_fatigue_step: 0.55
+
+# structure_anchor_temp_fatigue_base / 结构锚点临时疲劳基线
+# Purpose / 作用: Base factor used in temporary fatigue computation for structure anchors.
+# Meaning / 意义: Works with the fatigue step and rho gain to soften repeated anchor dominance.
+# Reference / 参考: Default 0.7.
+structure_anchor_temp_fatigue_base: 0.7
+
+# internal_storage_projection_enabled / 本轮新归一化残差是否立即投到内源
+# Purpose / 作用: When a round canonicalizes fresh runtime residual context into local storage, optionally project that context back into the current tick's endogenous stimulus.
+# Meaning / 意义: This keeps "当前激活图景 -> 内源刺激" alive even when no existing structure-group fully matches, preventing the internal channel from collapsing into only a few atomic tail residuals.
+# Reference / 参考: Default true. Turn off only for strict A/B comparisons.
+internal_storage_projection_enabled: true
+
+# internal_storage_projection_ratio / 新归一化残差投影能量比例
+# Purpose / 作用: Scales how much of the canonicalized runtime residual context is emitted as immediate endogenous stimulus in the current round.
+# Meaning / 意义: Higher values make freshly formed internal context more visible, but too high may over-amplify the same runtime material.
+# Reference / 参考: Default 0.32. Recommended 0.20-0.45.
+internal_storage_projection_ratio: 0.14
+
+# internal_storage_projection_max_fragments_per_round / 每轮最多投影多少条新残差片段
+# Purpose / 作用: Caps how many freshly canonicalized residual fragments can be projected in one structure-level round.
+# Meaning / 意义: This bounds immediate internal-context growth while still letting the richest residual context enter the loop.
+# Reference / 参考: Default 1.
+internal_storage_projection_max_fragments_per_round: 1
+
+# internal_fragment_include_runtime_bound_attributes / 内源片段是否带入运行时绑定属性
+# Purpose / 作用: When structure/group fragments are converted into endogenous stimulus, also project the runtime-bound attributes carried by the current CAM structures.
+# Meaning / 意义: This opens a generic bridge from “结构级已经拥有的运行时属性” to “刺激级真正能看到的 attribute SA”, so time feeling and other numeric cognitive signals do not die inside debug-only metadata.
+# Reference / 参考: Default false under the new runtime-SA path; turn on only for legacy rollback/A-B comparison.
+internal_fragment_include_runtime_bound_attributes: false
+
+# internal_fragment_runtime_attribute_numeric_only / 仅投影数值型运行时属性
+# Purpose / 作用: Restricts the runtime-bound-attribute projection to attributes with valid numeric values.
+# Meaning / 意义: This is the safer default because it lights up time-like / pressure / reward-like numeric matching without immediately flooding internal packets with every symbolic tag.
+# Reference / 参考: Default true.
+internal_fragment_runtime_attribute_numeric_only: true
+
+# internal_fragment_runtime_attribute_max_count / 单个内源片段最多追加几个运行时属性
+# Purpose / 作用: Hard cap on how many runtime-bound attributes a single internal fragment may append.
+# Meaning / 意义: Prevents large bound-attribute sets from bloating endogenous packets or dominating matching/debug output.
+# Reference / 参考: Default 8.
+internal_fragment_runtime_attribute_max_count: 8
+
+# internal_fragment_runtime_attribute_priority_enabled / 是否对运行时属性投影做优先级排序
+# Purpose / 作用: Reorders runtime-bound attributes before the per-fragment max-count clipping happens.
+# Meaning / 意义: Prevents “重要但较晚出现的运行态属性”被前面的普通属性挤出前 N 个投影位；关闭后回到旧的原顺序截断口径。
+# Reference / 参考: Default true.
+internal_fragment_runtime_attribute_priority_enabled: true
+
+# internal_fragment_runtime_attribute_sort_by_abs_value_desc / 同优先级内是否按绝对数值强度降序排序
+# Purpose / 作用: When multiple runtime attributes belong to the same priority tier, prefer the stronger numeric ones first.
+# Meaning / 意义: This is a generic way to keep stronger runtime evidence more visible in endogenous packets without hard-wiring a single family.
+# Reference / 参考: Default true.
+internal_fragment_runtime_attribute_sort_by_abs_value_desc: true
+
+# internal_fragment_runtime_attribute_priority_patterns / 运行时属性投影优先级模式
+# Purpose / 作用: Defines which attribute families should be considered earlier before the `max_count` clipping.
+# Meaning / 意义: Supports exact match and prefix match via `*` suffix (for example `cfs_*`).
+# Reference / 参考: Default keeps explicit teacher-feedback families first, then reward-punish / CFS / time-like families.
+internal_fragment_runtime_attribute_priority_patterns:
+  - 'teacher_reward_signal'
+  - 'teacher_punish_signal'
+  - 'reward_signal'
+  - 'punish_signal'
+  - 'cfs_*'
+  - '时间感受'
+
+# internal_attention_landscape_enabled / 是否把注意力激活图景直接投到内源
+# Purpose / 作用: Projects the current attention-modulated active landscape itself into endogenous stimulus, instead of relying only on structure-level residual fragments.
+# Meaning / 意义: This is the closer implementation of “当前激活状态图景经过注意力调制后转成内源刺激”, and helps the internal channel stay thick even when matched groups are scarce.
+# Reference / 参考: Default true.
+internal_attention_landscape_enabled: true
+
+# internal_attention_landscape_ratio / 注意力激活图景投影能量比例
+# Purpose / 作用: Scales the immediate endogenous projection strength of the current attention landscape.
+# Meaning / 意义: Larger values make the active landscape more behaviorally visible; too high may over-amplify what attention already selected.
+# Reference / 参考: Default 0.22. Recommended 0.12-0.35.
+internal_attention_landscape_ratio: 0.08
+
+# structure_anchor_temp_fatigue_rho_gain / 结构锚点临时疲劳 rho 增益
+# Purpose / 作用: Additional gain factor in the temporary fatigue curve for anchors.
+# Meaning / 意义: Higher values make repeated anchor reuse fade faster.
+# Reference / 参考: Default 0.6.
+structure_anchor_temp_fatigue_rho_gain: 0.6
+
+# structure_anchor_runtime_family_bonus_enabled / 是否对带高优先级运行时属性的结构锚点加分
+# Purpose / 作用: Gives a soft bonus to CAM items carrying teacher / reward / punish / CFS / time-like runtime families when choosing the next anchor structure.
+# Meaning / 意义: Repairs cases where the teacher-tagged structure is visible in CAM, but still loses the next-round anchor competition to a slightly stronger generic structure.
+# Reference / 参考: Default false for now; keep it as an experimental switch because the current teacher-reward / teacher-punish balance still needs tuning.
+structure_anchor_runtime_family_bonus_enabled: false
+
+# structure_anchor_runtime_family_bonus_patterns / 锚点加分关注的运行时属性 family
+# Purpose / 作用: Exact or prefix-style (`*`) family patterns used by the anchor bonus.
+# Reference / 参考: Default keeps explicit teacher supervision first.
+structure_anchor_runtime_family_bonus_patterns:
+  - 'teacher_reward_signal'
+  - 'teacher_punish_signal'
+  - 'reward_signal'
+  - 'punish_signal'
+  - 'cfs_*'
+  - '时间感受'
+
+# structure_anchor_runtime_family_bonus_value / 锚点 family 基础加分
+# Purpose / 作用: Base additive bonus applied on top of the original anchor score.
+# Reference / 参考: Default 0.55.
+structure_anchor_runtime_family_bonus_value: 0.55
+
+# structure_anchor_runtime_family_bonus_abs_gain / 锚点 family 的数值强度增益
+# Purpose / 作用: Slight extra gain from the strongest matched runtime attribute value.
+# Reference / 参考: Default 0.05.
+structure_anchor_runtime_family_bonus_abs_gain: 0.05
+
+# structure_anchor_runtime_family_bonus_abs_value_cap / 锚点 family 数值强度上限
+# Purpose / 作用: Caps the numeric-strength contribution so one extreme value does not dominate anchor choice.
+# Reference / 参考: Default 2.0.
+structure_anchor_runtime_family_bonus_abs_value_cap: 2.0
+
+# structure_anchor_runtime_family_bonus_max_families / 锚点 family 最多累计几个 family
+# Purpose / 作用: Prevents very wide runtime-family sets from scaling anchor bonus without bound.
+# Reference / 参考: Default 2.
+structure_anchor_runtime_family_bonus_max_families: 2
+
+# structure_anchor_runtime_family_priority_rank_gain / 锚点 family 的顺位增益
+# Purpose / 作用: Earlier families in `structure_anchor_runtime_family_bonus_patterns` receive a stronger multiplier.
+# Meaning / 意义: Lets explicit teacher supervision outrank generic reward / CFS / time-like signals in the anchor stage while staying soft-scored.
+# Reference / 参考: Default 0.45.
+structure_anchor_runtime_family_priority_rank_gain: 0.45
+
+# structure_wave_similarity_floor / 结构波相似度下限
+# Purpose / 作用: Minimum wave-similarity floor before a structure candidate is considered meaningful.
+# Meaning / 意义: Lower values admit looser structural echoes; higher values enforce stricter shape coherence.
+# Reference / 参考: Default 0.35.
+structure_wave_similarity_floor: 0.35
+
+# structure_descend_match_floor / 结构下降匹配下限
+# Purpose / 作用: Minimum descend-match score allowed when following structure paths downward.
+# Meaning / 意义: A guard against weak path-following chains exploding into noise.
+# Reference / 参考: Default 0.35.
+structure_descend_match_floor: 0.35
+
+# structure_bias_er_ratio / 结构级偏置 ER 比例
+# Purpose / 作用: Ratio used when generating ER-biased structure fragments or bias items.
+# Meaning / 意义: Higher values make structure-level bias more reality-heavy.
+# Reference / 参考: Default 0.18.
+structure_bias_er_ratio: 0.18
+
+# structure_bias_ev_ratio / 结构级偏置 EV 比例
+# Purpose / 作用: Ratio used when generating EV-biased structure fragments or bias items.
+# Meaning / 意义: Higher values make structure-level bias more speculative or anticipatory.
+# Reference / 参考: Default 0.28.
+structure_bias_ev_ratio: 0.28
+
+# structure_profile_merge_alpha / 结构能量分布合并 alpha
+# Purpose / 作用: Blend coefficient used when merging group energy profiles.
+# Meaning / 意义: Lower values preserve older profile history more strongly; higher values follow new evidence faster.
+# Reference / 参考: Default 0.22.
+structure_profile_merge_alpha: 0.22
+
+# structure_group_entry_reinforce_ratio / 结构组条目强化比例
+# Purpose / 作用: Ratio applied when reinforcing existing structure-group entries after successful matches.
+# Meaning / 意义: Larger values make SG entries consolidate faster.
+# Reference / 参考: Default 0.15.
+structure_group_entry_reinforce_ratio: 0.15
+
+# structure_group_entry_recent_gain_boost / 结构组条目近因增益增量
+# Purpose / 作用: Additional recent-gain boost applied specifically to group entries.
+# Meaning / 意义: Lets recently verified SG entries stay easier to rediscover.
+# Reference / 参考: Default 0.04.
+structure_group_entry_recent_gain_boost: 0.04
+
+# structure_common_group_confidence / 共有结构组置信度
+# Purpose / 作用: Initial confidence for newly created common structure groups.
+# Meaning / 意义: Higher values make a new SG more assertive immediately after creation.
+# Reference / 参考: Default 0.82.
+structure_common_group_confidence: 0.82
+
+# structure_memory_table_soft_limit / 结构记忆表软上限
+# Purpose / 作用: Soft limit for structure-linked memory table size before cleanup or pruning strategies start to matter.
+# Meaning / 意义: Helps bound local memory metadata growth.
+# Reference / 参考: Default 128.
+structure_memory_table_soft_limit: 128
+
+# ---- Internal Residual Resolution / 内源残差分辨率（DARL + PARS）----
+#
+# Goal / 目标：
+# - 解决“少量超长结构”在结构级残差投射时导致的内源性刺激元爆炸（几千/上万 SA）。
+# - 维持闭环：内源性刺激仍进入刺激级查存与后续流程，只是以“有限分辨率”参与。
+# - 软限制：用预算（detail budget）而不是硬阈值；并引入“临时疲劳 + 逐步还原细节”机制。
+#
+# Note / 注意：
+# - 这里不做任何语义硬编码（不区分工具词/高频词/标点等），只使用运行时信号与结构长度成本。
+# - ADR（肾上腺素）由 Observatory 在运行时注入到 HDB config（_runtime_nt_snapshot），用于提升预算。
+
+# internal_resolution_enabled / 启用内源残差分辨率
+# Purpose / 作用: Enable DARL+PARS to compress structure-level residual fragments before turning them into internal SA.
+# Meaning / 意义: When enabled, internal residual SA count is budgeted per tick.
+# Reference / 参考: Default true.
+internal_resolution_enabled: true
+
+# internal_resolution_detail_budget_base / 基础 detail 预算
+# Purpose / 作用: Base budget (in "detail units" ~= internal SA count) for internal residual per tick.
+# Meaning / 意义: Larger values reveal more details but cost more.
+# Reference / 参考: Default 128.
+internal_resolution_detail_budget_base: 56
+
+# internal_resolution_detail_budget_adr_gain / ADR 提升预算增益
+# Purpose / 作用: ADR (0~1) temporarily raises the budget: budget = base + adr_gain * ADR.
+# Meaning / 意义: Models "alertness / throughput" increase under stress or urgency.
+# Reference / 参考: Default 128.
+internal_resolution_detail_budget_adr_gain: 56
+
+# internal_resolution_min_detail_per_structure / 每个结构最小保留细节
+# Purpose / 作用: Minimum number of units kept per residual structure (when possible).
+# Meaning / 意义: Prevents "energy disappears" and preserves loop continuity.
+# Reference / 参考: Default 4.
+internal_resolution_min_detail_per_structure: 4
+
+# internal_resolution_max_detail_per_structure / 每个结构最大保留细节
+# Purpose / 作用: Base maximum units allowed per structure (can be softly expanded by focus credit).
+# Meaning / 意义: Prevents a single structure from monopolizing the whole budget.
+# Reference / 参考: Default 64.
+internal_resolution_max_detail_per_structure: 40
+
+# internal_resolution_temperature / 分配温度（预留）
+# Purpose / 作用: Temperature for softer/more even allocation (reserved for future upgrade).
+# Meaning / 意义: Higher -> flatter allocation; lower -> more winner-take-more.
+# Reference / 参考: Default 1.0.
+internal_resolution_temperature: 1.0
+
+# internal_resolution_value_weight_total_energy / 价值权重：总能量
+internal_resolution_value_weight_total_energy: 1.0
+
+# internal_resolution_value_weight_cp_abs / 价值权重：|CP|
+internal_resolution_value_weight_cp_abs: 0.35
+
+# internal_resolution_value_weight_runtime_weight / 价值权重：运行权重
+internal_resolution_value_weight_runtime_weight: 0.15
+
+# internal_resolution_cost_cap / 成本上限（单位数软封顶）
+# Purpose / 作用: Soft cap on length cost in allocation math (avoid ultra-huge structures dominating).
+# Reference / 参考: Default 512.
+internal_resolution_cost_cap: 512
+
+# internal_resolution_flat_unit_cap_per_structure / 单结构“可处理原始单位数”硬上限
+# Purpose / 作用: Hard cap on how many units we will materialize/consider per structure per tick.
+# Meaning / 意义:
+# - This is a resource fuse: it does NOT disable internal fragments, and it still
+#   supports progressive revealing via cursor.
+# - Lower values reduce worst-case spikes of internal_resolution_raw_unit_count and CPU time.
+# Reference / 参考: Suggested 256~512.
+internal_resolution_flat_unit_cap_per_structure: 240
+
+# internal_resolution_max_structures_per_tick / 每 tick 进入分辨率分配的结构上限
+# Purpose / 作用: Limit how many residual structures participate in the allocator per tick.
+# Meaning / 意义:
+# - Prevents “many medium-sized fragments” from making raw_unit_count explode even when per-structure cap exists.
+# - Works together with flat_unit_cap_per_structure to bound worst-case work.
+# Reference / 参考: Suggested 4~8 (MVP often starts with 4).
+internal_resolution_max_structures_per_tick: 5
+
+# internal_resolution_rich_structure_ratio / 富内容结构保留比例
+# Purpose / 作用: When max_structures_per_tick truncates candidates, reserve part of
+# the slots for richer residual fragments instead of only keeping the cheapest ones.
+# Meaning / 意义:
+# - Helps avoid "all selected fragments are 1-unit atoms", which makes endogenous
+#   stimulus become too thin even when there are larger residual structures available.
+# - Keeps the selection non-semantic: it only looks at runtime value and unit count.
+# Reference / 参考: Suggested 0.25~0.5. Default 0.4.
+internal_resolution_rich_structure_ratio: 0.4
+
+# internal_resolution_rich_structure_min_units / 富内容结构最小单位数
+# Purpose / 作用: Only structures with at least this many units can enter the
+# "rich fragment" reserved slots.
+# Reference / 参考: Suggested 4~12. Default 6.
+internal_resolution_rich_structure_min_units: 6
+
+# internal_resolution_structure_richness_power / 富内容结构规模增益幂次
+# Purpose / 作用: Controls how strongly larger residual fragments are favored when
+# competing for the reserved rich slots.
+# Meaning / 意义:
+# - 0 means no size bonus.
+# - 0.5 means sqrt(unit_count), a mild bias.
+# - 1 means linear bias, usually too aggressive for the prototype.
+# Reference / 参考: Suggested 0.35~0.65. Default 0.5.
+internal_resolution_structure_richness_power: 0.5
+
+# internal_resolution_stable_anchor_count / 稳定锚点数量
+# Purpose / 作用: Minimum anchor units per structure to keep identity stable.
+# Reference / 参考: Default 1.
+internal_resolution_stable_anchor_count: 1
+
+# internal_resolution_anchor_ratio / 锚点比例
+# Purpose / 作用: Anchor ratio inside each structure's K units. (anchors = max(stable_count, round(K*ratio))).
+# Reference / 参考: Default 0.35.
+internal_resolution_anchor_ratio: 0.35
+
+# internal_resolution_detail_fatigue_window / 细节疲劳窗口
+# Purpose / 作用: Sliding window size for recently selected unit signatures (per structure).
+# Meaning / 意义: Enables temporary fatigue so repeated retrieval rotates details.
+# Reference / 参考: Default 64.
+internal_resolution_detail_fatigue_window: 64
+
+# internal_resolution_detail_fatigue_start / 疲劳开始阈值（次数）
+internal_resolution_detail_fatigue_start: 2.0
+
+# internal_resolution_detail_fatigue_full / 疲劳满阈值（次数）
+internal_resolution_detail_fatigue_full: 8.0
+
+# internal_resolution_detail_fatigue_min_scale / 疲劳最小缩放
+internal_resolution_detail_fatigue_min_scale: 0.0
+
+# internal_resolution_detail_fatigue_beta / 疲劳曲线幂次
+internal_resolution_detail_fatigue_beta: 1.0
+
+# internal_resolution_focus_credit_enabled / 启用持续聚焦加分（分辨率逐步恢复）
+internal_resolution_focus_credit_enabled: true
+
+# internal_resolution_focus_credit_gain / 每 tick 聚焦加分增量
+internal_resolution_focus_credit_gain: 0.35
+
+# internal_resolution_focus_credit_decay / 每 tick 聚焦加分保留系数
+internal_resolution_focus_credit_decay: 0.9
+
+# internal_resolution_focus_credit_cap / 聚焦加分上限
+internal_resolution_focus_credit_cap: 6.0
+
+# internal_resolution_focus_credit_gamma / 聚焦加分强度系数
+# Purpose / 作用: Translates focus credit into extra resolution multiplier.
+# Reference / 参考: Default 0.25.
+internal_resolution_focus_credit_gamma: 0.25
+
+# internal_resolution_runtime_family_bonus_enabled / 是否对携带高优先级运行时属性的 fragment 给予价值加分
+# Purpose / 作用: When internal resolution must choose which fragments enter the detail allocator, give a small configurable bonus to fragments carrying important runtime families.
+# Meaning / 意义: Prevents teacher / reward / punish / CFS / time-like runtime attributes from only existing in metadata while their owner fragment is pushed out before trimming.
+# Reference / 参考: Default true.
+internal_resolution_runtime_family_bonus_enabled: true
+
+# internal_resolution_runtime_family_bonus_patterns / fragment 价值加分关注的运行时属性 family
+# Purpose / 作用: Reuses the same family-style matching philosophy (`exact` or `prefix*`) for fragment-level value bonus.
+# Reference / 参考: Default mirrors the runtime-attribute projection priority families.
+internal_resolution_runtime_family_bonus_patterns:
+  - 'teacher_reward_signal'
+  - 'teacher_punish_signal'
+  - 'reward_signal'
+  - 'punish_signal'
+  - 'cfs_*'
+  - '时间感受'
+
+# internal_resolution_runtime_family_bonus_value / 每个命中 family 的基础 fragment 价值加分
+# Purpose / 作用: Small additive value bonus applied before focus-credit scaling.
+# Meaning / 意义: Keeps the mechanism soft-scoring rather than a hard gate.
+# Reference / 参考: Default 0.35.
+internal_resolution_runtime_family_bonus_value: 0.35
+
+# internal_resolution_runtime_family_bonus_abs_gain / 运行时属性数值强度对 fragment 价值加分的增益
+# Purpose / 作用: Lets stronger runtime attributes contribute slightly more when fragment-level competition is otherwise close.
+# Reference / 参考: Default 0.08.
+internal_resolution_runtime_family_bonus_abs_gain: 0.08
+
+# internal_resolution_runtime_family_bonus_abs_value_cap / fragment 价值加分所看的属性强度上限
+# Purpose / 作用: Caps the absolute-value contribution so a single large numeric attribute does not dominate the allocator.
+# Reference / 参考: Default 2.0.
+internal_resolution_runtime_family_bonus_abs_value_cap: 2.0
+
+# internal_resolution_runtime_family_bonus_max_families / fragment 价值加分最多累计几个 family
+# Purpose / 作用: Prevents a fragment carrying many similar runtime families from scaling linearly without bound.
+# Reference / 参考: Default 2.
+internal_resolution_runtime_family_bonus_max_families: 2
+
+# internal_resolution_runtime_family_priority_rank_gain / fragment 价值加分的优先级顺位增益
+# Purpose / 作用: Earlier families in `internal_resolution_runtime_family_bonus_patterns` receive a stronger multiplier.
+# Meaning / 意义: Lets explicit teacher supervision outrank generic reward / CFS / time-like families without turning the mechanism into a hard gate.
+# Reference / 参考: Default 0.45.
+internal_resolution_runtime_family_priority_rank_gain: 0.45
+
+# internal_resolution_runtime_attribute_rescue_enabled / 是否在 unit trim 阶段保留高优先级运行时属性
+# Purpose / 作用: When a fragment already carries projected runtime attributes, reserve a small number of slots so they are less likely to be fully squeezed out by ordinary feature units.
+# Meaning / 意义: This directly repairs the “属性已经进 fragment，但在 internal resolution 被整体吃掉” 的链路断点。
+# Reference / 参考: Default true.
+internal_resolution_runtime_attribute_rescue_enabled: true
+
+# internal_resolution_runtime_attribute_rescue_patterns / unit rescue 关注的运行时属性 family
+# Purpose / 作用: Defines which runtime attribute families may receive rescue slots / score bonus during fragment trimming.
+# Reference / 参考: Default mirrors fragment-level runtime family bonus.
+internal_resolution_runtime_attribute_rescue_patterns:
+  - 'teacher_reward_signal'
+  - 'teacher_punish_signal'
+  - 'reward_signal'
+  - 'punish_signal'
+  - 'cfs_*'
+  - '时间感受'
+
+# internal_resolution_runtime_attribute_rescue_ratio / rescue 槽位比例
+# Purpose / 作用: Rough share of a fragment's target K units that may be reserved for prioritized runtime attributes.
+# Reference / 参考: Default 0.25.
+internal_resolution_runtime_attribute_rescue_ratio: 0.25
+
+# internal_resolution_runtime_attribute_rescue_min_slots / rescue 最少槽位
+# Purpose / 作用: Guarantees at least a tiny number of prioritized runtime attributes can survive when slots remain after stable anchors.
+# Reference / 参考: Default 1.
+internal_resolution_runtime_attribute_rescue_min_slots: 1
+
+# internal_resolution_runtime_attribute_rescue_max_slots / rescue 最多槽位
+# Purpose / 作用: Upper bound on how many prioritized runtime attributes a single fragment can force through trim.
+# Reference / 参考: Default 2.
+internal_resolution_runtime_attribute_rescue_max_slots: 2
+
+# internal_resolution_runtime_attribute_score_bonus / 高优先级运行时属性 unit 的额外打分
+# Purpose / 作用: Adds a soft score bonus so prioritized runtime attributes are not only kept by quota, but also compete better during detail fill.
+# Reference / 参考: Default 0.75.
+internal_resolution_runtime_attribute_score_bonus: 0.75
+
+# internal_resolution_runtime_attribute_abs_gain / 运行时属性数值强度对 unit 分数的增益
+# Purpose / 作用: Slightly lifts stronger prioritized runtime attributes during detail fill.
+# Reference / 参考: Default 0.10.
+internal_resolution_runtime_attribute_abs_gain: 0.10
+
+# internal_resolution_runtime_attribute_abs_value_cap / unit 分数所看的属性强度上限
+# Purpose / 作用: Caps the absolute-value contribution used by prioritized runtime attributes during trimming.
+# Reference / 参考: Default 2.0.
+internal_resolution_runtime_attribute_abs_value_cap: 2.0
+
+# internal_resolution_runtime_attribute_priority_rank_gain / unit 分数的优先级顺位增益
+# Purpose / 作用: Earlier families in `internal_resolution_runtime_attribute_rescue_patterns` receive a stronger unit-score multiplier.
+# Reference / 参考: Default 0.35.
+internal_resolution_runtime_attribute_priority_rank_gain: 0.35
+
+# internal_cam_runtime_priority_projection_enabled / 是否启用 CAM 高优先级运行时属性侧路投影
+# Purpose / 作用: When a CAM structure still carries teacher / reward / punish / CFS / time-like runtime families
+# but the already-built internal fragments have not represented them, emit a very light attribute-only side-path fragment.
+# Meaning / 意义: This is a gentler repair than anchor forcing: it tries to rescue missing runtime families without disturbing the
+# main anchor / fragment competition too aggressively.
+# Reference / 参考: Default true.
+internal_cam_runtime_priority_projection_enabled: true
+
+# internal_cam_runtime_priority_projection_patterns / CAM 侧路关注的高优先级 family
+# Purpose / 作用: Exact or prefix-style (`*`) family patterns eligible for the CAM runtime-priority side-path.
+# Reference / 参考: Default mirrors the fragment/runtime priority families so teacher supervision stays first-class.
+internal_cam_runtime_priority_projection_patterns:
+  - 'teacher_reward_signal'
+  - 'teacher_punish_signal'
+  - 'reward_signal'
+  - 'punish_signal'
+  - 'cfs_*'
+  - '时间感受'
+
+# internal_cam_runtime_priority_projection_ratio / CAM 侧路投影比例
+# Purpose / 作用: Fraction of a CAM source structure's remaining ER / EV budget used by the side-path fragment.
+# Meaning / 意义: Keep this small so the side-path can reveal missing runtime families without overwhelming the main endogenous stream.
+# Reference / 参考: Default 0.08.
+internal_cam_runtime_priority_projection_ratio: 0.08
+
+# internal_cam_runtime_priority_projection_min_energy / CAM 侧路最小源能量
+# Purpose / 作用: Minimum remaining source energy required before the side-path may emit a fragment.
+# Meaning / 意义: Prevents nearly empty CAM structures from spraying tiny attribute-only fragments.
+# Reference / 参考: Default 0.05.
+internal_cam_runtime_priority_projection_min_energy: 0.05
+
+# internal_cam_runtime_priority_projection_max_fragments / CAM 侧路每 tick 最大片段数
+# Purpose / 作用: Upper bound on how many attribute-only side-path fragments may be injected in one tick.
+# Meaning / 意义: Keeps the repair local and auditable even when many CAM structures carry runtime families.
+# Reference / 参考: Default 2.
+internal_cam_runtime_priority_projection_max_fragments: 2
+
+# internal_cam_runtime_priority_projection_require_unrepresented / 仅投影当前尚未显影的 family
+# Purpose / 作用: Skip the side-path when the same source structure's runtime families are already represented by existing fragments.
+# Meaning / 意义: Avoids redundant duplicate projection and keeps the side-path focused on true gaps.
+# Reference / 参考: Default true.
+internal_cam_runtime_priority_projection_require_unrepresented: true
+
+# min_cut_common_length / 最小共同切割长度
+# Purpose / 作用: Minimum common-part length required before cut-based common structure creation is allowed.
+# Meaning / 意义: Prevents extremely tiny fragments from being promoted too aggressively.
+# Reference / 参考: Default 2.
+min_cut_common_length: 2
+
+# diff_table_soft_limit / 差异表软上限
+# Purpose / 作用: Optional physical trim limit for each structure DB diff_table.
+# Meaning / 意义: Only used when owner_db_persistence_trim_enabled=true. Default 0 disables fixed small-table trimming.
+# Reference / 参考: Default 0.
+diff_table_soft_limit: 0
+
+# group_table_soft_limit / 结构组表软上限
+# Purpose / 作用: Optional physical trim limit for each structure DB group_table.
+# Meaning / 意义: Only used when owner_db_persistence_trim_enabled=true. Default 0 disables fixed small-table trimming.
+# Reference / 参考: Default 0.
+group_table_soft_limit: 0
+
+# ---- Induction And Memory Activation / 感应赋能与记忆赋能池 ----
+
+# ev_propagation_threshold / EV 传播阈值
+# Purpose / 作用: Minimum source EV required before EV propagation is attempted.
+# Meaning / 意义: Prevents very weak virtual energy from spraying across the local DB.
+# Reference / 参考: Default 0.12.
+ev_propagation_threshold: 0.12
+
+# er_induction_threshold / ER 诱发阈值
+# Purpose / 作用: Minimum source ER required before ER induction is attempted.
+# Meaning / 意义: Prevents tiny reality support from triggering broad induction.
+# Reference / 参考: Default 0.15.
+er_induction_threshold: 0.15
+
+# induction_source_effective_energy_prefilter_enabled / 感应赋能源有效能量预筛
+# Purpose / 作用: Skips source objects whose ER and EV are both below the channel thresholds that would be used later.
+# Meaning / 意义: This preserves propagation/induction results because such sources cannot enter either EV propagation or ER induction; it only avoids opening their local DBs.
+# Reference / 参考: Default true. Turn off for strict diagnostic scans of every positive-energy source.
+induction_source_effective_energy_prefilter_enabled: true
+
+# ev_propagation_ratio / EV 传播比例
+# Purpose / 作用: Fraction of source EV budget used for propagation.
+# Meaning / 意义: Higher values make virtual prediction spread more aggressively.
+# Reference / 参考: Default 1.0 for the new layered EV propagation path.
+ev_propagation_ratio: 1.0
+
+# er_induction_ratio / ER 诱发比例
+# Purpose / 作用: Fraction of source ER budget used to induce target activation.
+# Meaning / 意义: Larger values make reality-backed induction more visible without consuming source ER itself.
+# Reference / 参考: Default 1.0. First-layer ER-induced EV should begin from a full 1:1 budget before branching, pruning, fatigue, or modulation.
+er_induction_ratio: 1.0
+
+# induction_energy_graph_v2_enabled / 分层能量图景 V2 开关
+# Purpose / 作用: Enables the new multi-round energy-graph induction path where root ER can re-induce
+# layer-1 targets across several rounds while frontier EV continues to propagate deeper.
+# Meaning / 意义: This is the closer-to-theory path for “实能量反复诱发 + 虚能量逐层下传”； turn off to fall back to
+# the old single-pass budget path.
+# Reference / 参考: Default true for the new theory-aligned route, with legacy logic still preserved behind the switch.
+induction_energy_graph_v2_enabled: true
+
+# induction_energy_graph_v2_max_rounds / 分层能量图景最大轮数
+# Purpose / 作用: Optional hard cap for internal induction rounds.
+# Meaning / 意义: Default `1` means one EV frontier step + one ER induction per tick; values >1 opt into same-tick multi-round unfolding; `0` keeps the old "run until pruning" behavior.
+# Reference / 参考: Default 1 to match the newer per-tick layered-energy expectation.
+induction_energy_graph_v2_max_rounds: 1
+
+# induction_energy_graph_v2_root_er_decay_ratio / 根源 ER 轮间衰减
+# Purpose / 作用: Decays the root source's effective ER between internal rounds without forcing a same-tick pool ER writeback.
+# Meaning / 意义: Models “实能量仍在，但一轮轮减弱” while keeping runtime behavior stable.
+# Reference / 参考: Default 0.82.
+induction_energy_graph_v2_root_er_decay_ratio: 0.82
+
+# induction_energy_graph_v2_root_source_ev_ratio / 根源自身 EV 首轮传播比例
+# Purpose / 作用: Controls how much of an already-active root structure's EV is allowed to join the first propagation wave.
+# Meaning / 意义: Keeps legacy root-EV behavior compatible while the new multi-round graph is enabled.
+# Reference / 参考: Default follows ev_propagation_ratio.
+induction_energy_graph_v2_root_source_ev_ratio: 1.0
+
+# induction_energy_graph_v2_frontier_ev_ratio / 前沿 EV 下传比例
+# Purpose / 作用: Controls how much EV each frontier structure passes to its next layer during graph expansion.
+# Meaning / 意义: Values near 1 make the graph more faithful to the “逐层探索” picture; smaller values make it more conservative.
+# Reference / 参考: Default 1.0. Keep propagation faithful to the source EV budget; pruning and thresholds control tiny tails.
+induction_energy_graph_v2_frontier_ev_ratio: 1.0
+
+# induction_energy_graph_v2_er_round_ratio / 每轮根源 ER 诱发比例
+# Purpose / 作用: Fraction of the current round's effective root ER converted into layer-1 EV each round.
+# Meaning / 意义: This is the main coefficient behind “一级圈层从实能量诱发而来”.
+# Reference / 参考: Default 1.0.
+induction_energy_graph_v2_er_round_ratio: 1.0
+
+# induction_energy_graph_v2_min_frontier_ev / 前沿最小 EV
+# Purpose / 作用: Prunes frontier nodes whose available EV is too weak to justify another expansion round.
+# Meaning / 意义: Prevents the multi-round graph from endlessly following tiny speculative tails.
+# Reference / 参考: Default 0.05.
+induction_energy_graph_v2_min_frontier_ev: 0.05
+
+# induction_energy_graph_v2_min_budget / 最小分配预算
+# Purpose / 作用: Skips per-round propagation or induction when the computed budget is too small.
+# Meaning / 意义: This is the main engineering pruning guard for “虚能量太小就不再赋能”.
+# Reference / 参考: Default 0.03.
+induction_energy_graph_v2_min_budget: 0.03
+
+# induction_energy_graph_v2_max_frontier_nodes_per_source / 单源前沿节点上限
+# Purpose / 作用: Optional hard cap for frontier width.
+# Meaning / 意义: `0` means rely on low-energy pruning instead of width gating.
+# Reference / 参考: Default 0.
+induction_energy_graph_v2_max_frontier_nodes_per_source: 0
+
+# induction_energy_graph_v2_target_top_k / 单步赋能目标 Top-K
+# Purpose / 作用: Optional hard cap for per-step target fan-out.
+# Meaning / 意义: `0` means all non-pruned residual targets participate.
+# Reference / 参考: Default 0.
+induction_energy_graph_v2_target_top_k: 0
+
+# induction_target_top_k / 赋能目标 Top-K
+# Purpose / 作用: Legacy single-pass cap for induction targets.
+# Meaning / 意义: `0` means all non-pruned targets participate.
+# Reference / 参考: Default 0.
+induction_target_top_k: 0
+
+# induction_filter_nonprojectable_targets / 感应赋能是否提前过滤不可投影目标
+# Purpose / 作用: Whether induction should skip targets that the runtime projection layer would reject anyway.
+# Meaning / 意义: When enabled, EV budget is reallocated to truly projectable structures instead of being wasted on
+# `cognitive_stitching_event_structure` or attribute-only structures that never enter the StatePool.
+# Reference / 参考: Default true. Turn off only for compatibility/debug comparison with old runs.
+induction_filter_nonprojectable_targets: true
+
+# induction_min_entry_base_weight / 残差条目参与感应的最低基础权重
+# Purpose / 作用: Prunes local DB diff entries whose consolidation weight is too low before EV/ER budget allocation.
+# Meaning / 意义: Pure EV-created entries default to base_weight=0, so they are recorded but do not immediately become induction sources until ER evidence later raises their weight.
+# Reference / 参考: Default 0.001.
+induction_min_entry_base_weight: 0.001
+
+# induction_min_source_base_weight / 感应源结构最低基础权重
+# Purpose / 作用: Optional gate for source structures before opening/using their local DB in induction.
+# Meaning / 意义: Default 0 keeps current behavior; raise slightly only when you want to suppress very speculative HDB-backed structures as sources.
+# Reference / 参考: Default 0.0.
+induction_min_source_base_weight: 0.0
+
+# induction_min_projected_delta_ev / 最小投影 EV
+# Purpose / 作用: Reserved threshold for pruning extremely tiny projected EV deltas in induction summaries/projection.
+# Meaning / 意义: Keep at 0 unless doing explicit performance-noise pruning experiments.
+# Reference / 参考: Default 0.0.
+induction_min_projected_delta_ev: 0.0
+
+# induction_raw_residual_existing_structure_projection_enabled / 原始残差是否允许命中已存在结构
+# Purpose / 作用: Lets `stimulus_raw_residual` entries project not only to episodic memory, but also to
+# already-existing projectable structures whose canonical signature already matches this residual.
+# Meaning / 意义: This turns "原始残差已经在 HDB 里有同签名结构" from a memory-only path into a split path:
+# part of the weight still reinforces memory, and part of it can directly reinforce the existing structure path.
+# Reference / 参考: Default true. Turn off to compare against the old memory-only behavior.
+induction_raw_residual_existing_structure_projection_enabled: true
+
+# induction_raw_residual_structure_share / 原始残差转结构分流比例
+# Purpose / 作用: Fraction of raw residual induction weight routed to matched existing structures when such
+# structures are found. The remainder stays on the episodic-memory path.
+# Meaning / 意义: Higher values make "已有残差结构被直接续写" more visible; lower values preserve more
+# memory-pool-first behavior. This only applies when both a memory target and an existing structure target exist.
+# Reference / 参考: Default 1.0 for the new “residual memory as structure” main path.
+induction_raw_residual_structure_share: 1.0
+
+# induction_raw_residual_structure_target_top_k / 原始残差转结构目标 Top-K
+# Purpose / 作用: Limits how many existing same-signature structures a single raw residual entry may route to.
+# Meaning / 意义: Smaller values keep the residual->structure path concentrated on the best context match instead
+# of spreading thinly across many same-signature structures in different contexts.
+# Reference / 参考: Default 1. Set 0 to disable the cap.
+induction_raw_residual_structure_target_top_k: 1
+
+# induction_raw_residual_group_component_projection_enabled / 原始残差是否允许回退到分组组件结构
+# Purpose / 作用: When a raw residual cannot find any full exact-signature structure, it may still reuse already
+# existing structures that exactly match one or more grouped components inside the residual.
+# Meaning / 意义: This keeps the old exact-signature path unchanged, but adds a conservative fallback for the common
+# late-stage case where the whole residual is novel while several grouped chunks are already known structures.
+# Reference / 参考: Default true. Turn off to compare against exact-signature-only behavior.
+induction_raw_residual_group_component_projection_enabled: true
+
+# induction_raw_residual_component_target_top_k / 原始残差分组组件结构目标 Top-K
+# Purpose / 作用: Limits how many component-matched structures a single raw residual may route to when full-signature
+# matching misses and grouped-component fallback is enabled.
+# Meaning / 意义: Smaller values keep the fallback focused on the strongest grouped structures instead of spraying
+# EV across many fragments.
+# Reference / 参考: Default 3. Set 0 to disable the cap.
+induction_raw_residual_component_target_top_k: 3
+
+# induction_raw_residual_component_min_group_units / 原始残差分组组件最小单元数
+# Purpose / 作用: Filters out tiny grouped chunks during grouped-component fallback.
+# Meaning / 意义: Prevents the fallback from overusing very small fragments that are too weak to carry stable structure
+# semantics on their own.
+# Reference / 参考: Default 3.
+induction_raw_residual_component_min_group_units: 3
+
+# induction_raw_residual_projection_drop_owner_placeholder_enabled / 原始残差投影丢弃 owner 占位符
+# Purpose / 作用: Removes SELF[owner] placeholder units from raw-residual projection targets before existing-structure lookup or materialization.
+# Meaning / 意义: The owner DB already records which source structure produced the residual; the residual target identity should be the residual content itself, then growth projection composes source + residual into A+B.
+# Reference / 参考: Default true for growth projection. Set false to restore legacy owner-relative SELF[A]+B residual targets.
+induction_raw_residual_projection_drop_owner_placeholder_enabled: true
+
+# induction_raw_residual_materialized_structure_context_free_identity_enabled / 原始残差物化结构使用无上下文身份
+# Purpose / 作用: When a raw residual memory is promoted/materialized as a structure, resolve it by its complete feature profile rather than by owner context.
+# Meaning / 意义: The owner DB records the A -> residual relation, but the materialized residual structure itself is a complete HDB identity and should not duplicate per owner.
+# Reference / 参考: Default true for growth projection. Set false to restore legacy B(context=A) materialized residual identities.
+induction_raw_residual_materialized_structure_context_free_identity_enabled: true
+
+# induction_raw_residual_static_cache_enabled / 原始残差静态解析缓存
+# Purpose / 作用: Caches raw-residual projection profiles and structure candidate lists by entry/profile/owner
+# version so induction can avoid repeated owner-subtraction, exact-signature lookup, and grouped-component lookup.
+# Meaning / 意义: This cache only covers shape/identity work. It never caches entry runtime weight, fatigue, or
+# per-tick EV/ER allocation, so decay and energy competition still run every tick.
+# Rollback / 回退: Set false to restore the uncached raw-residual induction path.
+induction_raw_residual_static_cache_enabled: true
+
+# induction_raw_residual_projection_profile_cache_enabled / 原始残差投影 profile 缓存
+# Purpose / 作用: Reuses owner-subtracted raw-residual projection profiles across ticks.
+# Meaning / 意义: This is the main low-risk cache from opt14; it does not depend on the changing HDB lookup index
+# and does not cache runtime weight/fatigue/EV allocation.
+# Rollback / 回退: Set false to keep other static-cache diagnostics but force projection profile rebuilds.
+induction_raw_residual_projection_profile_cache_enabled: true
+
+# induction_raw_residual_candidate_static_cache_enabled / 原始残差候选列表缓存
+# Purpose / 作用: Optional cache for exact-signature and grouped-component candidate lists.
+# Meaning / 意义: Default false because the growth-era HDB lookup revision changes often during active learning, so
+# candidate-list cache hits can be rare while store overhead remains. Enable only for profiling or stable-HDB runs.
+# Rollback / 回退: Keep false for the default performance path.
+induction_raw_residual_candidate_static_cache_enabled: false
+
+# induction_full_inclusion_shared_cache_enabled / 感应完整包含判定跨 tick 缓存
+# Purpose / 作用: Reuses boolean full-inclusion checks between source profiles and target profiles during
+# induction candidate filtering.
+# Meaning / 意义: This avoids repeated maximum-common fallback for identical profile pairs while preserving the same
+# inclusion result. Disable if debugging profile mutation or inclusion scoring.
+# Rollback / 回退: Set false to keep only the existing per-run inclusion cache.
+induction_full_inclusion_shared_cache_enabled: true
+
+# memory_activation_decay_round_ratio_ev / 记忆赋能池 EV 每轮保留系数
+# Purpose / 作用: Decay ratio applied to memory activation EV each tick.
+# Meaning / 意义: Controls how long recalled episodic memories stay visible in the separate activation pool.
+# Reference / 参考: Default 0.93.
+memory_activation_decay_round_ratio_ev: 0.93
+
+# memory_activation_prune_threshold_ev / 记忆赋能池剪枝阈值
+# Purpose / 作用: Removes memory activation entries whose EV falls below this threshold.
+# Meaning / 意义: Prevents recalled memories from lingering forever after their activation has faded.
+# Reference / 参考: Default 0.03.
+memory_activation_prune_threshold_ev: 0.03
+
+# memory_activation_event_history_limit / 记忆赋能条目事件历史上限
+# Purpose / 作用: Limits how many activation events are kept per memory activation entry.
+# Meaning / 意义: Larger values preserve richer provenance, but increase snapshot size.
+# Reference / 参考: Default 24.
+memory_activation_event_history_limit: 24
+
+# runtime_memory_display_max_chars / Runtime EM display character limit
+# Purpose / ??: Limits EM display labels projected into StatePool/CAM/UI while preserving full episodic memory material in HDB.
+# Meaning / ??: Prevents very long tick memories from flooding attention displays; this is display/runtime hygiene, not memory deletion.
+# Reference / ??: Default 240.
+runtime_memory_display_max_chars: 240
+
+# ---- Weight, Recency, Fatigue / 权重、近因增益、疲劳 ----
+
+# base_weight_er_gain / ER 强化基础权重增量
+# Purpose / 作用: Scales how much real support increases base weight after successful matches.
+# Meaning / 意义: Higher values make verified structures consolidate faster.
+# Reference / 参考: Default 0.08.
+base_weight_er_gain: 0.08
+
+# base_weight_ev_wear / EV 磨损基础权重增量
+# Purpose / 作用: Scales how much virtual support wears or erodes base weight during repeated speculative use.
+# Meaning / 意义: Higher values make purely virtual repetition weaken structures more quickly.
+# Reference / 参考: Default 0.03.
+base_weight_ev_wear: 0.03
+
+# base_weight_ev_wear_mode / EV 磨损模式
+# Purpose / 作用: Controls how EV weakens base weight when a structure/path is only speculatively used.
+# Meaning / 意义: "multiplicative" applies proportional wear, so repeated EV cannot subtract a path all the way through zero; "subtractive" is kept only for legacy comparison.
+# Reference / 参考: Default "multiplicative".
+base_weight_ev_wear_mode: multiplicative
+
+# base_weight_storage_floor / 基础权重存储下限
+# Purpose / 作用: Minimum persisted base_weight after ER/EV updates.
+# Meaning / 意义: Keep at 0 for the ER-evidence-driven theory path: pure EV creations may exist but begin with zero consolidation weight.
+# Reference / 参考: Default 0.0.
+base_weight_storage_floor: 0.0
+
+# base_weight_new_default / 新对象默认基础权重
+# Purpose / 作用: Fallback base_weight when no ER/EV evidence profile is available.
+# Meaning / 意义: Default 0 prevents accidental "born verified" structures; real ER support adds weight through base_weight_er_gain.
+# Reference / 参考: Default 0.0.
+base_weight_new_default: 0.0
+
+# ev_only_creation_base_weight / 纯 EV 新建基础权重
+# Purpose / 作用: Initial base_weight for structures created from virtual-only energy.
+# Meaning / 意义: Default 0 lets imagined/speculative content be recorded without immediately becoming an induction source; later ER evidence can consolidate it.
+# Reference / 参考: Default 0.0.
+ev_only_creation_base_weight: 0.0
+
+# residual_base_weight_initial_bias / 残差新建基础权重偏置
+# Purpose / 作用: Optional additive bias for ER-backed residual/structure creation.
+# Meaning / 意义: Keep at 0 so initial weight is determined by ER magnitude instead of a fixed "1".
+# Reference / 参考: Default 0.0.
+residual_base_weight_initial_bias: 0.0
+
+# weight_floor / 权重下限
+# Purpose / 作用: Lower bound for base weight and runtime weight calculations.
+# Meaning / 意义: Prevents structures from decaying into negative or unusably tiny weight values.
+# Reference / 参考: Default 0.05.
+weight_floor: 0.05
+
+# recency_gain_boost / 近因增益每次命中增量
+# Purpose / 作用: Increment added to recent_gain on each successful match or activation, before clamping by the peak.
+# Meaning / 意义: This determines how fast a structure enters a “recently hot” state.
+# Suggested / 建议: Default 0.08. Raise it only if you want non-newborn structures to climb toward the peak faster across repeated hits.
+recency_gain_boost: 0.08
+
+# recency_gain_peak / 近因增益上限
+# Purpose / 作用: Maximum multiplier recent_gain may reach.
+# Meaning / 意义: This is the direct cap of the recency multiplier itself, before fatigue is applied in runtime_weight.
+# Suggested / 建议: Default 10.0. This is the theory-aligned peak for a newly formed or freshly updated path.
+recency_gain_peak: 10.0
+
+# recency_gain_hold_rounds / 近因增益保持轮数
+# Purpose / 作用: Number of retrieval/storage rounds the peak recent_gain is held before decay begins.
+# Meaning / 意义: This is the short high-activity plateau stage in the recency waveform.
+# Suggested / 建议: Default 2. Increase only if you want a longer “just refreshed” plateau.
+recency_gain_hold_rounds: 2
+
+# recency_gain_refresh_floor / 近因刷新最低强度
+# Purpose / 作用: Lower bound applied to match strength when recent_gain is refreshed after a successful hit.
+# Meaning / 意义: This prevents a path from looking completely stale after a weak but still valid match.
+# Suggested / 建议: Default 0.45. Set to 0.0 if you want refresh strength to follow the true match score with no floor.
+recency_gain_refresh_floor: 0.45
+
+# recency_gain_decay_mode / 近因增益衰减模式
+# Purpose / 作用: Chooses whether recent_gain decays by tick count or by wall-clock time.
+# Meaning / 意义: "by_round" is best when your prototype loop is tick-centric; "by_time" is best when real elapsed time matters more.
+# Suggested / 建议: Default "by_round". Keep this when your prototype behavior is evaluated in discrete rounds or ticks.
+recency_gain_decay_mode: by_round
+
+# recency_half_life_ms / 近因增益时间半衰期
+# Purpose / 作用: Half-life in milliseconds used only when recency_gain_decay_mode is "by_time".
+# Meaning / 意义: Larger values make recency persist longer in real time.
+# Suggested / 建议: Default 60000 ms. This matters only in by_time mode.
+recency_half_life_ms: 60000
+
+# recency_gain_decay_ratio / 近因增益每 Tick 保留系数
+# Purpose / 作用: Per-tick retention ratio used when recency_gain_decay_mode is "by_round".
+# Meaning / 意义: Values extremely close to 1.0 make recency fade very slowly across many ticks.
+# Suggested / 建议: Default 0.9999976974. This lets recent_gain fall from about 10x back near 1x over roughly 1,000,000 ticks. For a shorter ~100,000-tick tail, use about 0.9999769744.
+recency_gain_decay_ratio: 0.9999976974
+
+# fatigue_cap / 疲劳上限
+# Purpose / 作用: Maximum fatigue value a structure, group, or entry may accumulate.
+# Meaning / 意义: Fatigue suppresses runtime_weight through 1/(1+fatigue), so a higher cap allows stronger temporary self-suppression.
+# Suggested / 建议: Default 1.5. Keep near 1.0-2.0 unless you want unusually strong temporary self-suppression.
+fatigue_cap: 1.5
+
+# fatigue_increase_per_match / 每次命中疲劳增量
+# Purpose / 作用: Base fatigue increment applied after each successful match or activation.
+# Meaning / 意义: Higher values make recently reused structures cool down faster even if recency_gain rises.
+# Suggested / 建议: Default 0.08. Raise it if repeated reuse should be discouraged more aggressively.
+fatigue_increase_per_match: 0.08
+
+# fatigue_decay_per_tick / 疲劳每 Tick 保留系数
+# Purpose / 作用: Per-tick retention ratio for fatigue when the decay mode is by_round.
+# Meaning / 意义: Lower values make fatigue disappear faster; higher values make self-suppression linger.
+# Suggested / 建议: Default 0.92. Keep it well below the recency decay ratio so fatigue remains a short-term suppressor rather than a long-tail state.
+fatigue_decay_per_tick: 0.92
+
+# fatigue_half_life_ms / 疲劳时间半衰期
+# Purpose / 作用: Half-life in milliseconds used for fatigue when recency/fatigue decay mode is by_time.
+# Meaning / 意义: Controls how quickly fatigue fades in real clock time.
+# Suggested / 建议: Default 60000 ms. This matters only in by_time mode.
+fatigue_half_life_ms: 60000
+
+# energy_decay_mode / 运行时能量缓存衰减模式
+# Purpose / 作用: Chooses whether runtime ER/EV caches decay by tick count or by wall-clock time.
+# Meaning / 意义: Independent from recency/fatigue values, but conceptually similar.
+# Reference / 参考: Default "by_round".
+energy_decay_mode: by_round
+
+# energy_decay_round_ratio_er / 运行时 ER 每 Tick 保留系数
+# Purpose / 作用: Per-tick retention ratio for runtime ER caches in HDB objects.
+# Meaning / 意义: Higher values keep recent real support visible longer in local competition.
+# Reference / 参考: Default 0.97.
+energy_decay_round_ratio_er: 0.97
+
+# energy_decay_round_ratio_ev / 运行时 EV 每 Tick 保留系数
+# Purpose / 作用: Per-tick retention ratio for runtime EV caches in HDB objects.
+# Meaning / 意义: Usually lower than ER because speculative support is expected to wash out faster.
+# Reference / 参考: Default 0.93.
+energy_decay_round_ratio_ev: 0.93
+
+# energy_decay_half_life_ms_er / 运行时 ER 时间半衰期
+# Purpose / 作用: Time-based half-life for runtime ER caches when energy_decay_mode is by_time.
+# Meaning / 意义: Larger values preserve real support longer in wall-clock time.
+# Reference / 参考: Default 60000 ms.
+energy_decay_half_life_ms_er: 60000
+
+# energy_decay_half_life_ms_ev / 运行时 EV 时间半衰期
+# Purpose / 作用: Time-based half-life for runtime EV caches when energy_decay_mode is by_time.
+# Meaning / 意义: Usually shorter than the ER half-life.
+# Reference / 参考: Default 30000 ms.
+energy_decay_half_life_ms_ev: 30000
+
+# ---- Pointer Fallback And Numeric Buckets / 指针回退与数值桶 ----
+
+# enable_goal_b_char_sa_string_mode / 使用字符串方案
+# Purpose / 作用: Switches HDB runtime matching/display helpers into the Goal B char-SA string mode.
+# Meaning / 含义: Strings are order-sensitive relations over character SA, not separate energy-bearing SA objects.
+# Reference / 参考: Default false in HDB; Observatory may override it for Goal B experiments.
+enable_goal_b_char_sa_string_mode: false
+
+# goal_b_string_seed_soft_max_units / Goal B 长字符串种子软上限
+# Purpose / 作用: Soft cap on how many units a Goal B string seed may carry before long-seed pruning becomes stricter.
+# Meaning / 意义: Helps long strings stay available when strong enough, while preventing giant weak strings from flooding candidate space.
+# Reference / 参考: Default 32.
+goal_b_string_seed_soft_max_units: 32
+
+# goal_b_string_seed_min_avg_unit_energy_for_long / Goal B 长字符串种子最小平均单元能量
+# Purpose / 作用: Minimum average unit energy required when a Goal B string seed grows into the “long” range.
+# Meaning / 意义: Weak long strings are pruned earlier; strong long strings can still participate.
+# Reference / 参考: Default 0.18.
+goal_b_string_seed_min_avg_unit_energy_for_long: 0.18
+
+# goal_b_string_seed_require_single_source_for_long / Goal B 长字符串是否要求单一来源
+# Purpose / 作用: Requires long Goal B string seeds to come from one coherent source group instead of being stitched from many weak sources.
+# Meaning / 意义: Reduces noisy long-seed promotion while preserving coherent longer strings.
+# Reference / 参考: Default true.
+goal_b_string_seed_require_single_source_for_long: true
+
+# stimulus_goal_b_string_seed_context_free_identity_enabled / Goal B 字符串种子使用无上下文身份
+# Purpose / 作用: Treat Goal B string seed structures as complete string identities instead of packet-context identities.
+# Meaning / 意义: Packet ids such as spkt_* / ispkt_* are runtime provenance, not HDB identity. The same full string should resolve to the same HDB structure across ticks.
+# Reference / 参考: Default true for the growth-projection path. Set false to restore legacy packet-context string seed identities.
+stimulus_goal_b_string_seed_context_free_identity_enabled: true
+
+# stimulus_residual_common_context_free_identity_enabled / 残差公共结构使用无上下文身份
+# Purpose / 作用: Resolve common structures born from residual-vs-residual comparison by their complete feature profile, not by the owner structure context.
+# Meaning / 意义: The owner DB still records the A -> common relation; the common structure itself is a complete HDB identity and should not duplicate per owner.
+# Reference / 参考: Default true for the growth-projection path. Set false to restore legacy residual_context_common identities tied to owner context.
+stimulus_residual_common_context_free_identity_enabled: true
+
+# stimulus_residual_common_require_owner_prefix_alignment_enabled / 残差公共结构要求 owner 前缀对齐
+# Purpose / 作用: Only create residual_context_common when the common structure starts with the owner structure itself.
+# Meaning / 意义: Prevents a later or middle anchor from claiming an earlier prefix as its child common structure; non-aligned overlap remains raw residual.
+# Reference / 参考: Default true for the growth-projection path.
+stimulus_residual_common_require_owner_prefix_alignment_enabled: true
+
+# stimulus_residual_common_soft_max_units / 残差公共结构软上限
+# Purpose / 作用: Soft cap on unit count for residual-common structures before long-structure pruning becomes stricter.
+# Meaning / 意义: Prevents very long weak residual-common candidates from crowding out compact stronger ones.
+# Reference / 参考: Default 28.
+stimulus_residual_common_soft_max_units: 28
+
+# stimulus_residual_common_min_avg_unit_energy_for_long / 长残差公共结构最小平均单元能量
+# Purpose / 作用: Minimum average unit energy required when a residual-common structure is already long.
+# Meaning / 意义: Keeps long residual-common structures only when their internal unit energies are still meaningfully strong.
+# Reference / 参考: Default 0.18.
+stimulus_residual_common_min_avg_unit_energy_for_long: 0.18
+
+# enable_pointer_fallback / 是否启用指针回退
+# Purpose / 作用: Enables bounded fallback lookup when the direct pointer path does not yield enough candidates.
+# Meaning / 意义: Keeps the main path local and O(1)-like when possible, while still allowing controlled recovery.
+# Reference / 参考: Default true.
+enable_pointer_fallback: true
+
+# fallback_lookup_max_candidates / 回退候选上限
+# Purpose / 作用: Maximum number of candidates returned by fallback lookup.
+# Meaning / 意义: Prevents fallback from turning into uncontrolled broad search.
+# Reference / 参考: Default 32.
+fallback_lookup_max_candidates: 32
+
+# enable_cs_event_structures_in_stimulus_retrieval / 刺激级检索是否允许 CS 事件结构参与候选
+# Purpose / 作用: Whether to allow `sub_type=cognitive_stitching_event_structure` as candidates during
+# stimulus-level retrieval. Default is OFF to avoid polluting normal matching; CS events are primarily
+# persisted during idle consolidation for traceability and later opt-in experimentation.
+enable_cs_event_structures_in_stimulus_retrieval: false
+
+# fallback_scan_hard_limit / 回退扫描硬上限
+# Purpose / 作用: Hard cap on how many records fallback may scan when recovering candidates.
+# Meaning / 意义: This is a core protection against full-database runaway search.
+# Reference / 参考: Default 200.
+fallback_scan_hard_limit: 200
+
+# allow_global_scan_on_runtime_path / 运行时路径是否允许全局扫描
+# Purpose / 作用: Allows or forbids global scanning on runtime-critical paths.
+# Meaning / 意义: Keeping this false preserves the current “performance weakly related to DB scale” design principle.
+# Reference / 参考: Default false. Strongly recommended to stay false.
+allow_global_scan_on_runtime_path: false
+
+# lru_db_cache_size / 局部数据库 LRU 缓存大小
+# Purpose / 作用: Number of recently used local DB objects cached in memory.
+# Meaning / 意义: Larger caches reduce repeated file/index reopening at the cost of memory.
+# Reference / 参考: Default 64.
+lru_db_cache_size: 64
+
+# exact_lookup_cache_size / 精确查找缓存大小
+# Purpose / 作用: Caps how many exact pointer/index lookup results are memoized for hot runtime paths.
+# Meaning / 意义: Larger values reduce repeated exact-hit reopening cost, especially when the same structures are revisited frequently.
+# Reference / 参考: Default 8192 for growth projection. Set lower for memory-constrained debugging.
+exact_lookup_cache_size: 8192
+
+# shared_runtime_cache_max_entries / 跨模块运行缓存容量
+# Purpose / 作用: Caps each StructureStore shared runtime-cache namespace used by stimulus retrieval and induction.
+# Meaning / 意义: Larger values reduce repeated structure profile, raw-residual profile, growth-identity and inclusion-check rebuilds across ticks. It does not cache runtime energy, fatigue, recency or candidate scores.
+# Rollback / 回退: Lower this if memory pressure is more important than repeated profile/cut work.
+# Reference / 参考: Default 16384 for the growth-projection performance path.
+shared_runtime_cache_max_entries: 16384
+
+# normalize_sequence_groups_cache_max_entries / 序列组规范化缓存容量
+# Purpose / 作用: Caches normalized sequence_groups used by matching, profile building, and maximum-common cutting.
+# Meaning / 意义: This removes repeated pure formatting/signature work when the same structures are compared many times in one run.
+# Reference / 参考: Default 8192 for growth projection. Set to 0 to disable for debugging.
+normalize_sequence_groups_cache_max_entries: 8192
+
+# normalize_sequence_groups_cache_shallow_copy_enabled / 规范化组缓存浅拷贝返回
+# Purpose / 作用: On normalized-group cache hits, copy group/list containers but reuse normalized unit dicts.
+# Meaning / 意义: Existing fast paths already treat normalized units as read-mostly runtime material; this avoids thousands of repeated unit dict copies in matching/projection hot paths.
+# Rollback / 回退: Set false to restore legacy deep unit copies on cache hits.
+# Reference / 参考: Default true.
+normalize_sequence_groups_cache_shallow_copy_enabled: true
+
+# normalize_sequence_groups_cache_zero_copy_enabled / 规范化组缓存零拷贝返回
+# Purpose / 作用: On normalized-group cache hits, return the cached normalized group list directly.
+# Meaning / 意义: This is an aggressive read-only performance switch. Default false keeps the shallow-copy path because most speed is already covered by direct reusable normalized groups.
+# Rollback / 回退: Keep false unless profiling shows normalize cache hits dominate and callers are known to treat returned groups as read-only.
+# Reference / 参考: Default false.
+normalize_sequence_groups_cache_zero_copy_enabled: false
+
+# structure_fuzzy_metadata_runtime_cache_enabled / 结构级模糊元数据运行缓存
+# Purpose / 作用: Reuses per-structure fuzzy signatures, numeric slots, grouped display and display templates inside one structure-level run.
+# Meaning / 意义: This removes repeated read-only parsing of the same structure while keeping runtime-bound attribute units in the cache key.
+# Rollback / 回退: Set false if you need to inspect every metadata rebuild call independently.
+# Reference / 参考: Default true.
+structure_fuzzy_metadata_runtime_cache_enabled: true
+
+# numeric_bucket_max_per_family / 每类数值刺激元最大桶数
+# Purpose / 作用: Upper bound on how many numeric buckets a numeric stimulus family may create.
+# Meaning / 意义: Prevents numeric indexing from exploding into one-bucket-per-value behavior.
+# Reference / 参考: Default 16.
+numeric_bucket_max_per_family: 16
+
+# numeric_bucket_neighbor_count / 数值桶近邻数量
+# Purpose / 作用: Number of nearest numeric buckets opened together when a numeric stimulus needs local DB candidates.
+# Meaning / 意义: This is the “open nearest buckets, then compete inside the merged candidate set” control.
+# Reference / 参考: Default 2. Keep 2 for the current design unless you need a wider initial numeric search.
+numeric_bucket_neighbor_count: 2
+
+# numeric_bucket_creation_abs_gap / 数值桶分裂绝对间隔阈值
+# Purpose / 作用: Absolute-gap criterion used when deciding whether a numeric family should create a new bucket.
+# Meaning / 意义: Larger values make bucket creation more conservative in sparse numeric regions.
+# Reference / 参考: Default 0.2.
+numeric_bucket_creation_abs_gap: 0.2
+
+# numeric_bucket_creation_rel_gap / 数值桶分裂相对间隔阈值
+# Purpose / 作用: Relative-gap criterion used when deciding whether a numeric family should create a new bucket.
+# Meaning / 意义: Works with the absolute gap so both dense and sparse numeric regions can adapt.
+# Reference / 参考: Default 0.35.
+numeric_bucket_creation_rel_gap: 0.35
+
+# numeric_match_abs_tolerance / 数值匹配绝对容差
+# Purpose / 作用: Absolute tolerance used when computing fuzzy numeric similarity during structure matching.
+# Meaning / 意义: This does not decide bucket lookup; it affects how similar two same-family numeric values are treated in matching and cutting.
+# Reference / 参考: Default 0.2.
+numeric_match_abs_tolerance: 0.2
+
+# numeric_bucket_synthetic_lookup_rebuild_enabled / 数值桶查询是否执行临时合成重建
+# Purpose / 作用: Keeps the legacy "insert synthetic lookup value, rebuild, then remove it" path available behind a switch.
+# Meaning / 意义: Default false avoids two full numeric-family rebuilds during every fuzzy numeric lookup; existing buckets and virtual fallback semantics are unchanged.
+# Reference / 参考: Default false. Turn on only for legacy bucket-debug comparison.
+numeric_bucket_synthetic_lookup_rebuild_enabled: false
+
+# numeric_bucket_lazy_rebuild_enabled / 数值桶是否延迟到查询前合批重建
+# Purpose / 作用: Marks numeric families dirty during structure registration and rebuilds each family once before the next numeric lookup instead of rebuilding after every observed structure.
+# Meaning / 意义: Matching results stay current at lookup time, while same-tick repeated structure registrations avoid redundant full-family bucket rebuilds.
+# Reference / 参考: Default true.
+numeric_bucket_lazy_rebuild_enabled: true
+
+# stimulus_atomic_structure_cross_tick_cache_enabled / 原子结构 id 是否跨 tick 缓存
+# Purpose / 作用: Reuses exact token/signature -> atomic structure id lookups across stimulus-level ticks.
+# Meaning / 意义: Each hit is still validated against StructureStore before use; this only avoids repeating exact lookup/profile work for stable atomic tokens.
+# Reference / 参考: Default false; this is retained as an experimental switch because the current probe regressed with it enabled.
+stimulus_atomic_structure_cross_tick_cache_enabled: false
+
+# stimulus_atomic_structure_cross_tick_cache_max_entries / 原子结构跨 tick 缓存容量
+# Purpose / 作用: Bounds the token/signature -> atomic structure id cache.
+# Meaning / 意义: Larger values improve repeated-token workloads; lower values reduce memory.
+# Reference / 参考: Default 2048.
+stimulus_atomic_structure_cross_tick_cache_max_entries: 2048
+
+# stimulus_atomic_preseed_context_free_identity_enabled / 原子预种子使用无上下文身份
+# Purpose / 作用: Treat stimulus-level atomic preseed structures as complete token identities instead of packet-context residual identities.
+# Meaning / 意义: Packet ids such as spkt_* / ispkt_* are runtime provenance, not HDB identity. This prevents the same single token from being recreated as a different contextual ST every tick.
+# Reference / 参考: Default true for the growth-projection path. Set false to restore the older packet-context atomic-preseed behavior for ablation.
+stimulus_atomic_preseed_context_free_identity_enabled: true
+
+# stimulus_atomic_preseed_defer_current_packet_matching_enabled / 本轮原子预种子延后参与匹配
+# Purpose / 作用: Atomic preseed creates reusable SA databases for future ticks, but freshly preseeded atoms from the current packet should not immediately win the current stimulus matching competition.
+# Meaning / 意义: Prevents newly seen single characters from stealing the anchor path from older/stronger context seeds in the same tick, reducing single-SA self-loop pressure.
+# Reference / 参考: Default true for growth projection. Set false to restore legacy same-packet atomic fallback matching.
+stimulus_atomic_preseed_defer_current_packet_matching_enabled: true
+
+# stimulus_atomic_preseed_unique_context_direct_create_enabled / 原子预种子唯一包上下文直接建库
+# Purpose / 作用: Skips exact lookup for atomic preseed structures when the context is a fresh stimulus packet id.
+# Meaning / 意义: The packet context is unique per tick, so the old lookup cannot find a reusable same-context object; this only removes the miss scan before creating the same structure payload.
+# Reference / 参考: Only applies when stimulus_atomic_preseed_context_free_identity_enabled is false. Default true. Turn off to force the legacy lookup-before-create path.
+stimulus_atomic_preseed_unique_context_direct_create_enabled: true
+
+# stimulus_owner_local_residual_index_cache_enabled / owner 局部残差索引缓存
+# Purpose / 作用: Builds per-owner raw/common residual signature indexes inside one stimulus-level run.
+# Meaning / 意义: Avoids repeatedly scanning the same owner DB for exact residual/common hits during recursive residual normalization. It does not change matching, weights, fatigue, or creation semantics.
+# Rollback / 回退: Set false to rebuild the index on every lookup.
+# Reference / 参考: Default true for the growth-projection performance path.
+stimulus_owner_local_residual_index_cache_enabled: true
+
+# stimulus_owner_local_residual_shared_index_cache_enabled / owner 局部残差索引跨 tick 共享缓存
+# Purpose / 作用: Reuses the per-owner raw/common residual signature index across stimulus-level ticks when the owner DB entries are unchanged.
+# Meaning / 意义: The cache key includes entry ids, signatures, runtime weights and update timestamps, so changed residual DBs rebuild normally. It does not cache energy transfer or matching decisions.
+# Rollback / 回退: Set false to keep index caching scoped to a single stimulus retrieval run.
+# Reference / 参考: Default true for repeated growth-projection datasets.
+stimulus_owner_local_residual_shared_index_cache_enabled: true
+
+# stimulus_owner_local_residual_fuzzy_cache_enabled / owner 局部残差模糊等价缓存
+# Purpose / 作用: Reuses same-run profile fuzzy-equivalence decisions during owner-local residual normalization.
+# Meaning / 意义: This caches only the boolean "are these two profiles equivalent?" result for stable profile signatures/unit signatures; it never caches runtime weights, fatigue, recency, or energy allocation.
+# Rollback / 回退: Set false to force every fuzzy-equivalence check through the legacy path.
+# Reference / 参考: Default true.
+stimulus_owner_local_residual_fuzzy_cache_enabled: true
+
+# stimulus_owner_local_residual_fuzzy_fast_reject_enabled / owner 局部残差模糊等价快速拒绝
+# Purpose / 作用: Skips maximum-common cutting when two profiles cannot be fully equivalent because their unit counts or unit-signature multisets differ.
+# Meaning / 意义: Full equivalence still requires the old common-part proof when the cheap checks pass. Overlap/common creation remains handled by the normal candidate path.
+# Rollback / 回退: Set false to restore the previous always-cut fallback for non-identical signatures.
+# Reference / 参考: Default true.
+stimulus_owner_local_residual_fuzzy_fast_reject_enabled: true
+
+# maximum_common_part_cache_enabled / 最大共同切割结果是否缓存
+# Purpose / 作用: Reuses identical normalized group-pair maximum_common_part results within the CutEngine.
+# Meaning / 意义: This removes repeated DP/cut construction for recurring group pairs in stimulus retrieval, induction, and neutralization paths.
+# Rollback / 回退: Set false to bypass the common-part result cache completely.
+# Reference / 参考: Default true for the growth-projection performance path.
+maximum_common_part_cache_enabled: true
+
+# maximum_common_part_exact_fast_path_enabled / 完全相同结构共同切割快路径
+# Purpose / 作用: Short-circuit maximum_common_part when two normalized group sequences have the same complete signature.
+# Meaning / 意义: This preserves exact-match semantics while avoiding DP, residual construction and repeated normalization for identical A+B / residual profiles.
+# Rollback / 回退: Set false to force the legacy DP path for every comparison.
+# Reference / 参考: Default true.
+maximum_common_part_exact_fast_path_enabled: true
+
+# maximum_common_part_full_inclusion_fast_path_enabled / 完整包含共同切割快路径
+# Purpose / 作用: Short-circuits maximum_common_part when one normalized group sequence is a stable ordered full subsequence of the other.
+# Meaning / 意义: This preserves the same full-inclusion semantics as the DP path for common stimulus cases such as A+B being contained in A+B+C, while avoiding repeated DP/residual construction.
+# Rollback / 回退: Set false to force the legacy DP path after the exact-same fast path.
+# Reference / 参考: Default true for the growth-projection performance path.
+maximum_common_part_full_inclusion_fast_path_enabled: true
+
+# maximum_common_part_single_group_fast_path_enabled / 单共现组共同切割快路径
+# Purpose / 作用: When both sides contain exactly one normalized co-occurrence group, skip the outer group-DP table and directly compute the group-level common part.
+# Meaning / 意义: This preserves the same unit-level matching semantics, including ordered strings, numeric soft common units, structure fuzzy units and CSA bundle gates; it only removes redundant group-level DP work.
+# Rollback / 回退: Set false to force the legacy maximum_common_part group-DP path even for single-group comparisons.
+# Reference / 参考: Default true for the growth-projection performance path.
+maximum_common_part_single_group_fast_path_enabled: true
+
+# maximum_common_group_ordered_subsequence_fast_path_enabled / 有序组完整子序列快路径
+# Purpose / 作用: For order-sensitive groups, short-circuit LCS when one side's unit signatures are a stable complete subsequence of the other side.
+# Meaning / 意义: Common in Goal-B character strings and internal co-occurrence growth. Ambiguous repeated-signature cases fall back to the old LCS path to preserve residual tie-break semantics.
+# Rollback / 回退: Set false to disable this unit-level ordered-subsequence fast path while keeping other cut caches active.
+# Reference / 参考: Default true.
+maximum_common_group_ordered_subsequence_fast_path_enabled: true
+
+# maximum_common_part_cache_max_entries / 最大共同切割结果缓存容量
+# Purpose / 作用: Bounds the CutEngine common-part LRU cache.
+# Meaning / 意义: Larger values help repeated matching workloads; lower values reduce memory.
+# Reference / 参考: Default 4096 for growth projection.
+maximum_common_part_cache_max_entries: 4096
+
+# maximum_common_part_cache_deepcopy_enabled / 最大共同切割缓存是否深拷贝
+# Purpose / 作用: When cache hits occur, optionally deep-copy the cached common-part result before returning it.
+# Meaning / 意义: Default false returns the cached read-only result directly and avoids a large nested deepcopy cost; current callers treat common_part as read-only. Turn true for conservative debugging if a caller is suspected of mutating common_part.
+# Reference / 参考: Default false. Set true to restore the older defensive-copy behaviour.
+maximum_common_part_cache_deepcopy_enabled: false
+
+# structure_store_backend / 结构库持久化后端
+# Purpose / 作用: Chooses how HDB formal structures and their owner-local structure databases are persisted.
+# Meaning / 意义: filesystem keeps the legacy one-json-per-structure/DB layout. sqlite stores the same complete structure objects and owner DB payloads in one SQLite WAL container while runtime 查存一体 still uses in-memory indexes immediately.
+# Rollback / 回退: Set filesystem to restore the legacy file layout. Existing JSON files can be imported into an empty SQLite container by the compatibility switch below.
+# Reference / 参考: Default sqlite after the 2026-05-04 formalization benchmark; use filesystem only for legacy regression comparisons.
+structure_store_backend: sqlite
+
+# structure_store_sqlite_path / SQLite 结构库文件路径
+# Purpose / 作用: Optional explicit path for the SQLite/WAL StructureStore container.
+# Meaning / 意义: Empty means use hdb data_dir/hdb_structure_store.sqlite3. The -wal/-shm sidecar files are normal SQLite WAL runtime files.
+# Rollback / 回退: Leave empty unless a run needs to place the database elsewhere.
+structure_store_sqlite_path: ""
+
+# structure_store_sqlite_compression_enabled / SQLite payload 压缩
+# Purpose / 作用: Compress large structure/owner-DB JSON payloads before storing them in SQLite.
+# Meaning / 意义: Keeps the runtime HDB object model unchanged, but can shrink WAL/commit I/O for large sequence-group payloads. Codec is stored per row, so reload remains transparent.
+# Rollback / 回退: Set false to store raw JSON blobs in SQLite.
+# Reference / 参考: Default true for SQLite experiments because current growth-mode HDB payloads contain many repeated sequence-group fields.
+structure_store_sqlite_compression_enabled: true
+
+# structure_store_sqlite_compression_min_bytes / SQLite payload 压缩阈值
+# Purpose / 作用: Only compress rows at or above this serialized byte size.
+# Meaning / 意义: Avoids spending CPU on tiny structures where compression gives little benefit.
+# Reference / 参考: Default 4096.
+structure_store_sqlite_compression_min_bytes: 4096
+
+# structure_store_sqlite_compression_level / SQLite payload 压缩等级
+# Purpose / 作用: zlib compression level for SQLite HDB payloads.
+# Meaning / 意义: Level 1 favors speed while still reducing repeated text/sequence-group payloads. Higher levels may shrink files more but can slow run completion.
+# Reference / 参考: Default 1.
+structure_store_sqlite_compression_level: 1
+
+# structure_store_sqlite_import_legacy_json_on_empty_enabled / 空 SQLite 自动导入旧 JSON
+# Purpose / 作用: When SQLite backend starts with an empty container but legacy structure/index JSON files exist, import them once into the SQLite store.
+# Meaning / 意义: Makes backend upgrade non-destructive. Formal identity remains the loaded complete structure object; owner DB JSON only serves as migration input.
+# Rollback / 回退: Set false if a run intentionally wants an empty SQLite HDB even when old JSON files remain beside it.
+# Reference / 参考: Default true for safe formalization from the old filesystem layout.
+structure_store_sqlite_import_legacy_json_on_empty_enabled: true
+
+# deferred_persistence_enabled / 分阶段延迟持久化
+# Purpose / 作用: Batch structure/db JSON persistence within a retrieval or induction stage, then flush once at stage end.
+# Meaning / 意义: Reduces repeated whole-file rewrites while preserving the in-memory semantics of the current tick.
+# Rollback / 回退: Set to false to restore legacy immediate persistence behaviour.
+# Reference / 参考: Default true.
+deferred_persistence_enabled: true
+
+# deferred_persistence_flush_interval_calls / 延迟持久化热路径 flush 间隔
+# Purpose / 作用: Allows hot retrieval/induction stages to keep dirty structure JSON in memory and flush every N HDB hot-path calls.
+# Meaning / 意义: In-memory semantics are unchanged; disk durability is delayed until the interval, manual flush, or module close. Use 0 to skip hot-path flushes entirely.
+# Rollback / 回退: Set to 1 to restore flushing at the end of every retrieval/induction stage.
+# Reference / 参考: Default 0.
+deferred_persistence_flush_interval_calls: 0
+
+# deferred_persistence_parallel_flush_enabled / 延迟持久化并行刷盘
+# Purpose / 作用: Write independent dirty structure/db JSON files concurrently when a deferred flush has accumulated many files.
+# Meaning / 意义: Does not change in-memory cognition or final persisted content; it only reduces run-completion wall time caused by thousands of small atomic writes.
+# Rollback / 回退: Set false to restore single-threaded flush order.
+# Reference / 参考: Default true. In the current growth-mode dataset benchmark, this cuts large completion flushes without changing cognition semantics.
+deferred_persistence_parallel_flush_enabled: true
+
+# deferred_persistence_parallel_flush_min_items / 并行刷盘最小文件数
+# Purpose / 作用: Avoid thread overhead for tiny flushes.
+# Meaning / 意义: Parallel flush is only used when dirty structure+db file count reaches this number.
+# Reference / 参考: Default 64.
+deferred_persistence_parallel_flush_min_items: 64
+
+# deferred_persistence_parallel_flush_workers / 并行刷盘工作线程数
+# Purpose / 作用: Controls concurrent JSON file writes during deferred persistence flush.
+# Meaning / 意义: Higher values can shorten large experiment-run completion flushes, but may add disk pressure on slow drives.
+# Reference / 参考: Default 8.
+deferred_persistence_parallel_flush_workers: 8
+
+# compact_sequence_groups_for_persistence_enabled / 序列组持久化瘦身
+# Purpose / 作用: Optionally drops runtime-only CutEngine normalization marker fields before writing HDB JSON.
+# Meaning / 意义: In-memory cognition is unchanged, but local Windows profiling showed this has little file-size benefit and can add CPU copy overhead.
+# Rollback / 回退: Keep false for normal runs; set true only for targeted storage-size experiments.
+# Reference / 参考: Default false.
+compact_sequence_groups_for_persistence_enabled: false
+
+# common_group_length_cache_max_entries / 公共组长度缓存容量
+# Purpose / 作用: Cache repeated group-pair common-length checks used by maximum-common cutting DP.
+# Meaning / 意义: Does not change matching semantics; it only avoids recomputing the same normalized group-pair length in hot retrieval/induction paths.
+# Rollback / 回退: Set to 0 to disable this cache.
+# Reference / 参考: Default 4096.
+common_group_length_cache_max_entries: 4096
+
+# numeric_match_rel_tolerance / 数值匹配相对容差
+# Purpose / 作用: Relative tolerance used in fuzzy numeric similarity.
+# Meaning / 意义: Lets larger numbers keep a proportionally sensible similarity window.
+# Reference / 参考: Default 0.35.
+numeric_match_rel_tolerance: 0.35
+
+# numeric_match_min_similarity / 数值匹配最小相似度
+# Purpose / 作用: Minimum similarity floor required for same-family numeric units to count as a fuzzy match.
+# Meaning / 意义: Lower values permit broader numeric generalization; higher values demand closer numeric agreement.
+# Reference / 参考: Default 0.4.
+numeric_match_min_similarity: 0.4
+
+# ---- Self Check And Repair / 自检与修复 ----
+
+# self_check_default_scope / 自检默认范围
+# Purpose / 作用: Default scope used when self_check_hdb() runs without an explicit scope.
+# Meaning / 意义: Lets the system prefer a lighter quick scan or a broader inspection by default.
+# Reference / 参考: Default "quick".
+self_check_default_scope: quick
+
+# repair_batch_limit / 修复批次处理上限
+# Purpose / 作用: Maximum number of repair items handled per repair batch.
+# Meaning / 意义: Smaller batches improve responsiveness and stop control; larger batches improve throughput.
+# Reference / 参考: Default 100.
+repair_batch_limit: 100
+
+# repair_sleep_ms_between_batches / 修复批次间休眠
+# Purpose / 作用: Sleep interval between repair batches.
+# Meaning / 意义: Adds pacing so background repair does not monopolize the process.
+# Reference / 参考: Default 10 ms.
+repair_sleep_ms_between_batches: 10
+
+# allow_delete_unrecoverable / 是否允许删除不可恢复数据
+# Purpose / 作用: Allows repair jobs to delete data judged unrecoverable.
+# Meaning / 意义: Safer when false, but some corrupted data may remain permanently.
+# Reference / 参考: Default true. Turn off if you want a strictly non-destructive repair posture.
+allow_delete_unrecoverable: true
+
+# max_repair_runtime_ms / 单次修复最大运行时长
+# Purpose / 作用: Maximum runtime budget for a repair session.
+# Meaning / 意义: Prevents repair from running indefinitely during active experimentation.
+# Reference / 参考: Default 30000 ms.
+max_repair_runtime_ms: 30000
+
+# enable_background_repair / 是否启用后台修复
+# Purpose / 作用: Allows HDB to run repair jobs in the background.
+# Meaning / 意义: Good for long-running resilience tests, but can reduce determinism during controlled debugging.
+# Reference / 参考: Default true.
+enable_background_repair: true
+
+# ---- Debug Logging / 调试日志细节 ----
+
+# detail_log_dump_cut_summary / 是否记录切割摘要
+# Purpose / 作用: Emits detailed cut summaries to the HDB detail log.
+# Meaning / 意义: Useful for diagnosing why common parts and residual parts were chosen.
+# Reference / 参考: Default true.
+detail_log_dump_cut_summary: true
+
+# detail_log_dump_group_match_profile / 是否记录结构组匹配画像
+# Purpose / 作用: Emits detailed group-match profiles to the HDB detail log.
+# Meaning / 意义: Helpful when debugging structure-level competition and SG creation, but expensive during dataset runs.
+# Reference / 参考: Default false; metrics and brief logs stay available.
+detail_log_dump_group_match_profile: false
+
+# detail_log_dump_pointer_fallback / 是否记录指针回退细节
+# Purpose / 作用: Emits detailed pointer-fallback traces to the HDB detail log.
+# Meaning / 意义: Important for verifying that fallback remains bounded and logically correct.
+# Reference / 参考: Default true.
+detail_log_dump_pointer_fallback: true
+

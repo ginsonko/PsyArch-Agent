@@ -1,0 +1,23 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HDB Structure Group",
+  "type": "object",
+  "required": ["id", "object_type", "required_structure_ids", "avg_energy_profile", "stats"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^sg_[0-9]+$"},
+    "object_type": {"const": "sg"},
+    "sub_type": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "required_structure_ids": {"type": "array", "items": {"type": "string"}},
+    "bias_structure_ids": {"type": "array", "items": {"type": "string"}},
+    "avg_energy_profile": {"type": "object", "additionalProperties": {"type": "number"}},
+    "stats": {"type": "object"},
+    "source": {"type": "object"},
+    "trace_id": {"type": "string"},
+    "tick_id": {"type": "string"},
+    "created_at": {"type": "integer"},
+    "updated_at": {"type": "integer"},
+    "status": {"type": "string"},
+    "meta": {"type": "object"}
+  }
+}

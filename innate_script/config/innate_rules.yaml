@@ -1,0 +1,4807 @@
+# ======================================================================
+# AP Innate Rules (IESM Rules)
+# AP 先天规则（先天编码脚本管理器 IESM 的规则文件）
+#
+# This file is generated/updated by the Observatory UI or tools.
+# 本文件可由观测台前端或工具生成/更新。
+#
+# Quick Start / 快速开始：
+# 1) 运行 `python -m observatory` 启动观测台
+# 2) 打开浏览器侧边栏「先天规则 / Innate Rules」
+# 3) 校验 / Validate -> 保存并热加载 / Save + Reload
+# 4) 用最近一轮模拟 / Simulate 查看触发结果
+#
+# Schema / 结构提示：
+# - Top-level: rules_schema_version, rules_version, enabled, defaults, rules
+# - Rule item: id, title, enabled, phase, priority, cooldown_ticks, when, then, note
+# - Optional: ui (editor metadata, ignored by the engine)
+#   可选：ui（编辑器元信息，规则引擎会忽略）
+# - when supports: any/all/not + cfs/state_window/timer
+# - then supports: cfs_emit/focus/emit_script/emotion_update/action_trigger/pool_energy/pool_bind_attribute/delay/branch/log
+#
+# Tips / 提示：
+# - Keep rule ids stable for auditing.
+#   规则 id 请保持稳定，便于审计与回滚。
+# - Rules are pure data, no Python code execution.
+#   规则是纯数据，不执行 Python 代码。
+# ======================================================================
+rules_schema_version: '1.0'
+rules_version: '0.10'
+enabled: true
+defaults:
+  focus_directive:
+    ttl_ticks: 2
+    focus_boost: 0.9
+    deduplicate_by: target_ref_object_id
+    max_directives_per_rule: 8
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 6.0
+    full_total: 18.0
+    min_scale: 0.0
+  cfs_repeat_fatigue:
+    enabled: true
+    standalone_only: false
+    window_ticks: 8
+    recovery_gap_ticks: 3
+    start_hits: 2
+    full_hits: 6
+    min_scale: 0.32
+rules:
+- id: state_window_fast_cp_rise
+  title: 状态窗口：认知压（CP）快速上升 -> 触发记录（emit_script）
+  enabled: true
+  phase: directives
+  priority: 50
+  cooldown_ticks: 0
+  when:
+    state_window:
+      stage: any
+      fast_cp_rise_min: 1
+  then:
+  - emit_script:
+      script_id: innate_state_window_cp_rise
+      script_kind: window_trigger
+      priority: 50
+      trigger: fast_cp_rise
+  note: >-
+    MVP 对接 StatePool 的 script_check_packet：当状态窗口检测到认知压 CP 在短时间内快速上升时，先记录一个可观测的 emit_script
+    事件，供前端、日志和后续 IESM 扩展使用。该规则只负责把“状态变化已经发生”外显出来，不直接改变能量、情绪递质或行动驱动。
+- id: state_window_fast_cp_drop
+  title: 状态窗口：认知压（CP）快速下降 -> 触发记录（emit_script）
+  enabled: true
+  phase: directives
+  priority: 50
+  cooldown_ticks: 0
+  when:
+    state_window:
+      stage: any
+      fast_cp_drop_min: 1
+  then:
+  - emit_script:
+      script_id: innate_state_window_cp_drop
+      script_kind: window_trigger
+      priority: 50
+      trigger: fast_cp_drop
+  note: >-
+    MVP 对接 StatePool 的 script_check_packet：当状态窗口检测到认知压 CP 在短时间内快速下降时，先记录一个可观测的 emit_script
+    事件，供前端、日志和后续规则联动使用。该规则用于观察“压力/违和回落”的时机，本身不直接发放奖励或正确感。
+- id: cfs_dissonance_from_cp_abs
+  title: CFS脚本：认知压大小（|CP|）-> 违和感（持续态 + 属性绑定）
+  enabled: true
+  phase: cfs
+  priority: 90
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: cp_abs_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: exists
+      match_policy: any
+      value: null
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: top_n
+        top_n: 8
+        ref_object_types:
+        - st
+        - sa
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: dissonance
+      from: metric_matches
+      scope: object
+      max_signals: 4
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.05
+        min_interval_ticks: 2
+        bind_attribute_even_when_skipped: true
+      min_strength: 0.3
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.0
+        max: 2.0
+        out_min: 0.0
+        out_max: 1.0
+      bind_attribute:
+        attribute_name: cfs_dissonance
+        display: 违和感:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  note: >-
+    对齐理论 3.8.2：违和感来自高偏差或高认知压。当前原型以状态池对象的 |CP| 作为近似指标，在对象级生成 dissonance，并把认知感受作为先天规则触发的 CFS
+    写入运行态。由于这是先天编码脚本直接产生的认知感受，其绑定属性默认携带 ER 而不是 EV；后续若同类感受由感应赋能产生，才应体现为 EV。重复触发会受 habituation /
+    cfs_repeat_fatigue 限制，避免长期霸占 top。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.0
+    full_total: 5.0
+    min_scale: 0.18
+- id: cfs_punish_signal_from_cp_abs_high
+  title: CFS脚本：强违和（|CP|高）-> 惩罚信号（punish_signal，属性绑定）
+  enabled: true
+  phase: cfs
+  priority: 89
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: cp_abs_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.82
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: top_n
+        top_n: 8
+        ref_object_types:
+        - st
+        - sa
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - pool_bind_attribute:
+      selector:
+        mode: specific_item
+        item_id: '{{{match_item_id}}}'
+      attribute:
+        attribute_name: punish_signal
+        attribute_value: '{{{match_value}}}'
+        raw: punish_signal:{{{match_value}}}
+        display: 惩罚信号:{{{match_value}}}
+        value_type: numerical
+        modality: internal
+        er: 0.0
+        ev: 0.0
+      reason: iesm:strong_dissonance->punish_signal (weighted)
+  note: >-
+    强违和到惩罚信号的桥接规则：当 |CP| 高于阈值时，把 punish_signal 作为属性绑定到对应对象，供压力、行动阈值和 NT 调制链路读取。这里的 punish_signal
+    是“惩罚/警戒线索”的结构化标记，不等于直接给对象注入惩罚能量；实际能量和递质变化由后续规则与状态池统计共同决定。
+- id: cfs_correct_event_from_cp_abs_drop
+  title: CFS脚本：违和显著下降 -> 正确事件（硬约束：上一tick需处于违和）
+  enabled: true
+  phase: cfs
+  priority: 85
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: got_cp_abs
+      metric: ''
+      channel: ''
+      mode: state
+      op: <=
+      match_policy: any
+      value: -0.8
+      min: null
+      max: null
+      prev_gate:
+        op: '>='
+        value: 0.8
+      window_ticks: 4
+      selector:
+        mode: top_n
+        top_n: 12
+        ref_object_types:
+        - st
+        - sa
+        where:
+          cp_abs:
+            op: <=
+            value: 0.45
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: correct_event
+      from: metric_matches
+      scope: object
+      max_signals: 6
+      capture_as: correct_strength
+      strength:
+        from: match_value
+        abs: true
+        policy: linear_clamp
+        min: 0.5
+        max: 1.2
+        out_min: 0.4
+        out_max: 1.0
+      bind_attributes:
+      - attribute_name: cfs_correct_event
+        display: 正确事件:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+      - attribute_name: cfs_correctness
+        display: 正确感:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - pool_bind_attribute:
+      selector:
+        mode: specific_item
+        item_id: '{{{match_item_id}}}'
+      attribute:
+        attribute_name: reward_signal
+        attribute_value: '{{{correct_strength}}}'
+        raw: reward_signal:{{{correct_strength}}}
+        display: 奖励信号:{{{correct_strength}}}
+        value_type: numerical
+        modality: internal
+        er: 0.0
+        ev: 0.0
+      reason: iesm:correct_event->reward_signal (weighted)
+  - pool_bind_attribute:
+      selector:
+        mode: specific_item
+        item_id: '{{{match_item_id}}}'
+      attribute:
+        attribute_name: cfs_correctness
+        attribute_value: '{{{strength}}}'
+        raw: cfs_correctness:{{{strength}}}
+        display: 正确感:{{{strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+      reason: iesm:correct_event->cfs_correctness (dissonance drop)
+  note: >-
+    对齐理论 3.8.2：正确事件必须依托“上一阶段确实处于违和/高认知压，随后显著回落”。本规则使用 prev_gate 约束上一 tick 的 |CP|，避免把普通低 CP
+    误判为正确感；触发后同时产生 correct_event、correctness，并绑定 reward_signal，作为期待通道和奖惩塑形链路的正向证据。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.4
+    full_total: 5.4
+    min_scale: 0.24
+- id: cfs_surprise_from_er_surge_cp_positive
+  title: CFS脚本：实能量突增且实高于虚（CP>0） -> 惊（surprise）
+  enabled: true
+  phase: cfs
+  priority: 80
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: got_er
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.7
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: top_n
+        top_n: 12
+        ref_object_types:
+        - st
+        - sa
+        where:
+          cp_delta:
+            op: '>='
+            value: 0.5
+          input_is_empty:
+            op: <=
+            value: 0
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: surprise
+      from: metric_matches
+      scope: object
+      max_signals: 6
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.5
+        max: 1.5
+        out_min: 0.3
+        out_max: 1.0
+      bind_attribute:
+        attribute_name: cfs_surprise
+        display: 惊:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  note: >-
+    对齐理论 3.8.2：惊来自实能量侧短时突增，并且应更偏向“现实证据突然变强”而非单纯想象增强。当前用 got_er 近似实能量突增，并要求 cp_delta >= 0 / CP
+    为正来过滤 EV 侧突增造成的误报。该信号主要服务于唤醒、新奇和短期注意转移。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.0
+    full_total: 4.8
+    min_scale: 0.22
+- id: cfs_expectation_from_reward_pred
+  title: CFS脚本：预测对象（EV高）且包含奖励信号 -> 期待（并安排“渐变验证/不验”）
+  enabled: true
+  phase: cfs
+  priority: 75
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: ev_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.3
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: has_attribute
+        scope: packet
+        attribute_names:
+        - reward_signal
+        - teacher_reward_signal
+        ref_object_types:
+        - st
+        - sa
+      capture_as: expect_pred_ev
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: expectation
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+        bind_attribute_even_when_skipped: true
+      capture_as: expect_strength
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.3
+        max: 1.5
+        out_min: 0.3
+        out_max: 1.0
+      bind_attribute:
+        attribute_name: cfs_expectation
+        display: 期待:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - branch:
+      when:
+        metric:
+          preset: er_rate
+          metric: ''
+          channel: ''
+          mode: avg_rate
+          op: exists
+          match_policy: any
+          value: null
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: specific_item
+            item_id: '{{{match_item_id}}}'
+          capture_as: expect_er_rate
+          epsilon: 1.0e-09
+          note: ''
+      then:
+      - cfs_emit:
+          kind: expectation_verified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_strength
+            policy: verify_mix
+            part: verified
+            pred_var: expect_pred_ev
+            actual_var: expect_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_verified
+            display: 期待验证:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      - cfs_emit:
+          kind: expectation_unverified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: expect_pred_ev
+            actual_var: expect_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_unverified
+            display: 期待不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      else:
+      - cfs_emit:
+          kind: expectation_unverified
+          from: single
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: expect_pred_ev
+            actual_var: expect_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_unverified
+            display: 期待不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      on_error: []
+      note: ''
+  note: >-
+    对齐理论 3.8.2：期待来自“预测结构 EV + 奖励信号”的组合。规则优先读取 packet / EV 口径中的奖励预测结构，触发 expectation 后安排
+    verify_mix 分支，让后续现实证据以连续分数验证或不验证该期待。这个实现是实时持续验证，不是硬编码固定时机；它允许部分命中、对称对抗，并为“预测逐步收敛”提供可观测信号。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.1
+    full_total: 5.0
+    min_scale: 0.2
+- id: cfs_expectation_from_teacher_reward_runtime_state_fallback
+  title: CFS脚本：教师奖励态回落到运行态对象时 -> 期待（渐变验证/不验）
+  enabled: true
+  phase: cfs
+  priority: 74
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: total_energy_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.25
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: has_attribute
+          scope: all
+          attribute_name: teacher_reward_signal
+          ref_object_types:
+          - st
+        capture_as: expect_teacher_total_energy
+        epsilon: 1.0e-09
+        note: ''
+    - not:
+        metric:
+          preset: ev_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.3
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: has_attribute
+            scope: packet
+            attribute_names:
+            - reward_signal
+            - teacher_reward_signal
+            ref_object_types:
+            - st
+            - sa
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - cfs_emit:
+      kind: expectation
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+        bind_attribute_even_when_skipped: true
+      capture_as: expect_teacher_strength
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.25
+        max: 1.5
+        out_min: 0.22
+        out_max: 0.9
+      bind_attribute:
+        attribute_name: cfs_expectation
+        display: 期待:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - branch:
+      when:
+        metric:
+          preset: er_rate
+          metric: ''
+          channel: ''
+          mode: avg_rate
+          op: exists
+          match_policy: any
+          value: null
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: specific_item
+            item_id: '{{{match_item_id}}}'
+          capture_as: expect_teacher_er_rate
+          epsilon: 1.0e-09
+          note: ''
+      then:
+      - cfs_emit:
+          kind: expectation_verified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_teacher_strength
+            policy: verify_mix
+            part: verified
+            pred_var: expect_teacher_total_energy
+            actual_var: expect_teacher_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_verified
+            display: 期待验证:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      - cfs_emit:
+          kind: expectation_unverified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_teacher_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: expect_teacher_total_energy
+            actual_var: expect_teacher_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_unverified
+            display: 期待不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      else:
+      - cfs_emit:
+          kind: expectation_unverified
+          from: single
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: expect_teacher_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: expect_teacher_total_energy
+            actual_var: expect_teacher_er_rate
+            actual_scale: 4.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_expectation_unverified
+            display: 期待不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      on_error: []
+      note: ''
+  note: >-
+    对齐新口径的 teacher fallback：当 teacher_reward_signal 已经绑定到运行态结构，但 packet/EV
+    投影还没有形成稳定下一轮预测时，也允许结构总能量直接触发期待。该路径用于避免教师奖励链条在工程上“看不见”刚刚产生的奖励线索；它是补盲通道，不应替代主 packet/EV 预测链路。
+- id: cfs_pressure_from_punish_pred
+  title: CFS脚本：预测对象（EV高）且包含惩罚信号 -> 压力（并安排“渐变验证/不验”）
+  enabled: true
+  phase: cfs
+  priority: 74
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: ev_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.3
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: has_attribute
+        scope: packet
+        attribute_names:
+        - punish_signal
+        - teacher_punish_signal
+        ref_object_types:
+        - st
+      capture_as: pressure_pred_ev
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: pressure
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+        bind_attribute_even_when_skipped: true
+      capture_as: pressure_strength
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.3
+        max: 1.5
+        out_min: 0.3
+        out_max: 1.0
+      bind_attribute:
+        attribute_name: cfs_pressure
+        display: 压力:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - branch:
+      when:
+        metric:
+          preset: er_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: exists
+          match_policy: any
+          value: null
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: specific_item
+            item_id: '{{{match_verification_anchor_item_id}}}'
+          capture_as: pressure_actual_er
+          epsilon: 1.0e-09
+          note: ''
+      then:
+      - cfs_emit:
+          kind: pressure_verified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_strength
+            policy: verify_mix
+            part: verified
+            pred_var: pressure_pred_ev
+            actual_var: pressure_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_verified
+            display: 压力验证:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      - cfs_emit:
+          kind: pressure_unverified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_pred_ev
+            actual_var: pressure_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      else:
+      - cfs_emit:
+          kind: pressure_unverified
+          from: single
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_pred_ev
+            actual_var: pressure_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      on_error: []
+      note: ''
+  note: >-
+    对齐理论 3.8.2：压力优先来自“预测结构 EV + 记忆/结构侧惩罚信号”。默认主链先走 packet 口径，要求对象确实表现出惩罚预测，而不是把脚本临时贴上的
+    punish_signal 立刻放大成长期高压。触发后同样走 verify_mix，以便区分压力被现实确认、未确认或部分确认。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.0
+    full_total: 4.8
+    min_scale: 0.18
+- id: cfs_pressure_from_teacher_punish_runtime_state_fallback
+  title: CFS脚本：教师惩罚态回落到运行态对象时 -> 压力（渐变验证/不验）
+  enabled: true
+  phase: cfs
+  priority: 73
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: total_energy_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.25
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: has_attribute
+          scope: all
+          attribute_name: teacher_punish_signal
+          ref_object_types:
+          - st
+        capture_as: pressure_teacher_total_energy
+        epsilon: 1.0e-09
+        note: ''
+    - not:
+        metric:
+          preset: ev_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.3
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: has_attribute
+            scope: packet
+            attribute_names:
+            - punish_signal
+            - teacher_punish_signal
+            ref_object_types:
+            - st
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - cfs_emit:
+      kind: pressure
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+        bind_attribute_even_when_skipped: true
+      capture_as: pressure_teacher_strength
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.25
+        max: 1.5
+        out_min: 0.22
+        out_max: 0.9
+      bind_attribute:
+        attribute_name: cfs_pressure
+        display: 压力:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - branch:
+      when:
+        metric:
+          preset: er_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: exists
+          match_policy: any
+          value: null
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: specific_item
+            item_id: '{{{match_verification_anchor_item_id}}}'
+          capture_as: pressure_teacher_actual_er
+          epsilon: 1.0e-09
+          note: ''
+      then:
+      - cfs_emit:
+          kind: pressure_verified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_teacher_strength
+            policy: verify_mix
+            part: verified
+            pred_var: pressure_teacher_total_energy
+            actual_var: pressure_teacher_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_verified
+            display: 压力验证:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      - cfs_emit:
+          kind: pressure_unverified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_teacher_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_teacher_total_energy
+            actual_var: pressure_teacher_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      else:
+      - cfs_emit:
+          kind: pressure_unverified
+          from: single
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.03
+            min_interval_ticks: 1
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_teacher_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_teacher_total_energy
+            actual_var: pressure_teacher_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      on_error: []
+      note: ''
+  note: >-
+    对齐新口径的 teacher fallback：当 teacher_punish_signal 已经绑定到运行态结构，但 packet/EV
+    侧还没完成下一轮投影时，也允许结构总能量直接触发压力。该规则避免教师惩罚链条出现工程性失明，但仍保留阈值、对象类型和疲劳限制，避免单次教师标签无限扩散。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.0
+    full_total: 4.6
+    min_scale: 0.18
+- id: cfs_pressure_from_runtime_punish_pred_fallback
+  title: CFS脚本：运行态惩罚预测回落路径 -> 压力（渐变验证/不验）
+  enabled: true
+  phase: cfs
+  priority: 73
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: ev_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.72
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: has_attribute
+          scope: runtime
+          attribute_name: punish_signal
+          ref_object_types:
+          - st
+        capture_as: pressure_runtime_pred_ev
+        epsilon: 1.0e-09
+        note: ''
+    - not:
+        metric:
+          preset: ev_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.3
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: has_attribute
+            scope: packet
+            attribute_name: punish_signal
+            ref_object_types:
+            - st
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - cfs_emit:
+      kind: pressure
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.05
+        min_interval_ticks: 2
+        bind_attribute_even_when_skipped: true
+      capture_as: pressure_runtime_strength
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.72
+        max: 1.5
+        out_min: 0.18
+        out_max: 0.6
+      bind_attribute:
+        attribute_name: cfs_pressure
+        display: 压力:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  - branch:
+      when:
+        metric:
+          preset: er_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: exists
+          match_policy: any
+          value: null
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: specific_item
+            item_id: '{{{match_verification_anchor_item_id}}}'
+          capture_as: pressure_runtime_actual_er
+          epsilon: 1.0e-09
+          note: ''
+      then:
+      - cfs_emit:
+          kind: pressure_verified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.05
+            min_interval_ticks: 2
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_runtime_strength
+            policy: verify_mix
+            part: verified
+            pred_var: pressure_runtime_pred_ev
+            actual_var: pressure_runtime_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_verified
+            display: 压力验证:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      - cfs_emit:
+          kind: pressure_unverified
+          from: metric_matches
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.05
+            min_interval_ticks: 2
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_runtime_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_runtime_pred_ev
+            actual_var: pressure_runtime_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      else:
+      - cfs_emit:
+          kind: pressure_unverified
+          from: single
+          scope: object
+          target:
+            from: specific_ref
+            ref_object_id: '{{{match_verification_anchor_ref_object_id}}}'
+            ref_object_type: '{{{match_verification_anchor_ref_object_type}}}'
+            display: '{{{match_verification_anchor_display}}}'
+          max_signals: 1
+          emit_gate:
+            mode: strength_delta
+            min_delta: 0.05
+            min_interval_ticks: 2
+            bind_attribute_even_when_skipped: true
+          min_strength: 0.02
+          strength:
+            from: var
+            var: pressure_runtime_strength
+            policy: verify_mix
+            part: unverified
+            pred_var: pressure_runtime_pred_ev
+            actual_var: pressure_runtime_actual_er
+            actual_scale: 1.0
+            gamma: 1.0
+            eps: 1e-6
+          bind_attribute:
+            attribute_name: cfs_pressure_unverified
+            display: 压力不验:{{{strength}}}
+            value_from: strength
+            value_type: numerical
+            modality: internal
+            er: '{{{strength}}}'
+            ev: 0.0
+      on_error: []
+      note: ''
+  note: >-
+    回退规则：若还没有形成 packet 惩罚结构，runtime 惩罚标签仍可触发较弱压力，但阈值更高、默认只面向 ST、输出更弱。设计目的不是制造新的主链，而是防止“违和 ->
+    punish_signal -> pressure”自激过强，同时保留教师惩罚或局部惩罚线索被短时感知到的能力。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.0
+    full_total: 4.6
+    min_scale: 0.18
+- id: cfs_grasp_from_stimulus_match
+  title: CFS脚本：把握感/置信度综合得分较高 -> 把握感/置信度（grasp）
+  enabled: true
+  phase: cfs
+  priority: 60
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: grasp_score
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.45
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector: null
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: grasp
+      from: metric_matches
+      scope: object
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+        bind_attribute_even_when_skipped: true
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.45
+        max: 0.9
+        out_min: 0.3
+        out_max: 1.0
+      bind_attribute:
+        attribute_name: cfs_grasp
+        display: 把握感/置信度:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  note: >-
+    对齐理论 3.8.3：把握感/置信度应来自匹配质量、残差比例、结构级一致性等综合证据。当前原型把这些因素汇总为 grasp_score（由 observatory/_app.py
+    侧整理），再由 IESM 产生 grasp CFS。该感受用于表达“系统对当前理解较有把握”，并会影响 NT 稳定、聚焦和后续行动倾向。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.8
+    full_total: 6.2
+    min_scale: 0.26
+- id: cfs_complexity_from_cam_size
+  title: CFS脚本：繁/简综合复杂度（complexity_score）-> 繁/简（complexity，global）
+  enabled: true
+  phase: cfs
+  priority: 40
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: complexity_score
+      metric: ''
+      channel: ''
+      mode: state
+      op: exists
+      match_policy: any
+      value: null
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector: null
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: complexity
+      from: metric_matches
+      scope: global
+      max_signals: 1
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.35
+        max: 0.7
+        out_min: 0.2
+        out_max: 1.0
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_complexity
+        attribute_value: '{{{match_value}}}'
+        raw: 复杂度:{{{match_value}}}
+        display: 复杂度:{{{match_value}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{match_value}}}'
+        ev: 0.0
+      reason: iesm:cfs_complexity->global_attr
+  note: >-
+    对齐理论 3.8.3：繁/复杂度建议结合 CAM 大小、状态池波峰数量、聚集度和有效候选数量，而不是只看单个对象。当前使用 complexity_score（CAM size +
+    有效波峰数等综合指标）产生全局 complexity CFS，并绑定可观测属性，帮助系统把“当前认知负荷偏高”作为内部状态进入学习和调制链路。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.2
+    full_total: 5.6
+    min_scale: 0.18
+- id: cfs_simplicity_from_low_complexity
+  title: CFS脚本：低复杂度 -> 简（simplicity）
+  enabled: true
+  phase: cfs
+  priority: 39
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: core_complexity_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.32
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: simplicity_complexity
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.22
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: punish_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.35
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: simplicity
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: simplicity_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: simplicity_complexity
+        policy: linear_clamp
+        min: 0.0
+        max: 0.32
+        invert: true
+        out_min: 0.18
+        out_max: 0.82
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_simplicity
+        attribute_value: '{{{simplicity_strength}}}'
+        raw: 简单感/轻松感:{{{simplicity_strength}}}
+        display: 简单感/轻松感:{{{simplicity_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{simplicity_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_simplicity->global_attr
+  note: >-
+    对齐理论 3.8.3：低复杂度不应只表现为“没有事发生”，也应允许出现轻微正向的简感/轻松感。这里默认读取更抗残差噪声的 core_complexity_score，避免大量弱 SA
+    尾巴把简感永久压制；同时要求把握感不为零且当前惩罚/压力不高，避免空状态或高压状态误触发。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.4
+    full_total: 5.8
+    min_scale: 0.22
+- id: cfs_relief_from_cp_abs_drop
+  title: CFS脚本：认知压显著回落 -> 释然（relief）
+  enabled: true
+  phase: cfs
+  priority: 38
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: got_cp_abs
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: -0.45
+        min: null
+        max: null
+        prev_gate:
+          op: '>='
+          value: 0.55
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+          where:
+            cp_abs:
+              op: <=
+              value: 0.55
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: punish_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.65
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: relief
+      from: metric_matches
+      match_policy: strongest
+      scope: object
+      max_signals: 1
+      capture_as: relief_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: match_value
+        abs: true
+        policy: linear_clamp
+        min: 0.45
+        max: 1.2
+        out_min: 0.24
+        out_max: 0.9
+      bind_attribute:
+        attribute_name: cfs_relief
+        display: 缓解感/松弛感:{{{strength}}}
+        value_from: strength
+        value_type: numerical
+        modality: internal
+        er: '{{{strength}}}'
+        ev: 0.0
+  note: >-
+    对齐“压力回落后的恢复侧体验”：relief 不要求认知压完全归零，只要求 |CP| 从高位明显回落且当前惩罚态不过高。这样既不会把普通衰减都误判为缓解，也能比
+    correct_event 更早显影“松一口气”的过程状态，为后续安心、稳定和 NT 回落提供过渡证据。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 2.2
+    full_total: 5.2
+    min_scale: 0.22
+- id: cfs_reassurance_from_settled_relief
+  title: CFS脚本：释然稳定且把握较高 -> 安心（reassurance）
+  enabled: true
+  phase: cfs
+  priority: 37
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: got_cp_abs
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: -0.55
+        min: null
+        max: null
+        prev_gate:
+          op: '>='
+          value: 0.6
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+          where:
+            cp_abs:
+              op: <=
+              value: 0.42
+        capture_as: reassurance_drop
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.26
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: core_complexity_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.34
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: punish_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.58
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: reassurance
+      from: metric_matches
+      match_policy: strongest
+      scope: global
+      max_signals: 1
+      capture_as: reassurance_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: reassurance_drop
+        abs: true
+        policy: linear_clamp
+        min: 0.55
+        max: 1.2
+        out_min: 0.22
+        out_max: 0.86
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_reassurance
+        attribute_value: '{{{reassurance_strength}}}'
+        raw: 安抚感/安心感:{{{reassurance_strength}}}
+        display: 安抚感/安心感:{{{reassurance_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{reassurance_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_reassurance->global_attr
+  note: >-
+    reassurance
+    不是单纯“低压力”，而是“高压回落后，系统对当前局面已有一定把握，且复杂度已经收束”。惩罚态阈值故意保留一段“尚有余波但已缓和”的区间，避免只有几乎完全归零时才允许显影安心。该规则用于把恢复阶段从短暂
+    relief 推进到更稳定的安定感。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.6
+    full_total: 6.0
+    min_scale: 0.26
+- id: cfs_repetition_from_item_fatigue
+  title: CFS脚本：状态池疲劳度较高 -> 重复感/疲劳（repetition，global）
+  enabled: true
+  phase: cfs
+  priority: 35
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: fatigue_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.15
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector:
+        mode: top_n
+        top_n: 16
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - cfs_emit:
+      kind: repetition
+      from: metric_matches
+      scope: global
+      max_signals: 1
+      capture_as: repetition_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.03
+        min_interval_ticks: 1
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.15
+        max: 0.25
+        out_min: 0.4
+        out_max: 1.0
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_repetition
+        attribute_value: '{{{repetition_strength}}}'
+        raw: 重复感/疲劳:{{{repetition_strength}}}
+        display: 重复感/疲劳:{{{repetition_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{repetition_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_repetition->global_attr
+  note: >-
+    对齐理论 3.8.3：重复感可由对象疲劳或状态池疲劳分布触发。当前运行态 fatigue 整体偏低，因此阈值按现口径调低，并用 top_n
+    中的高疲劳条目近似重复/疲劳感。它是全局认知感受，用于提示“同类对象或同类归因短期内被反复使用”，并可抑制过度重复的注意和拼接。
+  habituation:
+    enabled: true
+    window_ticks: 8
+    start_total: 1.8
+    full_total: 4.4
+    min_scale: 0.16
+- id: cfs_familiarity_from_grasp_and_low_residual
+  title: CFS脚本：高把握且残差较低 -> 熟悉感（familiarity）
+  enabled: true
+  phase: cfs
+  priority: 34
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.52
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: familiarity_grasp
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: stimulus_match_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.50
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: stimulus_residual_ratio
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.58
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: familiarity
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: familiarity_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: familiarity_grasp
+        policy: linear_clamp
+        min: 0.52
+        max: 0.92
+        out_min: 0.22
+        out_max: 0.90
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_familiarity
+        attribute_value: '{{{familiarity_strength}}}'
+        raw: 熟悉感:{{{familiarity_strength}}}
+        display: 熟悉感:{{{familiarity_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{familiarity_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_familiarity->global_attr
+  note: >-
+    熟悉感不是单独的奖励，也不等同于“正确事件”。它表达“当前刺激被系统较顺畅地解释”：刺激级匹配较高、综合把握分较高，且残差比例较低。强度来自 grasp_score
+    的连续映射，因此越接近完整命中越强；如果只是低残差但没有足够匹配/把握，不会触发。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.4
+    full_total: 5.8
+    min_scale: 0.24
+- id: cfs_deja_vu_from_familiarity_without_memory
+  title: CFS脚本：熟悉感存在但无运行态记忆证据且有认知压 -> 即视感（deja_vu）
+  enabled: true
+  phase: cfs
+  priority: 33
+  cooldown_ticks: 0
+  when:
+    all:
+    - cfs:
+        kinds:
+        - familiarity
+        min_strength: 0.12
+    - not:
+        metric:
+          preset: map_item_count
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 1
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector: null
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+    - metric:
+        preset: cp_abs_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.18
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+        capture_as: deja_vu_cp
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: deja_vu
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: deja_vu_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: deja_vu_cp
+        policy: linear_clamp
+        min: 0.18
+        max: 0.75
+        out_min: 0.18
+        out_max: 0.82
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_deja_vu
+        attribute_value: '{{{deja_vu_strength}}}'
+        raw: 即视感:{{{deja_vu_strength}}}
+        display: 即视感:{{{deja_vu_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{deja_vu_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_deja_vu->global_attr
+  note: >-
+    即视感按“熟悉感 + 记忆证据缺席 + 仍有认知压”的组合建模：系统产生了类似“想起来”的熟悉信号，但运行态记忆投影/活化没有给出对应证据，同时高能对象仍存在 CP
+    拉扯，于是形成“熟悉却不对劲”的感受。强度来自本轮 CP 大小，而不是固定值。
+  habituation:
+    enabled: true
+    window_ticks: 12
+    start_total: 1.8
+    full_total: 4.8
+    min_scale: 0.22
+- id: cfs_fear_unknown_from_high_cp_low_grasp
+  title: CFS脚本：高认知压且低把握 -> 未知恐惧（fear_unknown）
+  enabled: true
+  phase: cfs
+  priority: 32
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: cp_abs_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.45
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+        capture_as: fear_unknown_cp
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.38
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - any:
+      - cfs:
+          kinds:
+          - dissonance
+          - pressure
+          min_strength: 0.10
+      - metric:
+          preset: punish_state
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.18
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector: null
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - cfs_emit:
+      kind: fear_unknown
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: fear_unknown_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: fear_unknown_cp
+        policy: linear_clamp
+        min: 0.45
+        max: 1.25
+        out_min: 0.22
+        out_max: 0.92
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_fear_unknown
+        attribute_value: '{{{fear_unknown_strength}}}'
+        raw: 未知恐惧:{{{fear_unknown_strength}}}
+        display: 未知恐惧:{{{fear_unknown_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{fear_unknown_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_fear_unknown->global_attr
+  note: >-
+    未知恐惧不是普通压力的同义词，而是“当前有强 CP/惩罚线索，但系统还没有足够把握解释它”。因此它同时要求高 CP、低 grasp，并需要违和/压力/惩罚任一证据存在。强度随 CP
+    连续变化，用于拟合人类面对未知威胁时的警戒收束。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 1.7
+    full_total: 4.6
+    min_scale: 0.18
+- id: cfs_uncanny_valley_from_high_match_high_residual
+  title: CFS脚本：高匹配但仍有残差与认知压 -> 恐怖谷/近似违和（uncanny_valley）
+  enabled: true
+  phase: cfs
+  priority: 31
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: stimulus_match_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.55
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: stimulus_residual_ratio
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.16
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: cp_abs_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.25
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+        capture_as: uncanny_cp
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: uncanny_valley
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: uncanny_valley_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: uncanny_cp
+        policy: linear_clamp
+        min: 0.25
+        max: 0.90
+        out_min: 0.20
+        out_max: 0.88
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_uncanny_valley
+        attribute_value: '{{{uncanny_valley_strength}}}'
+        raw: 恐怖谷/近似违和:{{{uncanny_valley_strength}}}
+        display: 恐怖谷/近似违和:{{{uncanny_valley_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{uncanny_valley_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_uncanny_valley->global_attr
+  note: >-
+    恐怖谷感受用于表达“很像，但关键处仍不对”：匹配分已经高，说明对象接近熟悉模板；但残差和 CP 仍没有消失，说明局部差异仍在拉扯。强度来自 CP
+    大小，区别于纯 surprise，也区别于完全未知的 fear_unknown。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 1.8
+    full_total: 4.8
+    min_scale: 0.20
+- id: cfs_curiosity_from_manageable_residual
+  title: CFS脚本：可处理的新残差 -> 好奇心（curiosity）
+  enabled: true
+  phase: cfs
+  priority: 30
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: stimulus_residual_ratio
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.18
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: curiosity_residual
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.22
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: punish_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.38
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: core_complexity_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.72
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: curiosity
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: curiosity_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: curiosity_residual
+        policy: linear_clamp
+        min: 0.18
+        max: 0.72
+        out_min: 0.18
+        out_max: 0.86
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_curiosity
+        attribute_value: '{{{curiosity_strength}}}'
+        raw: 好奇心:{{{curiosity_strength}}}
+        display: 好奇心:{{{curiosity_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{curiosity_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_curiosity->global_attr
+  note: >-
+    好奇心被建模为“仍有新残差，但系统感觉可处理”：需要非零残差、非零把握、低惩罚，并且核心复杂度不过载。它不是盲目增加 NOV，而是当新信息处在可探索区间时，把残差强度连续映射为探索驱动。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.0
+    full_total: 5.2
+    min_scale: 0.22
+- id: cfs_boredom_from_repetition_low_novelty
+  title: CFS脚本：重复高且新奇/奖励/复杂度低 -> 无聊（boredom）
+  enabled: true
+  phase: cfs
+  priority: 29
+  cooldown_ticks: 0
+  when:
+    all:
+    - cfs:
+        kinds:
+        - repetition
+        min_strength: 0.12
+    - metric:
+        preset: nt_state
+        metric: ''
+        channel: NOV
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.16
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: reward_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.20
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: core_complexity_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.35
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: boredom
+      from: cfs_matches
+      scope: global
+      max_signals: 1
+      capture_as: boredom_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.12
+        max: 0.80
+        out_min: 0.18
+        out_max: 0.84
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_boredom
+        attribute_value: '{{{boredom_strength}}}'
+        raw: 无聊感:{{{boredom_strength}}}
+        display: 无聊感:{{{boredom_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{boredom_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_boredom->global_attr
+  note: >-
+    无聊不是简单疲劳，而是重复感较高，同时 NOV、新奖励和核心复杂度都偏低。强度继承并重新映射 repetition 的实时强度，表达“这个局面被反复处理且缺少新收益”，用于降低无效探索和行动兴奋。
+  habituation:
+    enabled: true
+    window_ticks: 12
+    start_total: 2.0
+    full_total: 5.4
+    min_scale: 0.20
+- id: cfs_uncertainty_from_cp_low_grasp_many_peaks
+  title: CFS脚本：认知压高、把握不足且候选分散 -> 不确定感（uncertainty）
+  enabled: true
+  phase: cfs
+  priority: 28
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: cp_abs_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.34
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: top_n
+          top_n: 12
+          ref_object_types:
+          - st
+          - sa
+        capture_as: uncertainty_cp
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.46
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - any:
+      - metric:
+          preset: pool_effective_peak_count
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 3.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector: null
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: stimulus_residual_ratio
+          metric: ''
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.34
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector: null
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - cfs_emit:
+      kind: uncertainty
+      from: single
+      scope: global
+      max_signals: 1
+      capture_as: uncertainty_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: var
+        var: uncertainty_cp
+        policy: linear_clamp
+        min: 0.34
+        max: 1.10
+        out_min: 0.20
+        out_max: 0.88
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_uncertainty
+        attribute_value: '{{{uncertainty_strength}}}'
+        raw: 不确定感:{{{uncertainty_strength}}}
+        display: 不确定感:{{{uncertainty_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{uncertainty_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_uncertainty->global_attr
+  note: >-
+    不确定感表达“系统知道有拉扯，但还没有稳定归因”：CP 高、把握不足，并且候选波峰较分散或刺激残差较高。它比 fear_unknown 更中性，不要求惩罚线索；强度来自 CP
+    连续映射，供注意力进入谨慎重采样。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.0
+    full_total: 5.4
+    min_scale: 0.22
+- id: cfs_agency_readiness_from_expectation_grasp
+  title: CFS脚本：期待存在且把握足够 -> 能动准备感（agency_readiness）
+  enabled: true
+  phase: cfs
+  priority: 27
+  cooldown_ticks: 0
+  when:
+    all:
+    - cfs:
+        kinds:
+        - expectation
+        - expectation_verified
+        min_strength: 0.06
+    - metric:
+        preset: grasp_score
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.30
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - metric:
+        preset: punish_state
+        metric: ''
+        channel: ''
+        mode: state
+        op: <=
+        match_policy: any
+        value: 0.50
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - cfs_emit:
+      kind: agency_readiness
+      from: cfs_matches
+      scope: global
+      max_signals: 1
+      capture_as: agency_readiness_strength
+      emit_gate:
+        mode: strength_delta
+        min_delta: 0.02
+        min_interval_ticks: 1
+      strength:
+        from: match_value
+        policy: linear_clamp
+        min: 0.06
+        max: 0.80
+        out_min: 0.16
+        out_max: 0.86
+  - pool_bind_attribute:
+      selector:
+        mode: specific_ref
+        ref_object_id: st_global_cfs
+        ref_object_type: st
+      create_if_missing: true
+      create_ref_object_type: st
+      create_display: '[GlobalCFS]'
+      attribute:
+        attribute_name: cfs_agency_readiness
+        attribute_value: '{{{agency_readiness_strength}}}'
+        raw: 能动准备感:{{{agency_readiness_strength}}}
+        display: 能动准备感:{{{agency_readiness_strength}}}
+        value_type: numerical
+        modality: internal
+        er: '{{{agency_readiness_strength}}}'
+        ev: 0.0
+      reason: iesm:cfs_agency_readiness->global_attr
+  note: >-
+    能动准备感用于表达“我大概知道接下来能做什么”：需要期待或期待验证信号、足够 grasp，并且惩罚态不过高。它不会直接执行行动，而是把期待链条的实时强度转成行动准备侧 NT
+    调制，让后续行动模块更容易选择已经有证据的方向。
+  habituation:
+    enabled: true
+    window_ticks: 10
+    start_total: 2.0
+    full_total: 5.4
+    min_scale: 0.24
+- id: nt_update_from_dissonance
+  title: NT脚本：违和感 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 79
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - dissonance
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.09
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+  note: >-
+    把违和感连续映射到长期警戒、轻度唤醒和聚焦：主要提升 COR（皮质醇/警戒压力），少量提升 ADR（肾上腺素/行动唤醒）与 FOC（聚焦倾向）。默认增益与旧
+    cfs_to_nt_gains 保持接近，但来源外显到 IESM，便于人工调参。
+- id: nt_update_from_correct_event
+  title: NT脚本：正确事件 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 78
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - correct_event
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.12
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.08
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+  note: >-
+    正确事件代表验证、命中或认知压回落后的正反馈，因此优先抬升 DA（多巴胺/奖励驱动）、OXY（催产素/亲和与信任）、SER（血清素/稳定）和少量
+    FOC（目标锁定）。该链路服务于“做对了以后更愿意保持和学习”。
+- id: nt_update_from_surprise
+  title: NT脚本：惊 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 77
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - surprise
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.07
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.015
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+  note: >-
+    惊强调唤醒和探索：提升 ADR（肾上腺素）与 NOV（新奇/探索），少量提升 COR（警戒），并略微削弱过强
+    FOC，避免一开始就过早收束。它用于让系统在实能量突增时更容易转移注意和重新采样。
+- id: nt_update_from_expectation
+  title: NT脚本：期待 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 76
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - expectation
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.06
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+  note: >-
+    期待代表“将要发生”的积极预测，轻度提升 DA（奖励驱动）与 NOV（探索倾向）。该规则不直接制造强奖励，而是让带奖励预测的对象更容易进入后续注意、验证和行动准备。
+- id: nt_update_from_pressure
+  title: NT脚本：压力 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 75
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - pressure
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.11
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.06
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+  note: >-
+    压力强化警戒、止痛/承受和执行收束：提升 COR、END（内啡肽/缓冲承受）、ADR 与 FOC，同时压低 NOV，减少无序发散。它用于让系统在惩罚预测或高压状态下更谨慎、更集中。
+- id: nt_update_from_expectation_verified
+  title: NT脚本：期待验证 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 74
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - expectation_verified
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.09
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+  note: >-
+    期待被现实验证时，提高 DA、SER、OXY 与 FOC，表示奖励预测命中、稳定感增强、目标更值得保持。该规则应让正确的期待链条更容易被后天学习和再次选择。
+- id: nt_update_from_expectation_unverified
+  title: NT脚本：期待不验 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 73
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - expectation_unverified
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+  note: >-
+    期待落空后，提高 COR、ADR 与 NOV，并略微削弱 SER：系统应更警觉、更愿意重新探索，同时降低原先稳定满足感。该规则用于避免错误期待持续占据高位。
+- id: nt_update_from_pressure_verified
+  title: NT脚本：压力验证 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 72
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - pressure_verified
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.07
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+  note: >-
+    压力被现实确认时，系统更倾向保持警戒、止痛和集中处理：提升 COR、ADR、END 与 FOC。该规则支持趋避学习，让惩罚预测被验证后更容易影响未来行动。
+- id: nt_update_from_pressure_unverified
+  title: NT脚本：压力不验 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 71
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - pressure_unverified
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+  note: >-
+    压力没有兑现时，更偏向恢复、松动和重新探索：提升 END、SER、NOV，降低 COR，并略微削弱 FOC。它表示“危险没有发生”，应帮助系统从过度紧绷中退出。
+- id: nt_update_from_complexity
+  title: NT脚本：繁/复杂度 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 70
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - complexity
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.015
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.015
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+  note: >-
+    复杂度是全局感受，采用 strongest 防止同 tick 内重复叠加。高 complexity 轻度提升 ADR、FOC、COR 与
+    NOV，表示“当前更繁、更忙”，需要更多唤醒、聚焦和探索，但不应无限放大。
+- id: nt_update_from_repetition
+  title: NT脚本：重复感 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 69
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - repetition
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.05
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+  note: >-
+    重复感更像全局疲劳带来的慢调制，因此只取 strongest 防止过度累积。它略微提升 COR 与 END，降低 SER 和
+    NOV，用来表达“已经反复处理类似内容”，从而减少新奇探索并增加疲劳/缓冲成分。
+- id: nt_update_from_grasp
+  title: NT脚本：把握感 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 68
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - grasp
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 8
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.08
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+  note: >-
+    把握感升高时，提高 SER 与 FOC，适度压低 COR 和 NOV，表示系统对当前理解更稳定、更愿意锁定目标，也较少需要警戒和继续发散探索。
+- id: nt_update_from_simplicity
+  title: NT脚本：简 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 67
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - simplicity
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 4
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.035
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+  note: >-
+    简感/轻松感是繁重感的正向反面：它不直接制造强兴奋，而是轻度抬升 SER、END 与 DA，并缓和 COR、ADR，表达“当前较容易处理、可稍微稳定下来”。
+- id: nt_update_from_relief
+  title: NT脚本：释然 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 66
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - relief
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: all
+      max_updates: 4
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.07
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.04
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.025
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: -0.01
+  note: >-
+    缓解感强调“从紧张回到松弛”：优先抬升 END、SER 与 OXY，降低 COR、ADR 和少量 FOC，避免恢复期仍被旧压力惯性绑住。该规则服务于压力回落后的生理/认知恢复图景。
+- id: nt_update_from_reassurance
+  title: NT脚本：安心 -> 递质调制
+  enabled: true
+  phase: directives
+  priority: 65
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - reassurance
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.06
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.035
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+  note: >-
+    安心感比 relief 更偏“已经安定下来”：提升 SER、OXY、END、DA 与轻度 FOC，同时降低
+    COR、ADR。它保留一点目标稳定和奖励驱动，但继续压低高压、高唤醒，形成更平稳的恢复态。
+- id: nt_update_from_familiarity
+  title: NT脚本：熟悉感 -> 稳定与轻度聚焦调制
+  enabled: true
+  phase: directives
+  priority: 64
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - familiarity
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.018
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.025
+  note: >-
+    熟悉感应让系统更稳定、更愿意保持当前解释，因此提高 SER/OXY/FOC，并温和压低 COR/NOV。它不是强奖励，只是“识别顺畅”的安定调制；所有通道变化都随 familiarity
+    strength 连续变化。
+- id: nt_update_from_deja_vu
+  title: NT脚本：即视感 -> 熟悉与违和并存的警戒调制
+  enabled: true
+  phase: directives
+  priority: 63
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - deja_vu
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.035
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.015
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: -0.01
+  note: >-
+    即视感不是“记忆命中成功”，而是熟悉信号与证据缺席发生冲突，因此提高 NOV/COR/ADR，轻微降低 SER/FOC，让系统重新采样而不是稳定采纳这个熟悉感。
+- id: nt_update_from_fear_unknown
+  title: NT脚本：未知恐惧 -> 谨慎、警戒与执行收束
+  enabled: true
+  phase: directives
+  priority: 62
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - fear_unknown
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.08
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.035
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.025
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: -0.012
+  note: >-
+    未知恐惧强调“未知且可能有害”，因此提升 COR/ADR/FOC/END，减少无序 NOV，并轻微压低 OXY。它帮助系统谨慎收束、优先解决威胁来源。
+- id: nt_update_from_uncanny_valley
+  title: NT脚本：恐怖谷/近似违和 -> 相似但不对的警戒调制
+  enabled: true
+  phase: directives
+  priority: 61
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - uncanny_valley
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.055
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.035
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: -0.025
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.018
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.015
+  note: >-
+    恐怖谷比普通未知更“接近正确模板”，因此保留一点 FOC 去检查关键差异，同时降低 OXY/SER，提升 COR/ADR/NOV，表达“像熟悉对象但不能信任”的状态。
+- id: nt_update_from_curiosity
+  title: NT脚本：好奇心 -> 可控探索与注意扩展
+  enabled: true
+  phase: directives
+  priority: 60
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - curiosity
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.07
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.012
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: -0.012
+  note: >-
+    好奇心应提升可控探索而不是紧张逃避：主要提高 NOV/DA，轻度提高 FOC/ADR，并压低一点 COR。这样 AP 会更愿意展开新残差，但不把它当威胁处理。
+- id: nt_update_from_boredom
+  title: NT脚本：无聊 -> 降低探索兴奋并释放重复占用
+  enabled: true
+  phase: directives
+  priority: 59
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - boredom
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.065
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: -0.035
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: -0.025
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.012
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+  note: >-
+    无聊用于让系统从低收益重复中退出：降低 NOV/DA/FOC，略降 SER，并增加少量 END 作为疲劳缓冲。它不惩罚对象，只降低继续投入同一路径的驱动力。
+- id: nt_update_from_uncertainty
+  title: NT脚本：不确定感 -> 谨慎重采样调制
+  enabled: true
+  phase: directives
+  priority: 58
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - uncertainty
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.045
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.035
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.018
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.015
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: -0.012
+  note: >-
+    不确定感是中性偏警戒的重采样信号：提升 COR/NOV/FOC/ADR，轻降 SER，让系统保持谨慎但仍继续寻找解释。它区别于 fear_unknown，不默认把局面判为威胁。
+- id: nt_update_from_agency_readiness
+  title: NT脚本：能动准备感 -> 行动准备与目标聚焦
+  enabled: true
+  phase: directives
+  priority: 57
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - agency_readiness
+      min_strength: 0.01
+  then:
+  - emotion_update:
+      from: cfs_matches
+      match_policy: strongest
+      max_updates: 1
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.055
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.055
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.025
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.018
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.008
+  note: >-
+    能动准备感把“可期待且可执行”的内部状态转成行动准备：提高 DA/FOC/ADR/SER，并略降 NOV，鼓励沿当前已成形的目标执行，而不是继续发散。
+- id: nt_update_from_reward_state
+  title: NT脚本：奖励信号状态 -> 递质调制
+  enabled: true
+  phase: emotion_post
+  priority: 67
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: reward_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>'
+      match_policy: any
+      value: 0.0
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector: null
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - emotion_update:
+      from: metric_matches
+      match_policy: strongest
+      max_updates: 1
+      DA:
+        from: match_value
+        policy: scale_offset
+        scale: 0.09
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      SER:
+        from: match_value
+        policy: scale_offset
+        scale: 0.03
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: 0.01
+  note: >-
+    后置阶段读取同 tick 汇总后的全局奖励信号，兼容状态池内 reward_signal 与教师奖励合流后的实时结果。该规则让外部教师奖励和内部正确感都能在正确时序上调制
+    DA、OXY、SER、FOC 与少量 NOV。
+- id: nt_update_from_punish_state
+  title: NT脚本：惩罚信号状态 -> 递质调制
+  enabled: true
+  phase: emotion_post
+  priority: 66
+  cooldown_ticks: 0
+  when:
+    metric:
+      preset: punish_state
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>'
+      match_policy: any
+      value: 0.0
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 4
+      selector: null
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - emotion_update:
+      from: metric_matches
+      match_policy: strongest
+      max_updates: 1
+      COR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.08
+      ADR:
+        from: match_value
+        policy: scale_offset
+        scale: 0.04
+      END:
+        from: match_value
+        policy: scale_offset
+        scale: 0.05
+      FOC:
+        from: match_value
+        policy: scale_offset
+        scale: 0.02
+      NOV:
+        from: match_value
+        policy: scale_offset
+        scale: -0.02
+      OXY:
+        from: match_value
+        policy: scale_offset
+        scale: -0.01
+  note: >-
+    后置阶段读取同 tick 汇总后的全局惩罚信号，确保违和、压力与教师惩罚可以在正确时序上调制 NT。它提升 COR、ADR、END 与 FOC，降低 NOV 和
+    OXY，表达惩罚态下的警戒、收束和亲和下降。
+- id: innate_action_attention_focus_from_core_cfs
+  title: 先天行动规则：核心认知感受（CFS）-> 触发“注意力聚焦”行动节点（Action/Drive）
+  enabled: true
+  phase: directives
+  priority: 65
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - dissonance
+      - correct_event
+      - surprise
+      - pressure
+      - expectation
+      - expectation_verified
+      - expectation_unverified
+      - pressure_verified
+      - pressure_unverified
+      min_strength: 0.3
+  then:
+  - action_trigger:
+      from: cfs_matches
+      match_policy: all
+      max_triggers: 8
+      action_kind: attention_focus
+      action_id: attention_focus_{{{match_ref_object_id}}}
+      gain: '{{{match_value}}}'
+      threshold: 0.3
+      cooldown_ticks: 0
+      params:
+        target_ref_object_id: '{{{match_ref_object_id}}}'
+        target_ref_object_type: '{{{match_ref_object_type}}}'
+        target_item_id: '{{{match_item_id}}}'
+        target_display: '{{{match_display}}}'
+        strength: '{{{match_value}}}'
+        focus_boost: 0.9
+        ttl_ticks: 2
+        source_kind: iesm_cfs
+  note: >-
+    对齐理论 3.10.2：当出现违和、期待、压力等核心 CFS 时，对其绑定对象触发“注意力聚焦”行动器。这里通过 Action/Drive
+    竞争执行，而不是直接硬插入注意力结果；目的是让系统把“想聚焦”也作为行动节点学习和显示。
+- id: innate_action_weather_stub_from_query_weather
+  title: 先天行动规则：外源输入出现“查询 + 天气” -> 触发“天气查询（Stub）”行动节点（Action/Drive）
+  enabled: true
+  phase: directives
+  priority: 67
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: ''
+        metric: item.exists
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.0
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: contains_text
+          contains_text: 天气
+          ref_object_types:
+          - input
+          where:
+            input_is_user:
+              op: '>='
+              value: 1
+            input_is_message:
+              op: '>='
+              value: 1
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - any:
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 查询
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 帮我查
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 查一下
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 查一查
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 帮我看
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 看一下
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 看看
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - action_trigger:
+      from: metric_matches
+      match_policy: strongest
+      max_triggers: 1
+      target_from: match
+      action_kind: weather_stub
+      action_id: weather_stub
+      gain: 0.85
+      threshold: 0.6
+      cooldown_ticks: 0
+      params:
+        disable_threshold_modulation: true
+        explicit_input_drive_scale: 1.6
+        async_delay_ticks: 1
+        feedback_text: 【系统反馈】天气查询已执行（Stub，占位实现，无真实天气数据）。
+        source_kind: iesm_weather
+  note: >-
+    用于 if 条件自训练样本：当输入明确包含“查询/帮我查/查一下”等查询意图和天气目标时，给予 weather_stub 较强 drive 增益，使天气查询行动更可能跨过阈值并在下一
+    tick 完成。该规则服务于明确工具请求，不应用于普通天气闲聊。
+- id: innate_action_weather_stub_from_weather_question
+  title: 先天行动规则：外源输入出现“天气 + 隐式问句” -> 中强触发“天气查询（Stub）”行动节点（Action/Drive）
+  enabled: true
+  phase: directives
+  priority: 66
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: ''
+        metric: item.exists
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.0
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: contains_text
+          contains_text: 天气
+          ref_object_types:
+          - input
+          where:
+            input_is_user:
+              op: '>='
+              value: 1
+            input_is_message:
+              op: '>='
+              value: 1
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - any:
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 会不会
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 冷不冷
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 热不热
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 风大不大
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 要不要带伞
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 要不要多穿
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+      - metric:
+          preset: ''
+          metric: item.exists
+          channel: ''
+          mode: state
+          op: '>='
+          match_policy: any
+          value: 0.0
+          min: null
+          max: null
+          prev_gate: null
+          window_ticks: 4
+          selector:
+            mode: contains_text
+            contains_text: 怎么样
+            ref_object_types:
+            - input
+            where:
+              input_is_user:
+                op: '>='
+                value: 1
+              input_is_message:
+                op: '>='
+                value: 1
+          capture_as: ''
+          epsilon: 1.0e-09
+          note: ''
+  then:
+  - action_trigger:
+      from: metric_matches
+      match_policy: strongest
+      max_triggers: 1
+      target_from: match
+      action_kind: weather_stub
+      action_id: weather_stub
+      gain: 0.8
+      threshold: 0.6
+      cooldown_ticks: 0
+      params:
+        disable_threshold_modulation: true
+        explicit_input_drive_scale: 1.6
+        async_delay_ticks: 1
+        feedback_text: 【系统反馈】天气查询已执行（Stub，占位实现，无真实天气数据）。
+        source_kind: iesm_weather
+  note: >-
+    用于覆盖“天气会不会凉 / 风大不大 / 要不要带伞”这类隐式求助问句：虽然未明确说“帮我查”，但已经具备现实决策需求，因此给中强增益，允许系统在一拍内跨阈值执行
+    weather_stub。
+- id: innate_action_weather_stub_from_weather_only
+  title: 先天行动规则：外源输入仅轻微提及“天气” -> 弱触发“天气查询（Stub）”行动节点（Action/Drive）
+  enabled: true
+  phase: directives
+  priority: 65
+  cooldown_ticks: 0
+  when:
+    all:
+    - metric:
+        preset: ''
+        metric: item.exists
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 0.0
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector:
+          mode: contains_text
+          contains_text: 天气
+          ref_object_types:
+          - input
+          where:
+            input_is_user:
+              op: '>='
+              value: 1
+            input_is_message:
+              op: '>='
+              value: 1
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+    - not:
+        any:
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 查询
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 帮我查
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 查一下
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 查一查
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 帮我看
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 看一下
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 看看
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 会不会
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 冷不冷
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 热不热
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 风大不大
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 要不要带伞
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+        - metric:
+            preset: ''
+            metric: item.exists
+            channel: ''
+            mode: state
+            op: '>='
+            match_policy: any
+            value: 0.0
+            min: null
+            max: null
+            prev_gate: null
+            window_ticks: 4
+            selector:
+              mode: contains_text
+              contains_text: 要不要多穿
+              ref_object_types:
+              - input
+              where:
+                input_is_user:
+                  op: '>='
+                  value: 1
+                input_is_message:
+                  op: '>='
+                  value: 1
+            capture_as: ''
+            epsilon: 1.0e-09
+            note: ''
+  then:
+  - action_trigger:
+      from: metric_matches
+      match_policy: strongest
+      max_triggers: 1
+      target_from: match
+      action_kind: weather_stub
+      action_id: weather_stub
+      gain: 0.35
+      threshold: 0.6
+      cooldown_ticks: 0
+      params:
+        disable_threshold_modulation: true
+        explicit_input_drive_scale: 1.4
+        async_delay_ticks: 1
+        feedback_text: 【系统反馈】（Stub）我尝试执行天气查询，但目前驱动力不足以完成。
+        source_kind: iesm_weather
+  note: >-
+    只覆盖“顺手提到天气”的弱场景：既没有明确查询词，也没有隐式决策问句，因此只给弱增益，通常不足以单独跨过行动阈值。这样既保留天气主题与行动节点的后天关联，又避免一看到天气词就过度调用工具。
+- id: innate_action_recall_from_expect_pressure
+  title: 先天行动规则：期待/压力 -> 触发“回忆”行动节点（recall）
+  enabled: true
+  phase: directives
+  priority: 62
+  cooldown_ticks: 2
+  when:
+    all:
+    - cfs:
+        kinds:
+        - expectation
+        - pressure
+        - expectation_verified
+        - pressure_verified
+        min_strength: 0.48
+    - metric:
+        preset: map_item_count
+        metric: ''
+        channel: ''
+        mode: state
+        op: '>='
+        match_policy: any
+        value: 1
+        min: null
+        max: null
+        prev_gate: null
+        window_ticks: 4
+        selector: null
+        capture_as: ''
+        epsilon: 1.0e-09
+        note: ''
+  then:
+  - action_trigger:
+      from: cfs_matches
+      match_policy: strongest
+      max_triggers: 1
+      action_kind: recall
+      action_id: recall_top_memory
+      gain: '{{{match_value}}}'
+      threshold: 0.7
+      cooldown_ticks: 0
+      params:
+        trigger_kind: '{{{match_kind}}}'
+        trigger_strength: '{{{match_value}}}'
+        trigger_target_ref: '{{{match_ref_object_type}}}:{{{match_ref_object_id}}}'
+  note: >-
+    对齐理论 4.2.7：期待和压力可驱动回忆行动。当前原型从 MAP（记忆赋能/激活池）中选取候选，生成 recall 行动驱动和聚焦指令，引导下一 tick
+    的回忆或内源刺激。它体现“有期待/压力时更想找相关记忆”的先天倾向。
+- id: innate_action_recall_from_time_feeling_bucket_gain
+  title: 先天行动规则：时间感受（绑定属性）对象获得能量 -> 触发“回忆”行动节点（recall）
+  enabled: true
+  phase: directives
+  priority: 63
+  cooldown_ticks: 2
+  when:
+    metric:
+      preset: got_total_energy
+      metric: ''
+      channel: ''
+      mode: state
+      op: '>='
+      match_policy: any
+      value: 0.25
+      min: null
+      max: null
+      prev_gate: null
+      window_ticks: 1
+      selector:
+        mode: has_attribute
+        attribute_name: 鏃堕棿鎰熷彈
+        scope: runtime
+        ref_object_types:
+        - st
+        - sa
+      capture_as: ''
+      epsilon: 1.0e-09
+      note: ''
+  then:
+  - action_trigger:
+      from: metric_matches
+      match_policy: strongest
+      max_triggers: 1
+      action_kind: recall
+      action_id: recall_time_feeling
+      gain: 0.2
+      threshold: 0.36
+      cooldown_ticks: 2
+      params:
+        trigger_kind: time_feeling
+        trigger_strength: '{{{match_value}}}'
+        trigger_target_ref: '{{{match_ref_object_type}}}:{{{match_ref_object_id}}}'
+        trigger_target_display: '{{{match_display}}}'
+        time_basis: '{{{match_time_basis}}}'
+        time_bucket_ref_object_id: '{{{match_time_bucket_ref_object_id}}}'
+        target_interval_sec: '{{{match_time_bucket_center_sec}}}'
+        target_interval_ticks: '{{{match_time_bucket_center_sec}}}'
+  note: >-
+    对齐理论 4.2.7.1：当带时间感受绑定属性的对象在状态池中获得足够能量并超过阈值时，触发 recall 行动。当前默认用 time bucket /
+    time_bucket_ref_object_id 路由，避免把泛泛的时间属性误当成可回忆锚点，也避免回忆正反馈无限自激。
+- id: innate_action_attention_focus_mode_from_complexity_high
+  title: 先天行动规则：繁（complexity 高）-> 触发“注意力聚焦模式”（attention_focus_mode）
+  enabled: true
+  phase: directives
+  priority: 58
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - complexity
+      min_strength: 0.65
+  then:
+  - action_trigger:
+      from: cfs_matches
+      match_policy: strongest
+      max_triggers: 1
+      action_kind: attention_focus_mode
+      action_id: attention_focus_mode
+      gain: 0.8
+      threshold: 0.55
+      cooldown_ticks: 2
+      params:
+        complexity: '{{{match_value}}}'
+        source_kind: iesm_cfs
+  note: >-
+    把“复杂度调制 -> 注意力模式”脚本化，避免行动模块内部硬编码触发源。高 complexity 代表当前更繁、更忙，倾向启动
+    attention_focus_mode，让注意力选择范围收窄、放大量更集中。
+- id: innate_action_attention_diverge_mode_from_complexity_low
+  title: 先天行动规则：简（complexity 低）-> 触发“注意力发散模式”（attention_diverge_mode）
+  enabled: true
+  phase: directives
+  priority: 57
+  cooldown_ticks: 0
+  when:
+    cfs:
+      kinds:
+      - complexity
+      min_strength: 0.0
+      max_strength: 0.35
+  then:
+  - action_trigger:
+      from: cfs_matches
+      match_policy: strongest
+      max_triggers: 1
+      action_kind: attention_diverge_mode
+      action_id: attention_diverge_mode
+      gain: 0.6
+      threshold: 0.55
+      cooldown_ticks: 2
+      params:
+        complexity: '{{{match_value}}}'
+        source_kind: iesm_cfs
+  note: >-
+    把“简/空闲 -> 发散探索”的触发规则放到 IESM，便于观察与调整。低 complexity 且系统较平稳时，触发
+    attention_diverge_mode，使注意力更愿意扩大候选和探索新关联；当前先用常数 gain，后续可接入更精细的 gain 计算。

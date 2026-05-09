@@ -1,0 +1,968 @@
+﻿# ======================================================================
+# AP Observatory runtime configuration
+# AP 研究观测台运行配置
+#
+# This file is both the runtime config source and the annotation source
+# for the Observatory settings panel.
+# 本文件既是观测台运行配置来源，也是前端“设置”页面读取说明的注释来源。
+#
+# Save path note / 保存链路说明:
+# The Observatory UI reads these comments and preserves them when saving.
+# 观测台前端会读取这些注释并在保存时保留它们。
+# ======================================================================
+
+# ---- Base View / 基础观测 ----
+
+# attention_top_n / 注意力占位 Top-N
+# Purpose / 作用: Controls how many high-salience state items are sampled by the current attention stub in each cycle.
+# Meaning / 意义: Larger values expose more candidates to structure-level retrieval, but also increase rendering and matching cost.
+# Reference / 参考: Default 16. Use 8-24 for routine debugging; raise to 32+ only when you need broader observation.
+attention_top_n: 16
+
+# attention_stub_consume_energy / 注意力占位是否真实扣能
+# Purpose / 作用: Decides whether forming temporary attention-memory items consumes energy from the selected state items.
+# Meaning / 意义: When true, the observatory stays closer to the current prototype loop; when false, it behaves more like a dry observation tool.
+# Reference / 参考: Default true. Turn off only for comparison experiments where you want zero intervention from the observatory layer.
+attention_stub_consume_energy: true
+
+# attention_memory_energy_ratio / 记忆体抽取能量比例
+# Purpose / 作用: Sets the fraction of source energy copied or consumed when the attention stub forms temporary memory items.
+# Meaning / 意义: Higher values make attention-memory traces more visible, but they also disturb the current state more strongly.
+# Reference / 参考: Default 0.5. Typical test range is 0.2-0.8.
+attention_memory_energy_ratio: 0.5
+
+# enable_cognitive_stitching / 是否启用认知拼接模块
+# Purpose / 作用: Controls whether the observatory runs Cognitive Stitching (CS) as an explicit runtime stitching stage.
+# Meaning / 含义: Current main path is induction growth + endogenous-stimulus retrieval; CS is kept for residual-mode rollback, audit, and comparison, not as the default cognition path.
+# Reference / 参考: Default false. Turn on only when testing the old residual-projection + CS path.
+enable_cognitive_stitching: false
+
+# enable_structure_level_retrieval_storage / 是否启用原结构级查存一体
+# Purpose / 作用: Controls whether the legacy structure-level retrieval-storage stage runs after attention.
+# Meaning / 含义: Current default is off; post-attention association mainly relies on internal-stimulus retrieval plus induction growth, while CS is only a rollback/audit path.
+# Reference / 参考: Default false for the current theory-aligned rollout.
+enable_structure_level_retrieval_storage: false
+
+# enable_goal_b_char_sa_string_mode / 使用字符串方案
+# Purpose / 作用: Switches the runtime into the Goal B controlled experiment path.
+# Meaning / 含义: Text input uses character SA as the real energy-bearing base and disables jieba tokenization; string/token structure is treated as order-sensitive pruning metadata instead of a separate minimal energy unit.
+# Reference / 参考: Default true for the current Goal B rollout; turn off only for legacy comparison experiments.
+enable_goal_b_char_sa_string_mode: true
+
+# snapshot_top_k / 默认快照展示数量
+# Purpose / 作用: Controls how many state-pool items are shown in default snapshot views.
+# Meaning / 意义: Larger values improve observability but increase HTML/JSON size and front-end rendering load.
+# Reference / 参考:
+# - Default 200 (research/acceptance oriented): helps target-resolution in UI so you see object content instead of only IDs.
+# - 日常：48~240 之间较合理；若你更关注性能可调低。
+snapshot_top_k: 200
+
+# final_state_snapshot_top_k / 最终状态快照展示数量
+# Purpose / 作用: Controls how many StatePool items are materialized into the final report snapshot.
+# Meaning / 意义: Summary totals still scan the whole pool; this only limits the expensive per-item preview payload.
+# Reference / 参考: Default 24. Use 0 only when you explicitly need a full final top_items dump.
+final_state_snapshot_top_k: 24
+
+# induction_source_selection_mode / 感应赋能源选择模式
+# Purpose / 作用: Controls how the observatory chooses StatePool induction sources before calling HDB.
+# Meaning / 意义:
+#   - "all_energetic_runtime": theory-aligned default. All runtime objects with ER>0 or EV>0 enter induction; ST is only one possible support shell for local HDB lookup.
+#   - "legacy_cp_abs": keep the old single-route behavior and select sources from the CP-high snapshot only.
+#   - "er_root_priority": prefer ER-positive structures as root induction sources; EV mainly continues from the layered frontier path instead of抢占根源位.
+#   - "hybrid_er_ev": mix ER-rich and EV-rich structures, so real-evidence induction and predictive propagation can both get source budget.
+# Reference / 参考: Default "all_energetic_runtime". Legacy modes stay for rollback / A-B comparison.
+induction_source_selection_mode: all_energetic_runtime
+
+# induction_source_max_items / 感应赋能源最大数量
+# Purpose / 作用: Optional cap on how many source objects may enter induction in one cycle.
+# Meaning / 意义:
+#   - 0: no source-count gate; all energetic runtime objects participate (theory-aligned default).
+#   - >0: compatibility/perf cap, mainly for rollback experiments.
+# Reference / 参考: Default 0. If you need a bounded A-B test, try 12 or 24 explicitly.
+induction_source_max_items: 0
+
+# induction_source_candidate_top_k / 感应赋能源候选扫描数量
+# Purpose / 作用: Controls how many pool structures are scanned per ranking channel before the final source set is selected.
+# Meaning / 意义: This is only the candidate pool for source selection; it does not mean all candidates will be used.
+# Reference / 参考: Default 24. Raise it when EV-rich structures are often buried below the top few rows.
+induction_source_candidate_top_k: 24
+
+# induction_source_ev_quota_ratio / 感应赋能源中 EV 通道配额比例
+# Purpose / 作用: Reserves a portion of the per-tick induction source budget for EV-rich structures.
+# Meaning / 意义: Higher values bias toward predictive propagation; lower values bias toward ER-driven induction.
+# Reference / 参考: Default 0.50. Keep within 0.2-0.8 unless doing explicit contrast experiments.
+induction_source_ev_quota_ratio: 0.5
+
+# induction_source_local_target_bias_mode / 感应赋源本地候选偏置模式
+# Purpose / 作用: Reorders source selection to prefer structures whose local HDB diff_table really contains usable targets.
+# Meaning / 意义: "prefer_nonzero" pushes zero-target sources behind sources that can actually propagate or induce targets, avoiding wasted source slots.
+# Reference / 参考: Default "prefer_nonzero". Switch to "off" for rollback or pure channel-order comparison.
+induction_source_local_target_bias_mode: prefer_nonzero
+
+# induction_source_skip_memory_terminal_enabled / 感应源跳过记忆终端
+# Purpose / 作用: Do not select runtime `em` memory objects as induction sources.
+# Meaning / 意义: Memory is treated as a diffusion result / terminal echo. It may stay visible in StatePool and enter attention/internal stimulus, but should not open a structure database like an HDB-backed ST.
+# Reference / 参考: Default true.
+induction_source_skip_memory_terminal_enabled: true
+
+# induction_target_batch_pool_apply_enabled / 感应目标是否批量落入状态池
+# Purpose / 作用: Applies all same-tick induction target SA packets through one StatePool call instead of one call per target.
+# Meaning / 意义: Each SA remains an independent energy carrier; this only removes repeated packet-apply overhead and avoids artificial per-target StatePool tick increments.
+# Reference / 参考: Default true. Turn off for legacy per-target apply traces.
+induction_target_batch_pool_apply_enabled: true
+
+# induction_projection_stable_sa_ids_enabled / 感应投影是否使用稳定 SA id
+# Purpose / 作用: Gives the same residual unit under the same context/source a stable runtime SA id instead of minting a new sa_ind id every tick.
+# Meaning / 意义: Preserves context separation while letting repeated induction hit/update the same StatePool object, reducing duplicate self-projection tails.
+# Rollback / 回退: Set to false to restore legacy fresh sa_ind ids for every projection packet.
+# Reference / 参考: Default true.
+induction_projection_stable_sa_ids_enabled: true
+
+# induction_projection_batch_dedupe_sa_enabled / 感应批包是否合并同 id SA
+# Purpose / 作用: Sums ER/EV for identical stable induction SA ids inside one batch packet before StatePool apply.
+# Meaning / 意义: SA remains the energy carrier; this only removes duplicate packet rows for the same SA/context identity.
+# Rollback / 回退: Set to false to send every projected SA row to StatePool like the legacy path.
+# Reference / 参考: Default true.
+induction_projection_batch_dedupe_sa_enabled: true
+
+# induction_projection_sa_min_energy_floor / 感应投影 SA 最小落池能量
+# Purpose / 作用: Prunes extremely tiny projected SA rows before they enter StatePool.
+# Meaning / 意义: Implements the theory-level "energy too low then stop assigning" rule while keeping SA as the only energy carrier.
+# Rollback / 回退: Set to 0 to keep every projected SA row.
+# Reference / 参考: Default 0.001. Keep small; this is a performance/noise floor, not a semantic filter.
+induction_projection_sa_min_energy_floor: 0.001
+
+# induction_projection_runtime_st_enabled / 感应结构目标直接以 ST 入池
+# Purpose / 作用: Makes non-memory induction targets enter StatePool as HDB-backed ST runtime objects instead of SA-only projection packets.
+# Meaning / 意义: In growth mode this materializes the already-grown complete ST identity; in residual rollback mode it keeps the old residual target visible for CS comparison.
+# Rollback / 回退: Set to false to restore the legacy SA projection packet path.
+# Reference / 参考: Default true for induction growth visibility.
+induction_projection_runtime_st_enabled: true
+
+# induction_projection_mode / 感应投影模式
+# Purpose / 作用: Selects how HDB induction targets are materialized into StatePool.
+# Meaning / 意义:
+#   - growth: 感应生长方案。A 打开自己的数据库后，残差 B 不再作为 B(context=A) 半成品入池，而是直接解析/生成完整结构 A+B。
+#   - residual: 感应残差方案。保留旧逻辑：投影残差信息及其上下文，通常需要 CS 或后续流程拼接。
+# Reference / 参考: Default growth. Use residual only for rollback or A/B comparison.
+induction_projection_mode: growth
+
+# growth_projection_identity_resolution_enabled / 生长投影是否做完整身份解析
+# Purpose / 作用: When induction_projection_mode=growth, resolve the full grown profile (A+B) to its own HDB structure id before StatePool insertion.
+# Meaning / 意义: Ensures the same complete structure converges to one identity even if activated by different paths; owner DB is activation provenance, not object identity.
+# Reference / 参考: Default true.
+growth_projection_identity_resolution_enabled: true
+
+# growth_projection_runtime_only_for_unbacked_virtual / 未绑定纯虚生长是否仅运行态暂存
+# Purpose / 作用: If a growth target cannot be resolved/created as an HDB-backed structure, keep it runtime-only and skip induction-source use.
+# Meaning / 意义: Prevents pure speculative low-confidence growth from becoming a durable database source too early.
+# Reference / 参考: Default true.
+growth_projection_runtime_only_for_unbacked_virtual: true
+
+# growth_projection_component_energy_enabled / 生长投影组件能量审计
+# Purpose / 作用: Records source/residual ER/EV shares for grown objects.
+# Meaning / 意义: Structure-level ER/EV is only a statistic; component audit keeps real evidence and predicted residual energy distinguishable.
+# Reference / 参考: Default true.
+growth_projection_component_energy_enabled: true
+
+# growth_projection_low_energy_prune_enabled / 低能生长目标剪枝
+# Purpose / 作用: Prunes growth targets below the configured projection/pool floor before materialization.
+# Meaning / 意义: Keeps the fractal growth graph bounded by energy, matching the theory-level pruning rule.
+# Reference / 参考: Default true.
+growth_projection_low_energy_prune_enabled: true
+
+# growth_projection_create_hdb_structure_enabled / 生长投影是否允许创建 HDB 结构
+# Purpose / 作用: Allows growth identity resolution to create a real HDB structure when the complete A+B profile has no exact existing id.
+# Meaning / 意义: Turn off for audit-only growth runs where new speculative complete structures should remain runtime-only.
+# Reference / 参考: Default true.
+growth_projection_create_hdb_structure_enabled: true
+
+# growth_projection_er_base_weight_ratio / 生长结构 ER 基础权重比例
+# Purpose / 作用: When a grown A+B structure is created with real-energy support, convert part of source ER into initial HDB base weight.
+# Meaning / 意义: Pure EV growth creates zero base weight; ER-supported growth gets a small additive learning trace, capped below.
+# Reference / 参考: Default 0.08.
+growth_projection_er_base_weight_ratio: 0.08
+
+# growth_projection_er_base_weight_cap / 生长结构 ER 基础权重上限
+# Purpose / 作用: Caps the initial base weight added when growth projection creates a new HDB-backed structure.
+# Meaning / 意义: Prevents one high-ER source from making speculative grown structures too authoritative on first creation.
+# Reference / 参考: Default 0.35.
+growth_projection_er_base_weight_cap: 0.35
+
+# growth_projection_source_er_runtime_share_enabled / 生长投影是否携带来源 ER 份额
+# Purpose / 作用: Lets the displayed/runtime A+B object carry a bounded ER share from source A while residual B remains EV in component audit.
+# Meaning / 意义: Structure-level ER is only statistical display; component_energy keeps source ER and residual EV distinguishable.
+# Reference / 参考: Default true.
+growth_projection_source_er_runtime_share_enabled: true
+
+# growth_projection_source_er_runtime_share_ratio / 生长投影来源 ER 携带比例
+# Purpose / 作用: Scales how much of min(source ER, residual EV) is shown as source-side ER on the grown A+B runtime object.
+# Meaning / 意义: 1.0 means full low-energy-side source ER share; lower it if grown objects appear too real-energy heavy.
+# Reference / 参考: Default 1.0.
+growth_projection_source_er_runtime_share_ratio: 1.0
+
+# growth_projection_identity_shared_cache_enabled / 生长完整身份跨 tick 缓存
+# Purpose / 作用: Reuse exact context-free A+B identity resolutions across ticks after the first precise lookup/create.
+# Meaning / 意义: This keeps the "complete feature identity, not owner DB identity" rule unchanged, but avoids reopening the same exact lookup path for recurring grown structures.
+# Rollback / 回退: Set false to force every tick through the full exact identity lookup path.
+# Reference / 参考: Default true.
+growth_projection_identity_shared_cache_enabled: true
+
+# growth_projection_skip_create_exact_lookup_after_probe_enabled / 生长创建前跳过重复精确查找
+# Purpose / 作用: After growth identity resolution already performed an exact A+B lookup and found no hit, skip the duplicate exact lookup inside the create helper when the profile is already canonical.
+# Meaning / 意义: This reduces projection_prepare cost without changing identity semantics. If a profile still contains placeholders, the helper keeps the conservative lookup path.
+# Reference / 参考: Default true. Set false for exhaustive debugging.
+growth_projection_skip_create_exact_lookup_after_probe_enabled: true
+
+# growth_projection_persistence_batch_enabled / 生长结构创建延迟持久化批处理
+# Purpose / 作用: When growth projection creates multiple new A+B HDB structures in one tick, batch their structure/db JSON persistence through HDB's existing deferred persistence path.
+# Meaning / 意义: In-memory identity resolution, pointer indexes, and StatePool projection stay immediate; only disk flush timing is delayed to reduce projection_prepare slow-tail spikes.
+# Rollback / 回退: Set false to make every growth-created structure use the legacy immediate persistence behavior. HDB-level `deferred_persistence_enabled: false` also disables this.
+# Reference / 参考: Default true.
+growth_projection_persistence_batch_enabled: true
+
+# growth_projection_overprediction_gate_enabled / 生长过度预测门控
+# Purpose / 作用: Reserved switch for future experiments that limit runaway induction growth.
+# Meaning / 意义: Default false by design. Current AP philosophy allows continuous imagination and branching over-prediction as a human-like capability; energy decay/fatigue/pruning still bound the graph naturally.
+# Reference / 参考: Keep false unless you explicitly want a usefulness-oriented conservative run.
+growth_projection_overprediction_gate_enabled: false
+
+# induction_target_runtime_insert_log_enabled / 感应目标运行态插入是否逐条写日志
+# Purpose / 作用: Controls brief/detail logging for each HDB-backed ST inserted by the induction target hot path.
+# Meaning / 意义: History events and metrics remain available; disabling per-object file logs reduces target_apply slow-tail cost during long dataset runs.
+# Rollback / 回退: Set true when doing short forensic traces that need every runtime insert in StatePool logs.
+# Reference / 参考: Default false.
+induction_target_runtime_insert_log_enabled: false
+
+# induction_target_runtime_ref_fast_merge_enabled / 感应目标 ref 命中快速合并
+# Purpose / 作用: If a growth-projected ST already exists in StatePool by the exact same ref id, merge its ER/EV through the existing energy engine without rebuilding a full candidate state_item.
+# Meaning / 意义: This does not change identity semantics: it only applies to exact ref hits after A+B has already resolved to its own context-free HDB id. Fatigue, recency and energy-delta logic still run normally.
+# Rollback / 回退: Set false to restore the legacy build-candidate-then-merge path for every induction runtime ST projection.
+# Reference / 参考: Default true.
+induction_target_runtime_ref_fast_merge_enabled: true
+
+# cognitive_stitching_stage / 认知拼接执行阶段
+# Purpose / 作用: Controls where CS runs in the Observatory tick pipeline.
+# Meaning / 意义:
+#   - disabled: current default; skip explicit CS because growth induction and endogenous stimulus retrieval carry the main stitching/association work.
+#   - post_induction: old residual-mode comparison; run CS after induction target projection, so residuals can be stitched immediately.
+#   - pre_induction: legacy order; run CS before induction.
+#   - both: diagnostic mode; run both and expose stage_results.
+# Reference / 参考: Default disabled. Use post_induction only for residual-mode rollback comparison.
+cognitive_stitching_stage: disabled
+
+# residual_tail_memory_projection_enabled / 剩余刺激尾巴按本轮记忆 id 入池
+# Purpose / 作用: After stimulus-level retrieval/storage, merge the unabsorbed stimulus tail into the StatePool runtime object for this tick's episodic memory id.
+# Meaning / 意义: The full stimulus flow has already been stored as episodic memory. The tail is therefore treated as energy still attached to that memory, not as a fake `rt_residual_*` identity that later needs promotion.
+# Rollback / 回退: Set false only for legacy diagnostics; the old runtime residual package fallback remains available below when no memory id can be used.
+# Reference / 参考: Default true.
+residual_tail_memory_projection_enabled: true
+
+# residual_tail_memory_projection_min_energy / 记忆尾巴最低入池能量
+# Purpose / 作用: Skips memory-tail projection when the remaining tail ER+EV is too weak to survive StatePool elimination.
+# Meaning / 意义: Prevents tiny leftovers from creating a visible memory echo.
+# Reference / 参考: Default 0.05.
+residual_tail_memory_projection_min_energy: 0.05
+
+# residual_tail_memory_projection_fast_ref_merge_enabled / 记忆尾巴同 id 快速合并
+# Purpose / 作用: When the same memory id already exists in StatePool, merge tail energy through the exact ref fast path.
+# Meaning / 意义: Avoids rebuilding a full state_item for repeated memory echoes while preserving SA/component energy accounting.
+# Reference / 参考: Default true.
+residual_tail_memory_projection_fast_ref_merge_enabled: true
+
+# runtime_residual_package_enabled / 旧剩余刺激运行态残余包
+# Purpose / 作用: Legacy fallback that wraps leftover stimulus as a runtime-only ST package if memory-tail projection is disabled or no episodic memory id exists.
+# Meaning / 意义: This is no longer the default philosophy. Normal growth-era runs should not produce `rt_residual_*` packages or rely on later promotion.
+# Rollback / 回退: Set true only for old residual-package A/B tests.
+# Reference / 参考: Default false.
+runtime_residual_package_enabled: false
+
+# runtime_residual_package_min_energy / 残余包最低入池能量
+# Purpose / 作用: Skips runtime residual packages whose total ER+EV is too small to survive StatePool elimination.
+# Meaning / 意义: Prevents weak leftovers from creating short-lived package noise.
+# Reference / 参考: Default 0.05.
+runtime_residual_package_min_energy: 0.05
+
+# runtime_residual_package_stable_id_enabled / 残余包稳定 id
+# Purpose / 作用: Gives the same leftover content a stable runtime id so repeated leftovers merge in StatePool instead of duplicating.
+# Meaning / 意义: This is runtime-only identity; formal HDB id resolution still happens later through owner-local retrieval/storage.
+# Reference / 参考: Default true.
+runtime_residual_package_stable_id_enabled: true
+
+# runtime_residual_package_attention_promotion_enabled / 注意力选中后晋升残余包
+# Purpose / 作用: When a runtime-only residual package enters CAM, run formal stimulus-level retrieval/storage and rebind it to a real HDB-backed ST.
+# Meaning / 意义: This keeps leftover stimulus as a temporary thought until attention or idle processing decides it deserves a durable HDB identity.
+# Reference / 参考: Default false.
+runtime_residual_package_attention_promotion_enabled: false
+
+# runtime_residual_package_attention_promotion_max_per_tick / 每 tick 最多晋升残余包数
+# Purpose / 作用: Caps how many runtime residual packages may be formally promoted in one tick.
+# Meaning / 意义: Prevents a burst of leftovers from turning into a write storm while still allowing high-priority residuals to become HDB-backed.
+# Reference / 参考: Default 8. High-energy residuals also try immediate promotion on insert; this cap drains any remaining backlog.
+runtime_residual_package_attention_promotion_max_per_tick: 8
+
+# runtime_residual_package_high_energy_promotion_enabled / 高能残余包自动晋升
+# Purpose / 作用: Also promote runtime-only residual packages whose current ER+EV remains high, even if CAM selected a sibling/partial structure instead.
+# Meaning / 意义: Covers the common case where attention locks onto an already-created HDB substring while the original residual package is still energetic enough to deserve formal recognition.
+# Reference / 参考: Default false.
+runtime_residual_package_high_energy_promotion_enabled: false
+
+# runtime_residual_package_high_energy_promotion_min_energy / 高能晋升阈值
+# Purpose / 作用: Minimum current ER+EV required for a runtime-only residual package to be promoted through the high-energy path.
+# Meaning / 意义: Low-energy leftovers are allowed to fade naturally; only salient leftovers pay the formal HDB retrieval/storage cost.
+# Reference / 参考: Default 1.0.
+runtime_residual_package_high_energy_promotion_min_energy: 1.0
+
+# runtime_residual_package_immediate_high_energy_promotion_enabled / 高能残余包同 tick 即时晋升
+# Purpose / 作用: If a leftover stimulus package is still high energy right after insertion, immediately resolve/rebind it to a formal context-free HDB structure.
+# Meaning / 意义: Keeps realtime Top from being dominated by `rt_residual_*` fallback objects while preserving the residual package as a brief safety net for weak or unresolved leftovers.
+# Rollback / 回退: Set false to restore the older behavior where high-energy residual packages wait until the next attention/high-energy promotion pass.
+# Reference / 参考: Default false.
+runtime_residual_package_immediate_high_energy_promotion_enabled: false
+
+# runtime_residual_package_exact_rebind_fast_path_enabled / 残余包精确重绑定快路径
+# Purpose / 作用: Before running a full stimulus-level retrieval/storage pass for a promoted runtime residual package, first check whether the same complete context-free structure already exists in HDB.
+# Meaning / 意义: If it exists, the package is directly rebound to that HDB-backed ST and the structure's recency/support stats are lightly refreshed. This skips repeated packet construction, candidate scoring and residual normalization without changing the formal identity rule.
+# Rollback / 回退: Set to false to force every runtime residual promotion through the full stimulus-level retrieval/storage path.
+# Reference / 参考: Default true.
+runtime_residual_package_exact_rebind_fast_path_enabled: true
+
+# runtime_residual_package_exact_rebind_probe_hdb_on_miss_enabled / 精确重绑定 miss 后探测 HDB
+# Purpose / 作用: When the local residual-package exact-rebind cache misses, optionally run a full HDB exact lookup before falling back to stimulus-level retrieval/storage.
+# Meaning / 意义: Disabled by default because miss-heavy datasets spend more time probing than they save. Enable only for profiling runs where repeated residual packages are expected but the local cache is cold.
+# Rollback / 回退: Keep false to make cache misses go straight to the old full promotion path.
+# Reference / 参考: Default false.
+runtime_residual_package_exact_rebind_probe_hdb_on_miss_enabled: false
+
+# runtime_residual_package_full_identity_promotion_enabled / 残余包完整身份晋升快路径
+# Purpose / 作用: After exact rebind misses, promote a runtime residual package by resolving/creating its own complete context-free HDB identity before falling back to full stimulus-level retrieval/storage.
+# Meaning / 意义: Legacy residual-package diagnostic only. The current main path uses memory-id tail projection instead of promoting leftover packages.
+# Rollback / 回退: Set to false to use the older promotion path where cache misses fall through to full stimulus-level retrieval/storage.
+# Reference / 参考: Default true.
+runtime_residual_package_full_identity_promotion_enabled: true
+
+# runtime_residual_package_full_identity_create_enabled / 残余包完整身份晋升是否允许建库
+# Purpose / 作用: Allows the full-identity promotion path to create a new context-free HDB-backed ST when no exact complete identity exists yet.
+# Meaning / 意义: Turn off for strict audit runs where runtime residuals may only bind to already-known complete structures.
+# Rollback / 回退: Set false to make full-identity misses fall back to the older stimulus-level promotion path.
+# Reference / 参考: Default true.
+runtime_residual_package_full_identity_create_enabled: true
+
+# induction_projection_skip_new_target_below_pool_threshold_enabled / 低能新投影目标剪枝
+# Purpose / 作用: If a projected SA is not already in StatePool and its ER+EV is below the StatePool survival threshold, skip creating it.
+# Meaning / 意义: Existing active SA can still receive tiny continuation energy; only brand-new below-threshold tails are pruned.
+# Reference / 参考: Default true.
+induction_projection_skip_new_target_below_pool_threshold_enabled: true
+
+# induction_projection_new_target_min_energy_floor / 新投影目标最低能量地板
+# Purpose / 作用: Optional explicit floor for brand-new induction projected SA rows.
+# Meaning / 意义: The effective floor is max(this value, StatePool ER/EV elimination threshold) when the skip switch is enabled.
+# Reference / 参考: Default 0.0, meaning use the StatePool threshold.
+induction_projection_new_target_min_energy_floor: 0.0
+
+# cfs_source_mode / 认知感受信号（CFS）来源模式
+# Purpose / 作用: Selects where Cognitive Feeling Signals (CFS) are produced in each cycle.
+# Meaning / 意义:
+#   - "iesm": produced by IESM rules (phase=cfs). This is the recommended path because rules are observable and editable.
+#   - "legacy": produced by the legacy CFS module with hard-coded logic (transition / comparison only).
+# Reference / 参考: Default "iesm". Switch to "legacy" only when comparing with the old path.
+cfs_source_mode: iesm
+
+# iesm_lightweight_state_window_checks / IESM 状态窗口观测是否使用轻量摘要
+# Purpose / 作用: Avoids running a duplicate dry rules-engine pass for the maintenance/pool_apply state-window report.
+# Meaning / 意义: Real IESM effects still come from run_tick_rules in the same tick; this only changes the observability check payload to a summary.
+# Reference / 参考: Default true. Turn off if you need the legacy duplicate check_state_window debug output.
+iesm_lightweight_state_window_checks: true
+
+# iesm_context_pool_item_limit / IESM 上下文候选对象上限
+# Purpose / 作用: Limits expensive per-item summaries used by rule selectors while keeping full-pool raw energy totals for global metrics.
+# Meaning / 意义: Candidate summaries come from high CP, high ER, high EV, recent, and attribute-bearing objects; low-energy tail objects are pruned from selector scans.
+# Reference / 参考: Default 256. Raise for exhaustive forensic runs; set 0 for full legacy context summaries.
+iesm_context_pool_item_limit: 256
+
+# iesm_context_pool_bucket_size / IESM 上下文各排序桶候选数
+# Purpose / 作用: Controls how many items are drawn from each live-pool bucket before de-duplication.
+# Meaning / 意义: Buckets include CP, ER, EV, total energy, and recency so different rule families keep their natural candidates.
+# Reference / 参考: Default 96.
+iesm_context_pool_bucket_size: 96
+
+# iesm_context_pool_min_total_energy / IESM 上下文候选最低总能量
+# Purpose / 作用: Prunes near-zero objects from selector candidate summaries.
+# Meaning / 意义: Attribute-bearing objects are still retained even if weak, because reward/punish/time/CFS attributes may be semantically important.
+# Reference / 参考: Default 1e-8.
+iesm_context_pool_min_total_energy: 1e-8
+
+# iesm_emotion_post_reuse_context_enabled / IESM 后置情绪阶段是否复用上下文
+# Purpose / 作用: Avoids rebuilding the full IESM pool context for the emotion_post phase.
+# Meaning / 意义: Current emotion_post rules only read merged reward/punish state; pool effects and CFS phases still use the normal context.
+# Reference / 参考: Default true. Turn off if future emotion_post rules need fresh item selectors.
+iesm_emotion_post_reuse_context_enabled: true
+
+# iesm_post_pool_context_delta_refresh_enabled / IESM 后置上下文是否只刷新脚本改动对象
+# Purpose / 作用: When IESM pool effects mutate StatePool, refresh only the affected pool-item summaries for the post-emotion context instead of rebuilding the whole pool context.
+# Meaning / 意义: The post context keeps the same selector scope as the first IESM pass, but reflects same-tick script energy/attribute writes on touched objects.
+# Rollback / 回退: Set to false to rebuild every live StatePool item after pool effects, matching the conservative legacy path.
+# Reference / 参考: Default true.
+iesm_post_pool_context_delta_refresh_enabled: true
+
+# iesm_fast_pool_item_summary_enabled / IESM 是否使用轻量状态项摘要
+# Purpose / 作用: Builds the rule-selector subset directly instead of materializing the full UI/debug item summary for every candidate.
+# Meaning / 意义: Rule metrics still receive energy, deltas, context, target refs, attribute names and time-bucket fields; heavy sequence payloads stay out of IESM selector scans.
+# Rollback / 回退: Set to false to restore the legacy full StatePool item summary path for IESM.
+# Reference / 参考: Default true.
+iesm_fast_pool_item_summary_enabled: true
+
+# iesm_pool_bind_attribute_drop_zero_numeric_enabled / IESM 是否跳过零值零能数值属性绑定
+# Purpose / 作用: Drops pool_bind_attribute effects whose numeric attribute_value is 0 and whose ER/EV are also 0.
+# Meaning / 意义: Such rows carry neither numeric evidence nor energy, and otherwise leak as `punish_signal:0.0` / `cfs_*:0.0` structure noise.
+# Rollback / 回退: Set to false to keep legacy zero-value attribute tags.
+# Reference / 参考: Default true. Nonzero value attributes, or zero-value attributes with ER/EV evidence, are still preserved.
+iesm_pool_bind_attribute_drop_zero_numeric_enabled: true
+
+# iesm_pool_bind_attribute_zero_numeric_epsilon / IESM 零值数值属性判断阈值
+# Purpose / 作用: Floating-point tolerance used by the zero numeric attribute pruning switch.
+# Meaning / 意义: Keep tiny so only true zero/no-energy effects are skipped.
+# Reference / 参考: Default 1e-9.
+iesm_pool_bind_attribute_zero_numeric_epsilon: 1.0e-9
+
+# runtime_pool_item_summary_cache_enabled / 是否缓存运行态对象轻量摘要
+# Purpose / 作用: Reuses the same lightweight StatePool item summary across induction, IESM and reward/punish observability within and across ticks when the item has not changed.
+# Meaning / 意义: The cache key includes item id, updated_at, energy, dynamics and bound-attribute shape, so changed objects are rebuilt; unchanged objects skip repeated metadata extraction.
+# Rollback / 回退: Set to false to rebuild every summary like the legacy path.
+# Reference / 参考: Default false. In the current warm-cycle probe, key building is more expensive than the repeated summary work.
+runtime_pool_item_summary_cache_enabled: false
+
+# runtime_pool_item_summary_cache_max_entries / 运行态对象轻量摘要缓存容量
+# Purpose / 作用: Bounds the reusable summary cache used by runtime observability and IESM context building.
+# Meaning / 意义: Larger values improve repeated warm-cycle reuse; lower values reduce memory footprint.
+# Reference / 参考: Default 4096.
+runtime_pool_item_summary_cache_max_entries: 4096
+
+# runtime_pool_summary_fast_metadata_enabled / 运行态摘要是否直接复用已规范化 metadata
+# Purpose / 作用: Uses StatePool item's ref_snapshot/meta.ext/source fields directly when building observatory/IESM lightweight summaries.
+# Meaning / 意义: Avoids repeatedly running the generic deep metadata extractor for every live pool item; turn off to compare with the legacy extractor.
+# Reference / 参考: Default true.
+runtime_pool_summary_fast_metadata_enabled: true
+
+# final_hdb_snapshot_lightweight_enabled / 每轮最终 HDB 快照是否使用轻量摘要
+# Purpose / 作用: Keeps run_cycle reports and charts supplied with HDB counts/totals without rebuilding the full recent-structure/group snapshot every tick.
+# Meaning / 意义: The dedicated HDB panel/API can still request the full snapshot; the per-cycle report defaults to lightweight for performance.
+# Reference / 参考: Default true.
+final_hdb_snapshot_lightweight_enabled: true
+
+# induction_target_gc_pause_enabled / 感应目标展开阶段是否短暂停用 GC
+# Purpose / 作用: Avoids cyclic-GC pauses while expanding many induction targets into transient SA packets.
+# Meaning / 意义: Runtime semantics are unchanged; GC is restored immediately after the induction target hot section.
+# Rollback / 回退: Set to false to restore normal GC scheduling inside this hot path.
+# Reference / 参考: Default true.
+induction_target_gc_pause_enabled: true
+
+# run_cycle_gc_pause_enabled / 完整循环热路径是否短暂停用 GC
+# Purpose / 作用: Avoids cyclic-GC pauses in the middle of the integrated observatory cycle.
+# Meaning / 意义: Refcount cleanup still happens normally; cyclic GC is restored when the cycle exits, including on exceptions.
+# Rollback / 回退: Set to false to restore normal GC scheduling during each cycle.
+# Reference / 参考: Default true.
+run_cycle_gc_pause_enabled: true
+
+# maintenance_lightweight_summary_enabled / 维护阶段是否使用轻量 before/after 摘要
+# Purpose / 作用: Avoids building two full StatePool snapshots around maintenance when only summary counters are needed.
+# Meaning / 意义: Maintenance behaviour and history events are unchanged; only the observatory report summary path is lighter.
+# Reference / 参考: Default true. Turn off if you need legacy full snapshot summaries for forensic comparison.
+maintenance_lightweight_summary_enabled: true
+
+# export_html / 是否导出 HTML 报告
+# Purpose / 作用: Enables writing a human-readable HTML report after each cycle.
+# Meaning / 意义: Good for inspection and archive review; disabling it reduces I/O overhead.
+# Reference / 参考: Default true. Keep enabled in research mode unless you are batch-running speed tests.
+export_html: true
+
+# export_json / 是否导出 JSON 报告
+# Purpose / 作用: Enables structured JSON export after each cycle.
+# Meaning / 意义: Useful for programmatic diffing, replay, and future tooling; disabling it reduces disk writes.
+# Reference / 参考: Default true. Keep enabled if you need machine-readable traces.
+export_json: true
+
+# auto_open_html_report / 是否自动打开 HTML 报告
+# Purpose / 作用: Opens the newly written HTML report automatically after a cycle completes.
+# Meaning / 意义: Convenient during manual debugging, but intrusive during dense multi-cycle testing.
+# Reference / 参考: Default false. Enable only when running slowly and inspecting one cycle at a time.
+auto_open_html_report: false
+
+# history_limit / 最近轮次保留数
+# Purpose / 作用: Controls how many recent cycle summaries are kept in Observatory history.
+# Meaning / 意义: Higher values give a longer short-term observation window, but also increase response payload size.
+# Reference / 参考: Default 24. Use 12-100 depending on how much recent history you want in the web UI.
+history_limit: 24
+
+# stimulus_packet_preview_group_limit / 刺激包预览最多展示多少组
+# Purpose / 作用: Caps how many stimulus groups are serialized into the main Observatory report for one packet preview.
+# Meaning / 意义: Lower values reduce report-building cost; higher values show more full packet detail but increase CPU and payload size.
+# Reference / 参考: Default 10. Raise carefully when reviewing dense merged packets; keep modest for long-run profiling.
+stimulus_packet_preview_group_limit: 10
+
+# stimulus_packet_preview_unit_limit / 刺激包预览最多展示多少单元
+# Purpose / 作用: Caps how many SA-unit rows are materialized for packet previews in the main report.
+# Meaning / 意义: This is a presentation limit; totals remain reported separately through unit_count / sa_count / flat_token_count.
+# Reference / 参考: Default 24. Increase only when a debugging session truly needs more per-unit rows.
+stimulus_packet_preview_unit_limit: 24
+
+# stimulus_packet_preview_flat_token_limit / 刺激包预览最多保留多少平铺 token
+# Purpose / 作用: Limits the preview-length of flat token lists while preserving total token count in metrics.
+# Meaning / 意义: Prevents giant token arrays from bloating JSON/UI payloads during long runs.
+# Reference / 参考: Default 96. Keep >= unit limit so token previews stay representative.
+stimulus_packet_preview_flat_token_limit: 96
+
+# stimulus_packet_preview_bundle_limit / 刺激包预览最多展示多少 CSA bundle
+# Purpose / 作用: Caps how many bundle displays/defs are materialized per packet preview.
+# Meaning / 意义: Large bundle counts are rare but expensive to serialize; this keeps previews readable and bounded.
+# Reference / 参考: Default 24. Raise only when bundle-level inspection is the current task.
+stimulus_packet_preview_bundle_limit: 24
+
+# ---- Web Launch / Web 启动 ----
+
+# default_launch_mode / 默认启动模式
+# Purpose / 作用: Selects whether the Observatory starts in web mode or CLI mode by default.
+# Meaning / 意义: Web mode is the primary interface for this prototype; CLI remains a fallback and inspection path.
+# Reference / 参考: Default "web". Only switch to "cli" if you are intentionally running terminal-first experiments.
+default_launch_mode: web
+
+# web_host / Web 监听地址
+# Purpose / 作用: Controls the local bind address of the built-in Observatory web server.
+# Meaning / 意义: 127.0.0.1 keeps it local-only; broader addresses expose it to the LAN and should be used deliberately.
+# Reference / 参考: Default 127.0.0.1. Use 0.0.0.0 only when you explicitly need remote access on a trusted network.
+web_host: 127.0.0.1
+
+# web_port / Web 监听端口
+# Purpose / 作用: Sets the HTTP port used by the Observatory web UI.
+# Meaning / 意义: Change this only when the default port conflicts with another local service.
+# Reference / 参考: Default 8765. Any unused local port is acceptable.
+web_port: 8765
+
+# web_auto_open_browser / 启动时自动打开浏览器
+# Purpose / 作用: Controls whether the default browser is opened automatically when the web server starts.
+# Meaning / 意义: Helpful for manual local use, unnecessary for automated scripts or remote sessions.
+# Reference / 参考: Default true. Disable in headless, SSH, or batched test scenarios.
+web_auto_open_browser: true
+
+# ---- Runtime Overrides / 运行时覆盖 ----
+
+# sensor_default_mode / TextSensor 默认模式覆盖
+# Purpose / 作用: Overrides TextSensor.default_mode when the Observatory launches submodules.
+# Meaning / 意义: This does not change the sensor file value; it only changes the active runtime mode under Observatory control.
+# Reference / 参考: Default "advanced". Use "simple" for character-only debugging, or "hybrid" for combined output.
+sensor_default_mode: advanced
+
+# sensor_tokenizer_backend / TextSensor 分词后端覆盖
+# Purpose / 作用: Overrides which tokenizer backend the TextSensor uses under Observatory launch.
+# Meaning / 意义: This lets the observatory force a consistent segmentation setup without rewriting the sensor file directly.
+# Reference / 参考: Default "jieba". Use "none" for character-only fallback tests.
+sensor_tokenizer_backend: jieba
+
+# sensor_enable_token_output / TextSensor 是否输出 token SA
+# Purpose / 作用: Forces token-level SA output on or off for Observatory-driven sensor runs.
+# Meaning / 意义: If disabled, token structures disappear from the sensor packet and downstream matching space becomes simpler.
+# Reference / 参考: Default true. Disable only when isolating char-level behavior.
+sensor_enable_token_output: true
+
+# sensor_enable_char_output / TextSensor 是否输出字符 SA
+# Purpose / 作用: Forces character-level SA output on or off for Observatory-driven sensor runs.
+# Meaning / 意义: Turning it on increases granularity; turning it off reduces packet size and competing anchors.
+# Reference / 参考: Default false. Enable for fine-grained debugging or mixed-granularity experiments.
+sensor_enable_char_output: false
+
+# sensor_enable_stimulus_intensity_attribute_sa / TextSensor 是否生成强度属性 SA
+# Purpose / 作用: Exposes the TextSensor numeric attribute-SA switch directly at the Observatory layer for experiments and UI tuning.
+# Meaning / 意义:
+# - false: cleaner packets and lower cost, but V2 numeric matching will usually stay silent unless other numeric sources exist.
+# - true: generates `stimulus_intensity:*` numeric attributes and lets numeric V2 matching actually participate.
+# Reference / 参考: Default false. Turn on for numeric-matching experiments, turn off for readability-first or baseline runs.
+sensor_enable_stimulus_intensity_attribute_sa: false
+
+# sensor_stimulus_intensity_attribute_min_er / TextSensor 强度属性 SA 的最小 ER 阈值
+# Purpose / 作用: Filters out weak feature SA before Observatory asks TextSensor to emit `stimulus_intensity:*` numeric attributes.
+# Meaning / 意义:
+# - 0.0: legacy behavior once the switch is on; every feature SA gets an intensity attribute.
+# - higher values: preferentially keep strong anchors while trimming punctuation/noise numeric attributes and their runtime cost.
+# Reference / 参考: Default 0.0. Start around 0.3-0.9 for low-risk pruning experiments.
+sensor_stimulus_intensity_attribute_min_er: 0.0
+
+# sensor_attribute_er_ratio / TextSensor 强度属性 SA 的 ER 比例
+# Purpose / 作用: Controls how much ER each auto-generated intensity attribute SA receives relative to its feature SA.
+# Meaning / 意义: Higher values strengthen numeric attributes and usually increase numeric-match visibility, but also increase packet and retrieval cost.
+# Reference / 参考: Default 0.25. Safe experiment range is roughly 0.10-0.40.
+sensor_attribute_er_ratio: 0.25
+
+# sensor_attribute_ev_ratio / TextSensor 强度属性 SA 的 EV 比例
+# Purpose / 作用: Controls how much EV each auto-generated intensity attribute SA receives relative to its feature SA.
+# Meaning / 意义: Keep at 0.0 unless you are intentionally testing virtual-energy-bearing numeric attributes.
+# Reference / 参考: Default 0.0.
+sensor_attribute_ev_ratio: 0.0
+
+# sensor_enable_echo / TextSensor 是否启用残响
+# Purpose / 作用: Forces sensor-side echo generation and decay on or off when launched by Observatory.
+# Meaning / 意义: Echo strongly changes what enters the current packet, so this switch is central when comparing local-memory carryover.
+# Reference / 参考: Default true. Disable only when you want purely current-input experiments.
+sensor_enable_echo: true
+
+# sensor_include_echoes_in_packet / TextSensor 是否将残响并入刺激包
+# Purpose / 作用: Controls whether historical echo objects are merged into the outgoing stimulus packet.
+# Meaning / 意义: If false, echo still exists in the sensor pool but will not participate in downstream cycles through the packet.
+# Reference / 参考: Default true. Keep true for the current prototype loop.
+sensor_include_echoes_in_packet: true
+
+# state_pool_enable_placeholder_interfaces / 状态池占位接口覆盖
+# Purpose / 作用: Overrides whether placeholder interfaces inside StatePool are enabled under Observatory launch.
+# Meaning / 意义: Useful for debugging extension hooks without changing the persistent StatePool file value.
+# Reference / 参考: Default false. Enable only when explicitly testing placeholder integration.
+state_pool_enable_placeholder_interfaces: false
+
+# state_pool_enable_script_broadcast / 状态池脚本广播覆盖
+# Purpose / 作用: Overrides whether StatePool broadcasts script packets during Observatory sessions.
+# Meaning / 意义: Broadcasting is helpful for integration checks, but unnecessary when focusing on pure core-loop behavior.
+# Reference / 参考: Default false. Enable during external script or future module integration testing.
+state_pool_enable_script_broadcast: false
+
+# hdb_enable_background_repair / HDB 后台修复覆盖
+# Purpose / 作用: Overrides whether HDB may start background repair jobs during Observatory sessions.
+# Meaning / 意义: Keeping it off makes experiments more deterministic; keeping it on preserves maintenance realism.
+# Reference / 参考: Default true. Disable for tightly controlled debugging, enable for long-running resilience observation.
+hdb_enable_background_repair: true
+
+# cognitive_stitching_runtime_override / 认知拼接运行时定向覆盖
+# Purpose / 作用: Passes a raw override dict into the Cognitive Stitching module without editing its own config file.
+# Meaning / 意义: Use this only for advanced local experiments; the normal master switches still live on the observatory layer above.
+# Reference / 参考: Default {}. Leave empty for the standard main chain.
+cognitive_stitching_runtime_override: {}
+
+# input_chunking_enabled / 是否启用外源输入分拍
+# Purpose / 作用: Splits a long external text into smaller tick-sized chunks before the observatory loop consumes it.
+# Meaning / 意义: This keeps one long sentence from flooding a single tick and is also the basis of the “resolution / 分辨率” style input path.
+# Reference / 参考: Default true. Turn off only when you explicitly want one raw input to stay in one tick.
+input_chunking_enabled: true
+
+# input_chunk_soft_limit / 外源输入分拍软上限
+# Purpose / 作用: Preferred chunk length before natural punctuation may end the current chunk.
+# Meaning / 意义: Once the chunk length passes this value, punctuation such as 。！？；， may trigger a split.
+# Reference / 参考: Default 32.
+input_chunk_soft_limit: 32
+
+# input_chunk_hard_limit / 外源输入分拍硬上限
+# Purpose / 作用: Absolute chunk length cap even when no natural punctuation appears.
+# Meaning / 意义: Prevents extremely long uninterrupted text from staying in a single tick.
+# Reference / 参考: Default 64. Keep >= soft limit.
+input_chunk_hard_limit: 64
+
+# projection_fatigue_enabled / 是否启用直投疲劳
+# Purpose / 作用: Applies short-term fatigue to repeated structure / memory projection targets inside the observatory loop.
+# Meaning / 意义: This reduces repeated low-information re-projection floods while still allowing the same target to recover over time.
+# Reference / 参考: Default true.
+projection_fatigue_enabled: true
+
+# projection_fatigue_decay / 直投疲劳衰减比例
+# Purpose / 作用: Sets how fast accumulated projection fatigue decays each tick.
+# Meaning / 意义: Lower values recover faster; higher values keep suppression longer.
+# Reference / 参考: Default 0.82.
+projection_fatigue_decay: 0.82
+
+# projection_fatigue_step / 直投疲劳累加步长
+# Purpose / 作用: Sets how much fatigue is added when the same projection branch is used again.
+# Meaning / 意义: Higher values make repeated projections cool down more aggressively.
+# Reference / 参考: Default 0.28.
+projection_fatigue_step: 0.28
+
+# projection_fatigue_min_effective_ev / 直投最小有效 EV
+# Purpose / 作用: Drops a projected branch when its fatigue-reduced EV falls below this floor.
+# Meaning / 意义: Prevents tiny virtual-energy crumbs from occupying runtime and UI space.
+# Reference / 参考: Default 0.03.
+projection_fatigue_min_effective_ev: 0.03
+
+# projection_fatigue_min_effective_er / 直投最小有效 ER
+# Purpose / 作用: Drops a projected branch when its fatigue-reduced ER falls below this floor.
+# Meaning / 意义: Prevents tiny real-energy crumbs from surviving after repeated projection attenuation.
+# Reference / 参考: Default 0.03.
+projection_fatigue_min_effective_er: 0.03
+
+# projection_fatigue_lazy_decay_enabled / 直投疲劳惰性衰减
+# Purpose / 作用: Applies the same per-tick fatigue decay when a projection key is read or written, instead of scanning every stored key each cycle.
+# Meaning / 意义: Projection fatigue semantics stay tick-equivalent, while unused old keys stop adding O(N) work to every tick.
+# Rollback / 回退: Set false to restore legacy full-table decay at cycle start.
+# Reference / 参考: Default true.
+projection_fatigue_lazy_decay_enabled: true
+
+# projection_fatigue_cleanup_interval_ticks / 直投疲劳清理间隔
+# Purpose / 作用: Periodically materializes lazy decay and drops near-zero projection fatigue entries.
+# Meaning / 意义: Larger values reduce cleanup overhead; smaller values clear stale keys sooner.
+# Reference / 参考: Default 32.
+projection_fatigue_cleanup_interval_ticks: 32
+
+# ---- Memory Feedback / 记忆反馈 ----
+
+# memory_feedback_stimulus_packet_structure_projection_enabled / 记忆反馈整包回放是否拆分结构直投
+# Purpose / 作用: Decides whether episodic-memory packet replay also routes part of its feedback budget into linked structure references.
+# Meaning / 意义: When true, remembered packets do not only replay raw SA/CSA units; they also reinforce the structural objects that originally carried the memory.
+# Reference / 参考: Default true. Turn off only for rollback comparison or when isolating pure packet replay.
+memory_feedback_stimulus_packet_structure_projection_enabled: true
+
+# memory_feedback_stimulus_packet_structure_projection_ratio / 记忆反馈分给结构直投的能量比例
+# Purpose / 作用: Sets how much of a stimulus-packet memory feedback budget is diverted from packet replay into structure-reference projection.
+# Meaning / 意义: Higher values push more ER/EV onto structure objects; lower values keep more energy on the replayed packet itself.
+# Reference / 参考: Default 0.55. Typical safe range is 0.25-0.80.
+memory_feedback_stimulus_packet_structure_projection_ratio: 0.55
+
+# memory_feedback_stimulus_packet_structure_projection_adaptive_enabled / 是否按当前池内 EV/ER 平衡自适应收缩结构直投比例
+# Purpose / 作用: Lets packet feedback keep more EV on the replayed packet itself when the live StatePool is EV-starved, instead of mechanically diverting the same split every tick.
+# Meaning / 意义: This is a conservative balance guard, not a hard override. When pool EV/ER is already healthy, the configured base ratio still applies; when EV is visibly偏薄, structure projection shrinks toward the configured minimum ratio.
+# Reference / 参考: Default true. Turn off for rollback comparison or when you want a fully fixed split ratio.
+memory_feedback_stimulus_packet_structure_projection_adaptive_enabled: true
+
+# memory_feedback_stimulus_packet_structure_projection_adaptive_min_ratio / 自适应模式下结构直投的最小比例
+# Purpose / 作用: Lower bound used by the adaptive split policy when pool EV/ER is below the configured floor.
+# Meaning / 意义: A lower value keeps more feedback on packet replay, helping EV return to the live pool; a higher value preserves stronger structure-side propagation.
+# Reference / 参考: Default 0.20. Typical safe range is 0.10-0.35.
+memory_feedback_stimulus_packet_structure_projection_adaptive_min_ratio: 0.2
+
+# memory_feedback_stimulus_packet_structure_projection_adaptive_ev_er_floor / 触发最强回放偏置的 EV/ER 下边界
+# Purpose / 作用: If current pool EV/ER is at or below this floor, the adaptive split uses the minimum structure-projection ratio.
+# Meaning / 意义: This defines what counts as "EV 明显偏薄". Below this point, feedback should preferentially回到状态池，而不是继续分流给结构直投。
+# Reference / 参考: Default 0.55.
+memory_feedback_stimulus_packet_structure_projection_adaptive_ev_er_floor: 0.55
+
+# memory_feedback_stimulus_packet_structure_projection_adaptive_ev_er_ceiling / 恢复基础分流比例的 EV/ER 上边界
+# Purpose / 作用: If current pool EV/ER is at or above this ceiling, the adaptive split fully restores the configured base structure-projection ratio.
+# Meaning / 意义: Between floor and ceiling, the split transitions smoothly instead of jumping.
+# Reference / 参考: Default 0.95.
+memory_feedback_stimulus_packet_structure_projection_adaptive_ev_er_ceiling: 0.95
+
+# memory_feedback_structure_projection_max_targets / 单条记忆反馈最多投向多少个结构目标
+# Purpose / 作用: Caps how many linked structures may share one memory-feedback structure projection budget.
+# Meaning / 意义: This is a concentration guard. When a memory references too many structures, uncapped equal fan-out makes each target too thin and many projections are later discarded by fatigue/effective-energy thresholds.
+# Reference / 参考: Default 6. Set to 0 to disable this cap and restore the old fully-spread behavior.
+memory_feedback_structure_projection_max_targets: 6
+
+# memory_feedback_structure_projection_budget_aware_enabled / 结构直投是否按预算自动收缩目标数
+# Purpose / 作用: When one memory-feedback structure budget is too small, automatically concentrate it onto fewer high-weight structure refs instead of spreading it so thin that every target is discarded.
+# Meaning / 意义: This preserves theory intent: a weak but real replay budget should preferably reinforce the strongest linked structure, not vanish after being split into many sub-threshold crumbs.
+# Reference / 参考: Default true. Turn off only for rollback comparison with the old fixed-fan-out behavior.
+memory_feedback_structure_projection_budget_aware_enabled: true
+
+# memory_feedback_structure_projection_min_effective_ev / 结构直投最小有效 EV
+# Purpose / 作用: Sets the branch-specific effective-energy floor for `memory_feedback_structure_ref`.
+# Meaning / 意义: Structure refs are already more targeted than broad packet replay, so their minimum effective EV can be lower than the generic projection floor.
+# Reference / 参考: Default 0.01. Raise it if tiny structure echoes become noisy; lower it if low-budget but semantically important replays disappear.
+memory_feedback_structure_projection_min_effective_ev: 0.01
+
+# memory_feedback_structure_projection_min_effective_er / 结构直投最小有效 ER
+# Purpose / 作用: Sets the branch-specific effective-energy floor for ER on `memory_feedback_structure_ref`.
+# Meaning / 意义: Keeps direct structure reinforcement from being dropped too early when the structure split budget is intentionally small.
+# Reference / 参考: Default 0.01. Usually keep it aligned with the EV floor unless doing targeted ablation.
+memory_feedback_structure_projection_min_effective_er: 0.01
+
+# teacher_feedback_attribute_er_scale / 教师反馈属性的 ER 缩放系数
+# Purpose / 作用: Controls how much real energy a teacher reward / punish attribute carries when it is bound onto the chosen anchor object.
+# Meaning / 意义: Keep this above 0 if you want teacher signals to become live runtime attributes that can actually enter attention and internal projection.
+# Reference / 参考: Default 1.0. Set to 0 for rollback to the old zero-energy binding behavior.
+teacher_feedback_attribute_er_scale: 1.0
+
+# teacher_feedback_attribute_ev_scale / 教师反馈属性的 EV 缩放系数
+# Purpose / 作用: Optional virtual-energy component for teacher feedback attributes.
+# Meaning / 意义: Default 0 keeps teacher feedback as present-tense evidence (ER) only; raise it only if you explicitly want stronger speculative carry-over.
+# Reference / 参考: Default 0.0.
+teacher_feedback_attribute_ev_scale: 0.0
+
+# teacher_feedback_focus_directive_enabled / 教师反馈是否生成下一拍聚焦指令
+# Purpose / 作用: Lets teacher reward / punish not only bind an attribute, but also nudge the chosen target back into next-tick attention through the existing focus-directive path.
+# Meaning / 意义: Keep this on for the new theory path where teacher signals should have a fair chance to re-enter CAM; turn it off for rollback or A/B comparison.
+# Reference / 参考: Default true.
+teacher_feedback_focus_directive_enabled: true
+
+# teacher_feedback_focus_strength_scale / 教师反馈聚焦指令强度缩放
+# Purpose / 作用: Scales the teacher label value before it becomes the directive strength for next-tick attention focus.
+# Meaning / 意义: 1.0 keeps strength proportional to the actual teacher reward / punish value; raise it if teacher labels are too weak to compete, lower it if they over-dominate attention.
+# Reference / 参考: Default 1.0.
+teacher_feedback_focus_strength_scale: 1.0
+
+# teacher_feedback_focus_boost / 教师反馈聚焦加权
+# Purpose / 作用: Sets the focus-boost magnitude attached to the teacher-generated directive.
+# Meaning / 意义: This is the actual additive weight seen by attention after multiplying with directive strength.
+# Reference / 参考: Default 1.2. Routine comparison range: 0.6-1.8.
+teacher_feedback_focus_boost: 1.2
+
+# teacher_feedback_focus_ttl_ticks / 教师反馈聚焦指令存活 tick 数
+# Purpose / 作用: Controls how many future ticks the teacher-generated focus directive may affect.
+# Meaning / 意义: Short TTL keeps it as a next-tick correction instead of a long sticky bias.
+# Reference / 参考: Default 2. Keep within 1-4 unless doing explicit persistence experiments.
+teacher_feedback_focus_ttl_ticks: 2
+
+# teacher_feedback_focus_context_carrier_enabled / 教师反馈是否附带上下文载体聚焦
+# Purpose / 作用: Besides focusing the bound atomic target itself, also lets teacher feedback emit a short-lived focus directive toward the current attention-visible contextual carrier (for example the current larger structure such as `{ABX}`).
+# Meaning / 意义: Useful when the chosen binding anchor is too atomic to survive the next tick by itself, but the current contextual carrier is already visible in attention and can carry the teacher supervision forward.
+# Reference / 参考: Default true. Turn off for strict atomic-anchor-only comparison.
+teacher_feedback_focus_context_carrier_enabled: true
+
+# teacher_feedback_focus_context_carrier_top_k / 教师反馈上下文载体聚焦数量上限
+# Purpose / 作用: Caps how many current attention-visible carrier structures may receive the extra teacher focus directive.
+# Meaning / 意义: Keeping this small preserves locality and avoids turning teacher feedback into a broad attention flood.
+# Reference / 参考: Default 1. Routine safe range: 1-2.
+teacher_feedback_focus_context_carrier_top_k: 1
+
+# teacher_feedback_focus_context_carrier_strength_scale / 教师反馈上下文载体聚焦强度缩放
+# Purpose / 作用: Scales the primary teacher focus strength before assigning it to contextual carrier directives.
+# Meaning / 意义: Values below 1 keep the carrier as a helper path rather than overpowering the primary teacher focus target.
+# Reference / 参考: Default 0.85.
+teacher_feedback_focus_context_carrier_strength_scale: 0.85
+
+# teacher_feedback_context_binding_enabled / 教师反馈是否镜像绑定到上下文载体
+# Purpose / 作用: When the resolved teacher target is too atomic (for example `{A}`), optionally mirror the same teacher reward / punish attribute onto the current attention-visible contextual carrier structure such as `{ABX}`.
+# Meaning / 意义: This preserves the original atomic binding while giving the larger carrier a chance to carry the teacher signal into next-tick CAM and endogenous projection.
+# Reference / 参考: Default true. Turn off for strict old anchor-only teacher binding.
+teacher_feedback_context_binding_enabled: true
+
+# teacher_feedback_context_binding_only_when_primary_atomic / 是否仅在主目标过原子时才做上下文镜像绑定
+# Purpose / 作用: Limits contextual teacher binding to the specific failure mode where the primary teacher target is an atomic object likely to be shadowed by larger structures in CAM.
+# Meaning / 意义: Keeping this on avoids broadening teacher supervision when the original target is already a sufficiently rich structure.
+# Reference / 参考: Default true.
+teacher_feedback_context_binding_only_when_primary_atomic: true
+
+# teacher_feedback_context_binding_top_k / 教师反馈上下文镜像绑定的载体数量上限
+# Purpose / 作用: Caps how many attention-visible contextual carrier structures receive mirrored teacher attributes.
+# Meaning / 意义: Keeping this small preserves locality and avoids turning one teacher signal into a broad blanket annotation.
+# Reference / 参考: Default 1. Routine safe range: 1-2.
+teacher_feedback_context_binding_top_k: 1
+
+# teacher_feedback_context_binding_strength_scale / 教师反馈上下文镜像绑定强度缩放
+# Purpose / 作用: Scales teacher reward / punish magnitude before mirroring it onto contextual carrier structures.
+# Meaning / 意义: Values below 1 keep the carrier as a helper path while still allowing it to carry the teacher signal forward.
+# Reference / 参考: Default 0.85.
+teacher_feedback_context_binding_strength_scale: 0.85
+
+# teacher_feedback_local_alias_cache_enabled / 教师局部反馈别名缓存
+# Purpose / 作用: Keeps a short-lived, text-matched teacher supervision trace so the next same-kind input action target, such as ctx_input_current, can use teacher reward/punish for local drive shaping.
+# Meaning / 意义: This does not write into HDB or parse display text as canonical data; it only exposes already-bound teacher values through the action local feedback map.
+# Reference / 参考: Default true. Turn off for strict anchor-only teacher feedback comparison.
+teacher_feedback_local_alias_cache_enabled: true
+
+# teacher_feedback_local_alias_cache_ttl_ticks / 教师局部反馈别名缓存存活 tick 数
+# Purpose / 作用: Controls how long the short-term teacher supervision alias can affect matching future inputs.
+# Meaning / 意义: Short TTL keeps teacher feedback as quick learning / correction rather than a permanent rule.
+# Reference / 参考: Default 6. Routine safe range: 2-12.
+teacher_feedback_local_alias_cache_ttl_ticks: 6
+
+# teacher_feedback_local_alias_cache_max_entries / 教师局部反馈别名缓存容量
+# Purpose / 作用: Caps the number of short-term teacher feedback aliases kept in memory.
+# Meaning / 意义: Prevents repeated teacher labels from growing an unbounded runtime side cache.
+# Reference / 参考: Default 64.
+teacher_feedback_local_alias_cache_max_entries: 64
+
+# teacher_feedback_local_alias_cache_min_score / 教师局部反馈别名匹配阈值
+# Purpose / 作用: Minimum text-similarity score required before an alias can be offered to the action local feedback map.
+# Meaning / 意义: Aligns with the action module text fallback threshold; higher values make teacher shaping more conservative.
+# Reference / 参考: Default 0.55.
+teacher_feedback_local_alias_cache_min_score: 0.55
+
+# teacher_feedback_local_alias_cache_min_chars / 教师局部反馈别名最小文本长度
+# Purpose / 作用: Avoids creating or matching aliases from very short/noisy text.
+# Meaning / 意义: Prevents a teacher signal attached to a tiny fragment from broadly biasing unrelated future inputs.
+# Reference / 参考: Default 6.
+teacher_feedback_local_alias_cache_min_chars: 6
+
+# reward_action_humanlike_v2_enabled / 是否启用奖惩-行动人形主路径 V2
+# Purpose / 作用: Turns on the new human-like shaping path where reward/punish and action nodes become first-class runtime objects.
+# Meaning / 意义: Keep this on for the current theory direction; turn it off only for rollback or ablation against the old bridge-only path.
+# Reference / 参考: Default true.
+reward_action_humanlike_v2_enabled: true
+
+# reward_action_runtime_signal_nodes_enabled / 是否把全局 reward/punish 状态投影为状态池信号节点
+# Purpose / 作用: Mirrors the current global reward/punish snapshot into first-class runtime SA nodes.
+# Meaning / 意义: This makes reward/punish attention-visible and easier to co-encode with action/context in later ticks.
+# Reference / 参考: Default true.
+reward_action_runtime_signal_nodes_enabled: true
+
+# reward_action_runtime_signal_er_scale / 全局奖惩信号写入 ER 的比例
+# Purpose / 作用: Controls how much of the global reward/punish snapshot is written as ER on the runtime signal nodes.
+# Meaning / 意义: Keep at 0 when you want these nodes to behave mainly as live global state carriers instead of fresh external evidence.
+# Reference / 参考: Default 0.0.
+reward_action_runtime_signal_er_scale: 0.0
+
+# reward_action_runtime_signal_ev_scale / 全局奖惩信号写入 EV 的比例
+# Purpose / 作用: Controls how much of the global reward/punish snapshot is written as EV on the runtime signal nodes.
+# Meaning / 意义: Higher values make reward/punish more likely to re-enter attention as ongoing expectations / warnings.
+# Reference / 参考: Default 1.0.
+reward_action_runtime_signal_ev_scale: 1.0
+
+# reward_action_runtime_action_nodes_enabled / 是否把行动节点回灌为状态池对象
+# Purpose / 作用: Projects live action nodes back into StatePool so they can be seen by attention and reports.
+# Meaning / 意义: This is the key step that turns hidden action runtime into visible cognitive objects.
+# Reference / 参考: Default true.
+reward_action_runtime_action_nodes_enabled: true
+
+# reward_action_runtime_action_node_drive_to_ev_scale / 行动节点当前 drive -> EV 的映射比例
+# Purpose / 作用: Maps current drive onto EV for the runtime action node.
+# Meaning / 意义: Higher values make “想做某个动作”的倾向更容易持续留在状态池里。
+# Reference / 参考: Default 1.0.
+reward_action_runtime_action_node_drive_to_ev_scale: 1.0
+
+# reward_action_runtime_action_node_execute_to_er_scale / 行动节点本 tick 消耗 drive -> ER 的映射比例
+# Purpose / 作用: Maps consumed drive from executed actions onto ER for the runtime action node.
+# Meaning / 意义: This is the current engineering approximation of “动作真实发生过，因此行动节点获得实能量”。
+# Reference / 参考: Default 1.0.
+reward_action_runtime_action_node_execute_to_er_scale: 1.0
+
+# reward_action_runtime_action_node_max_sync / 每 tick 最多同步多少个行动节点
+# Purpose / 作用: Caps runtime action-node projection count for safety and readability.
+# Meaning / 意义: Keep it moderate so long runs do not flood the pool/UI with extremely weak action traces.
+# Reference / 参考: Default 24.
+reward_action_runtime_action_node_max_sync: 24
+
+# dedicated_memory_pool_enabled / 是否启用专门记忆池主链
+# Purpose / 作用: Switches between the legacy dedicated MAP path and the new runtime-em main chain.
+# Meaning / 意义: Default false means residual memory is mainly carried by StatePool em objects instead of relying on MAP + memory_feedback as the default loop.
+# Reference / 参考: Default false.
+dedicated_memory_pool_enabled: false
+
+# residual_memory_as_structure_enabled / 残差记忆对象化双轨开关
+# Purpose / 作用: Lets activated residual memories also appear as first-class runtime objects in StatePool.
+# Meaning / 意义: This preserves the new theory path while keeping the old dedicated memory pool available for rollback and comparison.
+# Reference / 参考: Default true.
+residual_memory_as_structure_enabled: true
+
+# residual_memory_as_structure_shadow_mode / 残差记忆对象化 shadow 模式
+# Purpose / 作用: When true, runtime memory objects are inserted mainly for observation first, and are cleaned before the next tick so they do not become the default CAM path.
+# Meaning / 意义: Current theory default is false, because em should normally enter CAM and downstream competition; set true only for low-risk observation / rollback.
+# Reference / 参考: Default false.
+residual_memory_as_structure_shadow_mode: false
+
+# residual_memory_runtime_object_type / 残差记忆运行态对象类型
+# Purpose / 作用: Controls whether runtime residual-memory projection lands in StatePool as a structure-like object or keeps the older EM compatibility shell.
+# Meaning / 意义: Default "st" follows the new theory direction; set "em" only when doing rollback or side-by-side comparison.
+# Reference / 参考: Default "em".
+residual_memory_runtime_object_type: em
+
+# unified_numeric_scoring_enabled / 统一数值软匹配
+# Purpose / 作用: Forwards the new shared numeric scoring path into HDB matching.
+# Meaning / 意义: Keep on so time/pressure/expectation and other numerical SA all use the same fuzzy logic.
+# Reference / 参考: Default true.
+unified_numeric_scoring_enabled: true
+
+# attribute_soft_scoring_enabled / 属性软评分
+# Purpose / 作用: Lets attribute compatibility contribute as a score instead of only depending on hard exact gates.
+# Meaning / 意义: This improves continuity when exact attribute binding is absent but near-compatible evidence exists.
+# Reference / 参考: Default true.
+attribute_soft_scoring_enabled: true
+
+# sequence_soft_scoring_enabled / 顺序软评分
+# Purpose / 作用: Lets order closeness influence ranking softly rather than acting like a binary wall.
+# Meaning / 意义: This supports the user’s “有更精确就优先，没有也能近似理解” philosophy.
+# Reference / 参考: Default true.
+sequence_soft_scoring_enabled: true
+
+# time_factor_soft_bonus_enabled / 时间因子软加分
+# Purpose / 作用: Adds a soft bonus when memory age is close to the time-like cue carried by the current stimulus.
+# Meaning / 意义: This avoids hard attribution windows and keeps time influence human-like and fuzzy.
+# Reference / 参考: Default true.
+time_factor_soft_bonus_enabled: true
+
+# context_concat_v2_enabled / 上下文拼接 V2 开关
+# Purpose / 作用: Enables the current safest context-concat V2 audit path in cognitive stitching runtime override.
+# Meaning / 意义: Default keeps V2 context matching visible in hybrid compare mode before making it the sole stitching path.
+# Reference / 参考: Default true.
+context_concat_v2_enabled: true

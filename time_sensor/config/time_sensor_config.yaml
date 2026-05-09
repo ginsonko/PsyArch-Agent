@@ -1,0 +1,297 @@
+# ======================================================================
+# AP 时间感受器配置（Time Sensor）
+# AP Time Sensor configuration
+#
+# 对齐理论核心 4.2.6~4.2.8：
+# - 时间差（当前时间 - 记忆时间戳）
+# - 时间桶（有限区间覆盖连续时间尺度）
+# - 双表赋能（把能量分配到最接近的两个时间桶）
+#
+# 重要：本模块输出的是“可被脚本观察的时间感受节点（时间桶节点）”，
+# 供 IESM（先天编码脚本管理器）的先天行动规则触发回忆等行动。
+# ======================================================================
+
+# enabled / 是否启用时间感受器
+
+enabled: true
+
+# ---- 时间基准（wallclock vs tick）----
+#
+# 对齐你提出的“tick 生物钟/节奏感开关”口径：
+# - wallclock: 使用真实时间戳（ms）计算时间差（单位：秒）
+# - tick: 使用 tick_id 解析出的 tick_index 计算时间差（单位：tick）
+#
+# 说明：
+# - tick_id 需形如 "cycle_0003"；如果解析失败则回退到 wallclock。
+# - tick 模式下建议使用 tick_buckets（单位：tick），而不是秒桶。
+time_basis: wallclock
+
+# tick_interval_sec / tick 的近似秒数（仅用于展示/兼容，不参与 tick 模式的计算）
+tick_interval_sec: 1.0
+
+# ---- 时间桶定义（基础结构表分段）----
+#
+# 说明：
+# - buckets 是“有限桶”列表（数量应保持小，避免状态池噪音）。
+# - 每个桶以中心点（center_sec）为代表值；赋能时会把一个具体时间差 t
+#   分配到它相邻的两个桶（按距离线性归一化）。
+# - id 建议保持稳定，用于状态池合并与 IESM 规则匹配。
+#
+# 字段：
+# - id: 稳定 ID（用于构建状态池节点 ref_object_id）
+# - label_zh: 中文标签（用于前端展示与 contains_text 匹配）
+# - min_sec/max_sec: 区间（用于说明与可视化；不直接参与计算）
+# - center_sec: 区间中心（用于双桶插值）
+buckets:
+- id: 0_25s
+  label_zh: 约 0.5 秒内
+  min_sec: 0.0
+  max_sec: 0.5
+  center_sec: 0.25
+- id: 1s
+  label_zh: 约 1 秒
+  min_sec: 0.5
+  max_sec: 1.5
+  center_sec: 1.0
+- id: 3_25s
+  label_zh: 约 3 秒
+  min_sec: 1.5
+  max_sec: 5.0
+  center_sec: 3.25
+- id: 10s
+  label_zh: 约 10 秒
+  min_sec: 5.0
+  max_sec: 15.0
+  center_sec: 10.0
+- id: 37_5s
+  label_zh: 约 30~60 秒
+  min_sec: 15.0
+  max_sec: 60.0
+  center_sec: 37.5
+- id: 180s
+  label_zh: 约 3 分钟
+  min_sec: 60.0
+  max_sec: 300.0
+  center_sec: 180.0
+- id: 1050s
+  label_zh: 约 15 分钟
+  min_sec: 300.0
+  max_sec: 1800.0
+  center_sec: 1050.0
+- id: 3600s
+  label_zh: 约 1 小时
+  min_sec: 1800.0
+  max_sec: 7200.0
+  center_sec: 3600.0
+- id: 21600s
+  label_zh: 约 6 小时
+  min_sec: 7200.0
+  max_sec: 86400.0
+  center_sec: 21600.0
+- id: 86400s
+  label_zh: 约 1 天
+  min_sec: 86400.0
+  max_sec: 172800.0
+  center_sec: 86400.0
+
+# ---- Tick 时间桶（用于 time_basis=tick）----
+#
+# 说明：
+# - 这些桶的 center_sec/min_sec/max_sec 字段在 tick 模式下解释为 “tick 单位”，字段名保留是为了减少结构变更。
+# - label_zh 中明确使用 tick 以避免对外展示误解。
+tick_buckets:
+- id: 0_5t
+  label_zh: 约 1 tick 内
+  min_sec: 0.0
+  max_sec: 1.0
+  center_sec: 0.5
+- id: 1_5t
+  label_zh: 约 2 tick
+  min_sec: 1.0
+  max_sec: 2.0
+  center_sec: 1.5
+- id: 3t
+  label_zh: 约 3 tick
+  min_sec: 2.0
+  max_sec: 4.0
+  center_sec: 3.0
+- id: 6t
+  label_zh: 约 6 tick
+  min_sec: 4.0
+  max_sec: 8.0
+  center_sec: 6.0
+- id: 12t
+  label_zh: 约 12 tick
+  min_sec: 8.0
+  max_sec: 16.0
+  center_sec: 12.0
+- id: 24t
+  label_zh: 约 24 tick
+  min_sec: 16.0
+  max_sec: 32.0
+  center_sec: 24.0
+- id: 48t
+  label_zh: 约 48 tick
+  min_sec: 32.0
+  max_sec: 64.0
+  center_sec: 48.0
+- id: 96t
+  label_zh: 约 96 tick
+  min_sec: 64.0
+  max_sec: 128.0
+  center_sec: 96.0
+
+# ---- 输入来源与赋能策略（MVP）----
+#
+# source_mode:
+# - memory_activation_snapshot: 使用 HDB 的记忆赋能池（MAP）快照作为“被重新接触到的记忆”列表
+#   这是最贴合理论 4.2.6.3 的 MVP：记忆被赋能 -> 依据时间戳生成时间感受。
+# - runtime_memory_projection: 使用 StatePool 内 em 运行态对象整理出的快照
+#   这是“关闭专门记忆池后”的主路径：直接根据当前仍在状态池中活跃的 em 估计时间感受。
+source_mode: runtime_memory_projection
+
+# memory_top_k / 取 MAP 前 K 个候选计算时间感受（避免过重）
+memory_top_k: 12
+
+# energy_gain_ratio / 时间感受赋能比例
+# 解释：每条记忆的 total_energy 会乘以该比例，作为“时间感受能量”基础。
+# 经验：0.10~0.35 之间较易在状态池中形成可观测但不过分压制的时间桶节点。
+energy_gain_ratio: 0.14
+
+# base_energy_source / 时间感受赋能的能量来源口径
+# - total_energy: 使用 MAP 条目的当前总能量（更“粘”，可能导致时间感受每 tick 都持续出现）
+# - last_delta_energy: 使用 MAP 条目的最近增量（更贴近“被重新接触/被赋能”的语义，且更不易形成回忆死循环）
+base_energy_source: last_delta_energy
+
+# energy_key / 把时间感受赋给状态池节点的能量通道
+# 建议：时间感受属于内源生成，优先使用 EV（虚能量）。
+energy_key: ev
+
+# min_bucket_energy / 单次赋能小于该值则不写入（避免噪音）
+min_bucket_energy: 0.02
+
+# ---- 延迟赋能任务表（理论 4.2.8：任务式生物钟能力，MVP）----
+#
+# 关键口径（对齐理论 4.2.8.1~4.2.8.2）：
+# - 只有“具有属性绑定的时间感受”（时间感受作为 attribute SA 绑定在锚点对象上）才会触发任务注册。
+# - 延迟赋能对象 = 时间感受绑定的锚点对象（target_item）。
+# - 任务表容量有限；同一锚点默认只保留 1 条任务；重复注册会累计权重并刷新 due。
+# - 执行后会进入短时疲劳窗口，避免立即重复触发。
+enable_delayed_tasks: true
+
+delayed_task_capacity: 48
+
+# 注册阈值：锚点“本 tick 获得能量”的近似值（用 time_sensor.attribute_bindings.target_delta_energy 估计）
+delayed_task_register_min_delta_energy: 0.3
+
+# 执行后疲劳窗口（tick / wallclock 都给一个，按 time_basis 选择）
+delayed_task_fatigue_ticks: 4
+
+delayed_task_fatigue_ms: 800
+
+# 最小间隔（避免 0 或过小导致同 tick/紧邻 tick 重复触发）
+delayed_task_min_interval_sec: 0.5
+
+delayed_task_min_interval_ticks: 2
+
+# 到期容忍（用于“接近目标间隔”）
+delayed_task_due_tolerance_sec: 0.15
+
+delayed_task_due_tolerance_ticks: 0
+
+# 到期时对锚点赋能映射（MVP：按任务权重映射到 delta_ev/delta_er）
+delayed_task_energy_key: ev
+
+delayed_task_energy_ratio: 0.65
+
+delayed_task_energy_min: 0.06
+
+delayed_task_energy_max: 0.85
+
+# ---- 输出开关（可同时启用）----
+#
+# 对齐理论核心 4.2.6~4.2.9 的关键口径：
+# - 时间感受本质是“数值刺激元”（Numerical SA / 数值刺激元），需要有限桶 + 双桶赋能/匹配；
+# - 同时它也常作为“属性刺激元”（Attribute SA / 属性刺激元）绑定到具体锚点对象上，
+#   便于形成结构与提升可解释性（例如【咚 + 时间间隔：约 1 秒】）。
+#
+# enable_bucket_nodes / 是否写入“时间桶节点”（桶节点层）
+# true: 在状态池中维护固定数量的稳定桶节点（如 sa_time_bucket_3600s），并对其赋能（双桶分配）。
+# 说明（原型落地口径）：默认关闭“桶节点入池”，避免时间感受成为常驻 SP 的独立波峰并诱发回忆正反馈。
+# 仍会计算 bucket_updates 供观测与后续“从时间感受出发的深度检索/节奏结构”使用。
+enable_bucket_nodes: false
+
+# enable_bind_attribute / 是否执行“时间感受属性绑定”（属性绑定层）
+# true: 将时间感受作为属性刺激元绑定到“记忆反哺投影的能量波峰对象”上（更贴近“约束/标记”语义）。
+enable_bind_attribute: true
+
+# output_mode / 旧版兼容字段（deprecated）
+# - bucket_nodes: 仅桶节点
+# - bind_attribute: 仅属性绑定
+# - both: 两者都启用
+# 说明：当 enable_bucket_nodes / enable_bind_attribute 任何一个被显式设置为 bool 时，
+#      output_mode 仅作为未设置那一项的回退来源。
+output_mode: bind_attribute
+
+# attribute_name / 绑定到对象上的属性名（用于前端展示与规则 contains_text 匹配）
+attribute_name: 时间感受
+
+# max_bind_targets_per_memory / 每条记忆最多绑定到几个“能量波峰对象”
+max_bind_targets_per_memory: 2
+
+# peak_keep_ratio / 波峰保留比例（>= max_delta * ratio 的目标会被视为“同一波峰”）
+peak_keep_ratio: 0.72
+
+# enable_projection_target_bindings / 是否额外把“结构投影目标”也纳入时间感受绑定候选
+# 说明：
+# - 旧路径主要追随 memory feedback 的原子事件峰值，所以时间感受常会停留在 A/B/X 这种底层结构；
+# - 新路径会额外挑选少量 structure projection 目标做镜像绑定，让时间感受更容易进入高阶结构竞争。
+enable_projection_target_bindings: true
+
+# enable_runtime_snapshot_target_bindings / runtime-em 主链是否直接从 memory snapshot 提取结构目标
+# 说明：
+# - 当默认主链已切到 runtime_em_only 时，这个开关允许时间感受直接依赖 runtime memory snapshot 里的 backing structures；
+# - 这样就不需要先经过专门记忆池 / memory_feedback 再反查一次目标。
+enable_runtime_snapshot_target_bindings: true
+
+# runtime_snapshot_target_richness_bias_enabled / runtime-em 目标是否优先更“整体”的结构
+# - true: 同时存在原子结构与父结构时，会结合结构复杂度与当前活跃能量打分，避免总是落到 A/B/X 这类底层结构；
+# - false: 保留旧版“平均分 + 顺序打平”口径。
+runtime_snapshot_target_richness_bias_enabled: true
+
+# runtime_snapshot_target_complexity_bonus_per_token / 每多 1 个 token 的 richness 加成
+runtime_snapshot_target_complexity_bonus_per_token: 0.45
+
+# runtime_snapshot_target_group_bonus / 每多 1 个 sequence_group 的 richness 加成
+runtime_snapshot_target_group_bonus: 0.15
+
+# runtime_snapshot_target_runtime_attr_bonus / 运行态绑定属性数量带来的 richness 加成
+runtime_snapshot_target_runtime_attr_bonus: 0.08
+
+# max_projection_bind_targets_per_memory / 每条记忆最多额外镜像绑定几个 structure projection 目标
+max_projection_bind_targets_per_memory: 1
+
+# projection_target_keep_ratio / structure projection 波峰保留比例
+projection_target_keep_ratio: 0.72
+
+# time_factor_stripped_projection_context_free_identity_enabled / 去时间因子结构使用无上下文身份
+# 说明：
+# - true: 去掉时间感受后的结构用自身完整特征解析身份，源结构只作为 provenance/owner DB 关系；
+# - false: 恢复旧版按源结构上下文区分的投影身份。
+time_factor_stripped_projection_context_free_identity_enabled: true
+
+# max_total_bindings / 单 tick 最大绑定条数（安全刹车）
+max_total_bindings: 12
+
+# node_id_prefix / 状态池时间桶节点的 ref_object_id 前缀
+node_id_prefix: sa_time_bucket_
+
+# node_display_prefix / 状态池时间桶节点的展示前缀（用于 contains_text 匹配）
+node_display_prefix: 时间感受
+
+# ---- 日志 ----
+log_dir: ''
+
+log_max_file_bytes: 5242880
+
+stdout_fallback_when_log_fail: true

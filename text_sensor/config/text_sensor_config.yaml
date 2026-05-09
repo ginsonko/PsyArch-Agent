@@ -1,0 +1,327 @@
+# ======================================================================
+# AP Text Sensor configuration
+# AP 文本感受器运行配置
+#
+# This file is used by TextSensor.reload_config() and is also parsed by
+# the Observatory settings panel as the annotation source.
+# 本文件既供 TextSensor.reload_config() 热加载，也作为观测台设置页的注释说明来源。
+# ======================================================================
+
+# ---- Mode Control / 模式控制 ----
+
+# default_mode / 默认切分模式
+# Purpose / 作用: Selects the default input decomposition strategy used by ingest_text().
+# Meaning / 意义: "simple" prefers character-level output, "advanced" prefers tokenizer output, and "hybrid" keeps both.
+# Reference / 参考: Default "simple". Use "advanced" or "hybrid" when you want richer anchors for downstream HDB matching.
+default_mode: "simple"
+
+# enable_char_output / 是否输出字符级 SA
+# Purpose / 作用: Controls whether character-level stimulus atoms are emitted.
+# Meaning / 意义: Turning this on increases granularity and packet size; turning it off makes the packet more compact.
+# Reference / 参考: Default true. Keep enabled in simple or hybrid experiments.
+enable_char_output: true
+
+# enable_token_output / 是否输出词元级 SA
+# Purpose / 作用: Controls whether tokenizer-level stimulus atoms are emitted.
+# Meaning / 意义: Token-level output provides longer anchors and usually improves semantic compactness, but depends on tokenizer availability.
+# Reference / 参考: Default false. Enable in advanced or hybrid runs.
+enable_token_output: false
+
+# enable_csa_output / 是否输出 CSA
+# Purpose / 作用: Controls whether feature SA and attribute SA are bundled into CSA objects.
+# Meaning / 意义: CSA is the main composite unit expected by the current downstream retrieval/storage logic.
+# Reference / 参考: Default true. Only disable when isolating bare SA behavior.
+enable_csa_output: true
+
+# ---- Tokenization / 分词配置 ----
+
+# tokenizer_backend / 分词后端
+# Purpose / 作用: Selects which tokenizer backend is used when token output is needed.
+# Meaning / 意义: Different backends change segmentation granularity and therefore alter downstream anchor competition.
+# Reference / 参考: Default "none". Common values are "none", "jieba", "pkuseg", "thulac", or "custom".
+tokenizer_backend: "none"
+
+# tokenizer_fallback_to_char / 分词失败时是否回退到字符切分
+# Purpose / 作用: Decides whether the sensor falls back to character mode when the selected tokenizer is unavailable or fails.
+# Meaning / 意义: Keeping this on protects the main loop from tokenizer dependency failures.
+# Reference / 参考: Default true. Strongly recommended for prototype robustness.
+tokenizer_fallback_to_char: true
+
+# custom_tokenizer_module_path / 自定义分词模块路径
+# Purpose / 作用: Points to a custom tokenizer module when tokenizer_backend is set to "custom".
+# Meaning / 意义: This is an extension hook and has no effect unless the custom backend path is valid.
+# Reference / 参考: Default empty. Fill only when you really have a custom tokenizer plugin.
+custom_tokenizer_module_path: ""
+
+# enable_user_dict / 是否启用用户词典
+# Purpose / 作用: Enables loading a custom user dictionary for tokenizer backends that support it.
+# Meaning / 意义: A user dictionary can stabilize domain-specific segmentation and therefore stabilize ST formation later.
+# Reference / 参考: Default false. Enable when repeated segmentation errors are harming structure consistency.
+enable_user_dict: false
+
+# user_dict_path / 用户词典路径
+# Purpose / 作用: Specifies the dictionary file loaded when enable_user_dict is true.
+# Meaning / 意义: The file should contain domain-specific words or phrases you want the tokenizer to preserve.
+# Reference / 参考: Default empty. Leave empty unless a valid dictionary file exists.
+user_dict_path: ""
+
+# ---- Importance Scoring / 重要性评分 ----
+
+# enable_importance_scoring / 是否启用重要性评分
+# Purpose / 作用: Enables the optional importance scoring stage before final ER assignment.
+# Meaning / 意义: When enabled, the sensor can bias energy toward more important units, changing later competition outcomes.
+# Reference / 参考: Default false. Turn on only when you are explicitly testing importance-driven packets.
+enable_importance_scoring: false
+
+# importance_mode / 重要性评分模式
+# Purpose / 作用: Selects the scoring strategy family.
+# Meaning / 意义: Different modes trade off determinism, semantic richness, and runtime dependency cost.
+# Reference / 参考: Default "rule". Current expected values include "none", "rule", "keyword", "embedding", and "api".
+importance_mode: "rule"
+
+# importance_backend / 重要性评分后端
+# Purpose / 作用: Selects the concrete scoring backend implementation.
+# Meaning / 意义: This refines importance_mode into an actual algorithm or service path.
+# Reference / 参考: Default "builtin_rule". Keep builtin unless you are intentionally testing another scorer.
+importance_backend: "builtin_rule"
+
+# importance_score_min / 重要性评分下限
+# Purpose / 作用: Defines the minimum clip value for importance scores.
+# Meaning / 意义: Raising the floor reduces the gap between low-importance and high-importance units.
+# Reference / 参考: Default 0.2. Lower values create sharper suppression of weak units.
+importance_score_min: 0.2
+
+# importance_score_max / 重要性评分上限
+# Purpose / 作用: Defines the maximum clip value for importance scores.
+# Meaning / 意义: Raising the ceiling allows stronger amplification of important units.
+# Reference / 参考: Default 1.5. Use higher values only if you want importance to dominate base ER.
+importance_score_max: 1.5
+
+# importance_to_er_scale / 重要性映射到 ER 的缩放系数
+# Purpose / 作用: Controls how strongly importance scores influence final ER assignment.
+# Meaning / 意义: Larger values make the scoring stage more behaviorally visible downstream.
+# Reference / 参考: Default 1.0. Use 0.0 to neutralize importance without disabling the pipeline.
+importance_to_er_scale: 1.0
+
+# importance_fallback_order / 重要性评分回退顺序
+# Purpose / 作用: Defines which importance strategies are tried if the preferred backend is unavailable.
+# Meaning / 意义: A stable fallback chain keeps experiments reproducible even when optional backends fail.
+# Reference / 参考: Default ["keyword", "rule", "none"]. Keep "none" at the tail to guarantee a safe terminal fallback.
+importance_fallback_order: ["keyword", "rule", "none"]
+
+# ---- Attribute Energy / 属性刺激能量 ----
+
+# enable_stimulus_intensity_attribute_sa / 是否生成“强度属性刺激元（stimulus_intensity）”
+# 作用: 为每个特征 SA 自动创建 1 个数值属性 SA，形如 `stimulus_intensity:0.4235`。
+# 说明:
+# - 关闭时: 不再生成该属性 SA（便于阅读与验收），但 CSA 仍可输出（若 enable_csa_output=true），且 CSA 只包含锚点特征 SA。
+# - 打开时: 回到旧行为（每个特征 SA 都会额外绑定 1 个 stimulus_intensity 属性 SA）。
+# 建议: 原型验收阶段默认关闭，等其它模块对齐后再打开观察其影响。
+enable_stimulus_intensity_attribute_sa: false
+
+# stimulus_intensity_attribute_min_er / 强度属性 SA 的最小 ER 阈值
+# Purpose / 作用: Suppresses auto-generated `stimulus_intensity:*` attribute SA for weak feature SA whose ER is below this threshold.
+# Meaning / 意义: Raising this value trims punctuation/noise numeric attributes first, which helps balance explainability, packet size, and matching cost.
+# Reference / 参考: Default 0.0. A practical probe range is roughly 0.3-1.0 depending on how aggressively you want to prune weak units.
+stimulus_intensity_attribute_min_er: 0.0
+
+# attribute_er_ratio / 属性 SA 实能量比例
+# Purpose / 作用: Sets how much ER each auto-generated attribute SA receives relative to its feature SA context.
+# Meaning / 意义: Higher values make attributes compete more strongly during later retrieval and matching.
+# Reference / 参考: Default 0.25. Common test range is 0.1-0.4.
+attribute_er_ratio: 0.25
+
+# attribute_ev_ratio / 属性 SA 虚能量比例
+# Purpose / 作用: Sets the initial EV assigned to auto-generated attribute SA objects.
+# Meaning / 意义: This is reserved for predictive or internally biased attributes; zero keeps attributes purely reality-backed at birth.
+# Reference / 参考: Default 0.0. Keep at 0 in the current prototype unless you are testing predictive attributes.
+attribute_ev_ratio: 0.0
+
+# ---- Base Energy / 基础能量 ----
+
+# char_base_er / 字符基础 ER
+# Purpose / 作用: Defines the base real energy assigned to character-level feature units.
+# Meaning / 意义: This is the base anchor strength for simple-mode and fallback character packets.
+# Reference / 参考: Default 1.0. Raise only when char units should compete more strongly with token units.
+char_base_er: 1.0
+
+# token_base_er / 词元基础 ER
+# Purpose / 作用: Defines the base real energy assigned to tokenizer-level feature units.
+# Meaning / 意义: Token units usually carry denser semantics, so this is slightly above the character default.
+# Reference / 参考: Default 1.1. Keep near char_base_er unless you intentionally want token dominance.
+token_base_er: 1.1
+
+# punctuation_er_ratio / 标点 ER 比例
+# Purpose / 作用: Scales the base ER assigned to punctuation units.
+# Meaning / 意义: Lower values keep punctuation visible but prevent it from dominating semantic anchors.
+# Reference / 参考: Default 0.35. Raise only if punctuation should play a stronger structural role.
+punctuation_er_ratio: 0.35
+
+# whitespace_er_ratio / 空白字符 ER 比例
+# Purpose / 作用: Scales the base ER assigned to whitespace units if they are emitted.
+# Meaning / 意义: Very low values keep spacing traceable without letting it compete as meaningful content.
+# Reference / 参考: Default 0.1. Usually keep low.
+whitespace_er_ratio: 0.1
+
+# emoji_er_ratio / Emoji ER 比例
+# Purpose / 作用: Scales the base ER assigned to emoji units.
+# Meaning / 意义: Emoji often carry dense affective or interaction cues, so they can reasonably be weighted above plain punctuation.
+# Reference / 参考: Default 1.2. Use 1.0-1.5 depending on how strongly you want emoji to matter.
+emoji_er_ratio: 1.2
+
+# digit_er_ratio / 数字 ER 比例
+# Purpose / 作用: Scales the base ER assigned to digit units.
+# Meaning / 意义: Digits often matter structurally, but many experiments prefer to keep them slightly below lexical tokens.
+# Reference / 参考: Default 0.8. Raise if numeric content should act as a strong anchor.
+digit_er_ratio: 0.8
+
+# question_mark_boost / 问号强化系数
+# Purpose / 作用: Applies an extra boost when the unit is a question mark.
+# Meaning / 意义: Questions often signal interaction pressure and should stand out more than neutral punctuation.
+# Reference / 参考: Default 1.1. Keep near 1.0-1.3 for modest emphasis.
+question_mark_boost: 1.1
+
+# exclamation_mark_boost / 感叹号强化系数
+# Purpose / 作用: Applies an extra boost when the unit is an exclamation mark.
+# Meaning / 意义: Exclamations often signal stronger urgency or affect and may deserve slightly elevated visibility.
+# Reference / 参考: Default 1.1. Keep near 1.0-1.3 for mild emphasis.
+exclamation_mark_boost: 1.1
+
+# ---- Echo / 残响 ----
+
+# enable_echo / 是否启用感受器残响
+# Purpose / 作用: Enables the echo pool that carries part of previous input into later packets.
+# Meaning / 意义: Echo is a core part of the current local-chain prototype because later packets are intentionally mixed with recent residual input.
+# Reference / 参考: Default true. Disable only for pure no-history comparison runs.
+enable_echo: true
+
+# echo_decay_mode / 残响衰减模式
+# Purpose / 作用: Selects how echo energy decays across sensor rounds.
+# Meaning / 意义: "round_factor" is easier to reason about during debugging; "round_half_life" gives a smoother parameterized curve.
+# Reference / 参考: Default "round_factor". Keep this unless you explicitly need half-life control.
+echo_decay_mode: "round_factor"
+
+# echo_round_decay_factor / 每轮残响保留系数
+# Purpose / 作用: Sets the retained fraction of echo energy per round in round_factor mode.
+# Meaning / 意义: Lower values make echoes disappear faster; higher values let previous input persist longer.
+# Reference / 参考: Default 0.30. A value like 0.30 yields roughly 1.0 -> 0.30 -> 0.09 -> 0.027.
+echo_round_decay_factor: 0.30
+
+# echo_half_life_rounds / 残响半衰期轮数
+# Purpose / 作用: Sets the half-life in rounds when echo_decay_mode is round_half_life.
+# Meaning / 意义: Larger values make the echo tail longer and smoother.
+# Reference / 参考: Default 2.0. Only used in half-life mode.
+echo_half_life_rounds: 2.0
+
+# echo_min_energy_threshold / 残响淘汰阈值
+# Purpose / 作用: Removes echo objects whose remaining energy falls below this threshold.
+# Meaning / 意义: This is the hard stop that prevents endless accumulation of tiny historical fragments.
+# Reference / 参考: Default 0.12. Lower values lengthen tails; higher values make echo more short-lived.
+echo_min_energy_threshold: 0.12
+
+# echo_pool_max_frames / 残响池最大帧数
+# Purpose / 作用: Limits how many historical echo frames the sensor keeps.
+# Meaning / 意义: This bounds memory and keeps the prototype local rather than letting history grow uncontrolled.
+# Reference / 参考: Default 10. Use 3-20 depending on how long a residual chain you want to inspect.
+echo_pool_max_frames: 10
+
+# echo_frame_elimination_strategy / 残响池溢出淘汰策略
+# Purpose / 作用: Selects how old echo frames are removed when the pool exceeds capacity.
+# Meaning / 意义: Different strategies trade off temporal recency against residual intensity preservation.
+# Reference / 参考: Default "oldest_lowest_energy". Use "oldest_first" only if you want purely chronological pruning.
+echo_frame_elimination_strategy: "oldest_lowest_energy"
+
+# include_echoes_in_stimulus_packet_objects / 是否将残响对象并入刺激包
+# Purpose / 作用: Controls whether echo SA/CSA objects are copied into the outgoing stimulus_packet.
+# Meaning / 意义: Keeping this on makes the downstream chain truly local and chained rather than sensor-internal only.
+# Reference / 参考: Default true. Keep enabled for the current prototype theory path.
+include_echoes_in_stimulus_packet_objects: true
+
+# ---- Stimulus Fatigue / 刺激疲劳 ----
+
+# enable_stimulus_fatigue / 是否启用刺激疲劳
+# Purpose / 作用: Enables repeated-stimulus fatigue inside the sensor before ER is assigned to outgoing SA objects.
+# Meaning / 意义: Repeatedly seeing the same stimulus unit in a short local window will suppress the new ER it receives, but the unit is still emitted for observability and downstream structure formation.
+# Suggested / 建议: Default true. This is the sensor-side counterpart to the theory's short-time repeated-use suppression.
+enable_stimulus_fatigue: true
+
+# stimulus_fatigue_window_rounds / 刺激疲劳统计窗口轮次
+# Purpose / 作用: Defines how many recent ingest rounds are counted when estimating local stimulus repetition frequency.
+# Meaning / 意义: Larger windows make the fatigue signal slower and more historical; smaller windows make it more immediate and volatile.
+# Suggested / 建议: Default 100. This matches the theory-aligned example “count repetitions within the recent 100 rounds”.
+stimulus_fatigue_window_rounds: 100
+
+# stimulus_fatigue_threshold_count / 刺激疲劳触发阈值次数
+# Purpose / 作用: Sets the repetition count inside the window at which suppression begins.
+# Meaning / 意义: Below this count the same stimulus still receives full ER; once the threshold is crossed, suppression increases with frequency.
+# Suggested / 建议: Default 10. This matches the theory-aligned example “appears 10 times within 100 rounds”.
+stimulus_fatigue_threshold_count: 10
+
+# stimulus_fatigue_max_suppression / 刺激疲劳最大抑制比例
+# Purpose / 作用: Upper bound on how much of the newly assigned ER can be suppressed by sensor fatigue.
+# Meaning / 意义: 1.0 means the incoming stimulus can be fully suppressed to zero ER when repetition saturates the local window.
+# Suggested / 建议: Default 1.0. Keep 1.0 if you want extremely frequent repetition to become fully non-energized.
+stimulus_fatigue_max_suppression: 1.0
+# ---- Input Hygiene / 输入约束与归一化 ----
+
+# max_text_length / 单次输入最大长度
+# Purpose / 作用: Limits the maximum input string length accepted by the sensor.
+# Meaning / 意义: This bounds accidental oversized packets and protects the prototype from pathological input during debugging.
+# Reference / 参考: Default 10000. Lower it if you want stricter testing discipline.
+max_text_length: 10000
+
+# allow_empty_text / 是否允许空文本
+# Purpose / 作用: Controls whether an empty string is accepted as a valid sensor input.
+# Meaning / 意义: Keeping this false forces explicit empty-tick handling elsewhere and avoids ambiguous sensor frames.
+# Reference / 参考: Default false. Enable only if your test harness intentionally feeds empty strings as input events.
+allow_empty_text: false
+
+# reject_suspect_encoding_text / 是否拦截疑似编码异常或不可恢复乱码
+# Purpose / 作用: Rejects text that already looks mojibaked, contains replacement chars, or has collapsed into unreadable placeholder runs before it can enter the state/database pipeline.
+# Meaning / 意义: If the corruption is still recoverable (for example classic UTF-8 <-> latin-1 mojibake), the sensor will first try a high-confidence repair; only unrecoverable garbage is blocked.
+# Reference / 参考: Default true. Keep enabled to avoid polluting HDB / StatePool with `? ? ? ?`-style lossy input.
+reject_suspect_encoding_text: true
+
+# strip_control_chars / 是否移除不可见控制字符
+# Purpose / 作用: Removes non-printable control characters during normalization.
+# Meaning / 意义: This keeps packets cleaner and reduces accidental tokenizer or display anomalies.
+# Reference / 参考: Default true. Strongly recommended.
+strip_control_chars: true
+
+# fullwidth_to_halfwidth / 是否进行全角转半角
+# Purpose / 作用: Normalizes fullwidth characters into halfwidth forms.
+# Meaning / 意义: Turning this on increases normalization consistency, but may erase distinctions you want to preserve in some experiments.
+# Reference / 参考: Default false. Enable when you want stronger surface-form unification.
+fullwidth_to_halfwidth: false
+
+# case_policy / 英文字母大小写策略
+# Purpose / 作用: Controls whether letter case is preserved or normalized.
+# Meaning / 意义: Case normalization can reduce sparsity, but preserving case may matter for some domains.
+# Reference / 参考: Default "none". Other expected values are "lower" and "upper".
+case_policy: "none"
+
+# compress_whitespace / 是否压缩连续空白
+# Purpose / 作用: Collapses repeated whitespace into a simpler normalized form.
+# Meaning / 意义: Useful when spacing noise should not create repeated low-value distinctions.
+# Reference / 参考: Default false. Enable only if spacing variability is harming repeatability.
+compress_whitespace: false
+
+# strip_edges / 是否去掉首尾空白
+# Purpose / 作用: Trims leading and trailing whitespace after normalization.
+# Meaning / 意义: This is usually desirable because edge whitespace rarely carries independent meaning in current tests.
+# Reference / 参考: Default true. Keep enabled unless your corpus relies on boundary whitespace.
+strip_edges: true
+
+# ---- Logging / 日志 ----
+
+# log_dir / 日志目录
+# Purpose / 作用: Overrides the sensor log directory.
+# Meaning / 意义: Leave empty to use the module default logs path, or set an absolute/relative path for custom collection.
+# Reference / 参考: Default empty. Change only when you need centralized logs.
+log_dir: ""
+
+# log_max_file_bytes / 单个日志文件上限
+# Purpose / 作用: Limits the maximum size of each log file before rotation or replacement.
+# Meaning / 意义: Higher values preserve longer continuous traces in one file, but increase single-file size.
+# Reference / 参考: Default 5242880 (5 MB). Use 1-20 MB depending on trace density.
+log_max_file_bytes: 5242880

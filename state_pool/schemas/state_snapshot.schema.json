@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "state_snapshot.schema.json",
+  "title": "StateSnapshot / 状态池快照",
+  "description": "状态池某一时刻的完整快照",
+  "type": "object",
+  "required": ["snapshot_id", "trace_id", "summary"],
+  "properties": {
+    "snapshot_id": { "type": "string" },
+    "object_type": { "type": "string", "const": "runtime_snapshot" },
+    "sub_type": { "type": "string", "const": "state_pool_snapshot" },
+    "schema_version": { "type": "string" },
+    "trace_id": { "type": "string" },
+    "tick_id": { "type": "string" },
+    "timestamp_ms": { "type": "integer" },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "active_item_count": { "type": "integer" },
+        "high_er_item_count": { "type": "integer" },
+        "high_ev_item_count": { "type": "integer" },
+        "high_cp_item_count": { "type": "integer" }
+      }
+    },
+    "top_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": { "type": "string" },
+          "ref_object_id": { "type": "string" },
+          "display": { "type": "string" },
+          "er": { "type": "number" },
+          "ev": { "type": "number" },
+          "cp_delta": { "type": "number" },
+          "cp_abs": { "type": "number" }
+        }
+      }
+    },
+    "history_window_ref": {
+      "type": "object",
+      "properties": {
+        "current_size": { "type": "integer" },
+        "max_size": { "type": "integer" },
+        "total_recorded": { "type": "integer" }
+      }
+    }
+  }
+}

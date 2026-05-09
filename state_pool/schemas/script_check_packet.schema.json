@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "script_check_packet.schema.json",
+  "title": "ScriptCheckPacket / 脚本检查抄送包",
+  "description": "向先天脚本模块抄送的状态变化窗口",
+  "type": "object",
+  "required": ["packet_id", "object_type", "trace_id", "summary"],
+  "properties": {
+    "packet_id": { "type": "string" },
+    "object_type": { "type": "string", "const": "runtime_snapshot" },
+    "sub_type": { "type": "string", "const": "state_change_window_packet" },
+    "schema_version": { "type": "string" },
+    "trace_id": { "type": "string" },
+    "tick_id": { "type": "string" },
+    "window_start_ms": { "type": "integer" },
+    "window_end_ms": { "type": "integer" },
+    "events": { "type": "array" },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "active_item_count": { "type": "integer" },
+        "new_item_count": { "type": "integer" },
+        "updated_item_count": { "type": "integer" },
+        "high_cp_item_count": { "type": "integer" },
+        "fast_cp_rise_item_count": { "type": "integer" },
+        "fast_cp_drop_item_count": { "type": "integer" }
+      }
+    },
+    "candidate_triggers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": { "type": "string" },
+          "trigger_hint": { "type": "string" },
+          "value": { "type": "number" },
+          "display": { "type": "string" }
+        }
+      }
+    }
+  }
+}

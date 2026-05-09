@@ -1,0 +1,64 @@
+# ======================================================================
+# AP 璁ょ煡鎰熷彈绯荤粺閰嶇疆锛圕FS, Cognitive Feeling System锛?# AP Cognitive Feeling System (CFS) configuration
+#
+# 鏈枃浠舵棦渚?CognitiveFeelingSystem.reload_config() 鐑姞杞斤紝
+# 涔熶綔涓鸿娴嬪彴鈥滆缃€濋〉鐨勫瓧娈佃鏄庢潵婧愩€?#
+# 娉細鐣岄潰涓庢敞閲婂敖閲忎腑鏂囦紭鍏堬紱鍑虹幇绠€鍐欙紙CFS/EV/ER/CP 绛夛級鏃惰闄勪腑鏂囧叏绉般€?# ======================================================================
+
+# enabled / 鎬诲紑鍏?#
+# 娉ㄦ剰锛?# - 鏈ā鍧椾负鈥滄棫鐗堝師鍨嬧€濈殑纭紪鐮佸疄鐜帮紙鐢ㄤ簬瀵圭収/杩囨浮锛夈€?# - 褰撳墠鎺ㄨ崘鍋氭硶鏄細鎶婅鐭ユ劅鍙椾俊鍙凤紙CFS锛夌殑瑙﹀彂閫昏緫鏀惧埌 IESM 瑙勫垯锛坧hase=cfs锛夐噷缁熶竴鑴氭湰鍖栫鐞嗭紝
+#   鍦ㄣ€屽厛澶╄鍒欍€嶉〉闈㈠嵆鍙娴嬩笌缂栬緫锛堟洿绗﹀悎鐞嗚鏍稿績鐨勭洰鏍囷級銆?#
+# 鍥犳榛樿鍏抽棴锛涢渶瑕佸鐓у疄楠屾椂鍐嶆墜鍔ㄥ紑鍚€?enabled: false
+
+# max_object_signals_per_tick / 姣?tick 鏈€澶氳緭鍑哄灏戞潯鈥滃璞＄粦瀹氬瀷鈥濅俊鍙?max_object_signals_per_tick: 12
+
+# target_ref_types_for_object_signals / 浠呭鍝簺 ref_object_type 鐢熸垚瀵硅薄鍨嬩俊鍙?target_ref_types_for_object_signals: ["st"]
+
+# write_to_state_pool / 鏄惁鍐欏洖 StatePool 褰㈡垚鍏冭鐭ユ潯鐩?write_to_state_pool: true
+
+# write_strength_as_ev / 寮哄害鍐欏叆 EV 杩樻槸 ER锛堥粯璁?EV锛?write_strength_as_ev: false
+
+# bind_presence_attribute_to_target / 鏄惁鎶娾€滃瓨鍦ㄥ瀷灞炴€?SA鈥濈粦瀹氬埌鐩爣瀵硅薄锛堝寮哄彲瑙傛祴锛?bind_presence_attribute_to_target: true
+
+# attribute_bind_strength_threshold / 鍙湁寮哄害瓒呰繃璇ラ槇鍊兼墠缁戝畾灞炴€?attribute_bind_strength_threshold: 0.35
+
+# ---- dissonance / 违和感 ----
+dissonance_cp_abs_threshold: 0.5
+dissonance_cp_abs_max: 2.0
+
+# ---- correct_event / 姝ｇ‘浜嬩欢锛堜緷鎵樿繚鍜屼笅闄嶏級----
+correct_event_min_prior_dissonance_strength: 0.30
+correct_event_cp_drop_threshold: 0.50
+correct_event_strength_drop_max: 1.20
+correct_event_cooldown_ticks: 1
+
+# ---- surprise / 惊 ----
+surprise_cp_rise_threshold: 0.50
+surprise_strength_rise_max: 1.20
+surprise_require_delta_positive: true
+
+# ---- expectation / pressure / 鏈熷緟涓庡帇鍔涳紙鍘熷瀷锛氭爣璁板懡涓?+ EV 闂ㄦ锛?---
+# 璇存槑锛氬綋鍓嶅疄鐜颁細鍦?display/attribute_displays/bound_attribute_displays 涓煡鎵?reward/punish 鍏抽敭璇嶏紝
+#      鐒跺悗浠?EV锛堣櫄鑳介噺锛変綔涓哄己搴︽潵婧愯緭鍑烘湡寰?鍘嬪姏淇″彿銆?expectation_ev_threshold: 0.30
+pressure_ev_threshold: 0.30
+reward_keywords: ["reward_signal", "奖励", "reward", "positive_valence"]
+punish_keywords: ["punish_signal", "惩罚", "punish", "negative_valence"]
+predicted_ref_types: ["st"]
+
+# ---- complexity / 澶嶆潅搴︼紙绻侊級----
+complexity_size_max: 24
+complexity_entropy_weight: 0.45
+complexity_size_weight: 0.55
+
+# ---- repetition / 閲嶅鎰燂紙鐤插姵锛?---
+repetition_fatigue_threshold: 0.60
+repetition_max_considered_items: 24
+
+# ---- grasp / 鎶婃彙鎰?----
+grasp_alignment_eps: 0.000001
+
+# ---- Logging / 鏃ュ織 ----
+log_dir: ""
+log_max_file_bytes: 5242880
+stdout_fallback_when_log_fail: true
+

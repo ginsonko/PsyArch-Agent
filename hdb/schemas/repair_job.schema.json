@@ -1,0 +1,28 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HDB Repair Job",
+  "type": "object",
+  "required": ["repair_job_id", "trace_id", "repair_scope", "status", "created_at"],
+  "properties": {
+    "repair_job_id": {"type": "string", "pattern": "^repair_job_[0-9]+$"},
+    "trace_id": {"type": "string"},
+    "target_id": {"type": "string"},
+    "repair_scope": {"type": "string", "enum": ["targeted", "global_quick", "global_full"]},
+    "repair_actions": {"type": "array", "items": {"type": "string"}},
+    "batch_limit": {"type": "integer", "minimum": 1},
+    "allow_delete_unrecoverable": {"type": "boolean"},
+    "background": {"type": "boolean"},
+    "status": {"type": "string"},
+    "stop_requested": {"type": "boolean"},
+    "created_at": {"type": "integer"},
+    "started_at": {"type": "integer"},
+    "updated_at": {"type": "integer"},
+    "finished_at": {"type": "integer"},
+    "processed_count": {"type": "integer"},
+    "repaired_count": {"type": "integer"},
+    "deleted_count": {"type": "integer"},
+    "issue_count": {"type": "integer"},
+    "actions_applied": {"type": "array", "items": {"type": "object"}},
+    "errors": {"type": "array", "items": {"type": "object"}}
+  }
+}

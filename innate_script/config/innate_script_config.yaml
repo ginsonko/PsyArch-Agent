@@ -1,0 +1,76 @@
+# ======================================================================
+# AP 先天编码脚本管理器配置（IESM, Innate Encoded Script Manager）
+# AP Innate Script Manager (IESM) configuration
+#
+# 本文件既供 IESM.reload_config() 热加载，
+# 也作为观测台“设置”页的字段说明来源。
+#
+# 注：界面与注释尽量中文优先；出现简写（IESM/CFS/AF/CP 等）时请附中文全称。
+# ======================================================================
+
+# script_version / 脚本版本号
+# 作用（Purpose）: 用于审计与回滚追踪。
+script_version: "0.1"
+
+# enabled / 总开关
+# 作用（Purpose）: 关闭后 IESM 不执行任何规则，只返回 OK_DISABLED。
+enabled: true
+
+# ---- Rules Engine / 声明式规则引擎（innate_rules.yaml）----
+# rules_engine_enable / 是否启用规则文件驱动的声明式规则系统
+# 作用（Purpose）:
+# - true: 优先使用 innate_rules.yaml 驱动触发/指令输出（推荐）。
+# - false: 回退到本文件中的旧版参数化规则（state_window_rules / focus_rules）。
+rules_engine_enable: true
+
+# rules_path / 规则文件路径
+# 作用（Purpose）:
+# - 为空时使用默认路径：innate_script/config/innate_rules.yaml
+rules_path: ""
+
+# rules_backup_dir / 规则保存备份目录
+# 作用（Purpose）:
+# - 为空时使用默认路径：innate_script/config/rules_history
+rules_backup_dir: ""
+
+# rules_backup_keep / 备份保留数量（最近 N 份）
+rules_backup_keep: 20
+
+# ---- state_window_rules / 状态窗口检查规则（对接 StatePool 的 script_check_packet）----
+state_window_rules:
+  # enable / 是否启用
+  enable: true
+
+  # trigger_on_fast_cp_rise / CP 快速上升是否触发脚本
+  trigger_on_fast_cp_rise: true
+
+  # trigger_on_fast_cp_drop / CP 快速下降是否触发脚本
+  trigger_on_fast_cp_drop: true
+
+  # min_candidate_count / 至少候选数量才判定
+  min_candidate_count: 1
+
+# ---- focus_rules / 注意力聚焦指令规则（由 CFS 触发，下一 tick 生效）----
+focus_rules:
+  # enable / 是否启用
+  enable: true
+
+  # from_cfs_kinds / 哪些 CFS 信号可触发聚焦
+  from_cfs_kinds: ["dissonance", "surprise", "pressure", "expectation"]
+
+  # min_strength / 最小强度阈值
+  min_strength: 0.3
+
+  # default_ttl_ticks / 指令默认存活 tick 数（每 tick -1）
+  default_ttl_ticks: 2
+
+  # focus_boost / 聚焦加成系数（最终 boost = focus_boost * strength）
+  focus_boost: 0.9
+
+  # deduplicate_by / 去重键：target_ref_object_id | target_item_id
+  deduplicate_by: "target_ref_object_id"
+
+# ---- Logging / 日志 ----
+log_dir: ""
+log_max_file_bytes: 5242880
+stdout_fallback_when_log_fail: true

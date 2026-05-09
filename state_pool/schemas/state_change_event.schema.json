@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "state_change_event.schema.json",
+  "title": "StateChangeEvent / 状态变化事件",
+  "description": "记录一次状态对象变化的完整前后对比",
+  "type": "object",
+  "required": ["event_id", "event_type", "target_item_id", "trace_id", "timestamp_ms"],
+  "properties": {
+    "event_id": { "type": "string" },
+    "event_type": { "type": "string", "enum": ["energy_update", "created", "decay", "neutralization", "pruned", "merged", "attribute_bind"] },
+    "target_item_id": { "type": "string" },
+    "trace_id": { "type": "string" },
+    "tick_id": { "type": "string" },
+    "timestamp_ms": { "type": "integer" },
+    "before": {
+      "type": "object",
+      "properties": {
+        "er": { "type": "number" }, "ev": { "type": "number" },
+        "cp_delta": { "type": "number" }, "cp_abs": { "type": "number" }
+      }
+    },
+    "after": {
+      "type": "object",
+      "properties": {
+        "er": { "type": "number" }, "ev": { "type": "number" },
+        "cp_delta": { "type": "number" }, "cp_abs": { "type": "number" }
+      }
+    },
+    "delta": {
+      "type": "object",
+      "properties": {
+        "delta_er": { "type": "number" }, "delta_ev": { "type": "number" },
+        "delta_cp_delta": { "type": "number" }, "delta_cp_abs": { "type": "number" }
+      }
+    },
+    "rate": {
+      "type": "object",
+      "properties": {
+        "er_change_rate": { "type": "number" }, "ev_change_rate": { "type": "number" },
+        "cp_delta_rate": { "type": "number" }, "cp_abs_rate": { "type": "number" }
+      }
+    },
+    "reason": { "type": "string" },
+    "source_module": { "type": "string" },
+    "extra_context": { "type": "object" }
+  }
+}

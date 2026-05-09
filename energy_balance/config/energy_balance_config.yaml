@@ -1,0 +1,88 @@
+# ======================================================================
+# Energy Balance Controller (EBC) runtime configuration
+# 实虚能量平衡控制器（EBC）运行配置
+#
+# Role / 当前定位：
+# 这是一个“可选旧闭环控制器 / optional legacy controller”。
+# 默认新口径下，不再要求直接把全局 EV_total / ER_total 收敛到单一目标值；
+# 因此本模块默认关闭，主要保留给对照实验、回退验证和诊断使用。
+# ======================================================================
+
+# enabled / 是否启用
+# Purpose / 作用: Master on/off switch for the balance controller.
+# Meaning / 意义: When false, the controller outputs no modulation and keeps its state unchanged.
+# Reference / 参考: Default false. Enable only when you explicitly want a legacy EV:ER closed-loop experiment.
+
+enabled: false
+
+# target_ratio / 目标比例（EV_total / ER_total）
+# Purpose / 作用: Legacy closed-loop target ratio for optional experiments.
+# Meaning / 意义: 仅在 `enabled=true` 时生效；默认新口径并不把它当作硬理论目标。
+# Suggested / 建议: 保留旧实验默认值，便于回退对照。
+target_ratio: 1.0
+
+# target_ratio_min / target_ratio_max / 目标比例工作区间
+# Purpose / 作用: Keep the legacy controller target inside a bounded experimental envelope.
+# Meaning / 意义:
+#   - min: avoid pushing EV/ER too low and making prediction energy lose usability;
+#   - max: avoid drifting into unrealistic long-term endogenous dominance.
+target_ratio_min: 1.08
+
+target_ratio_max: 1.35
+
+# eps / 防止除零与 log(0)
+# Purpose / 作用: Numerical epsilon used in ratio computation to avoid division by zero.
+# Meaning / 意义: ratio = EV_total / (ER_total + eps).
+eps: 1e-6
+
+# window_ticks / 平滑窗口（tick 数）
+# Purpose / 作用: Number of recent ticks used for smoothing the ratio.
+# Meaning / 意义: Larger windows reduce jitter but respond slower.
+# Suggested / 建议: 4~12 for prototype; default 6.
+window_ticks: 6
+
+# ki / 积分增益（对数域）
+# Purpose / 作用: Integral gain in log-domain update. Larger values react faster but may oscillate.
+# Meaning / 意义: log_g <- log_g - ki * log(ratio/target)
+# Suggested / 建议: Start small (0.02~0.06). Default 0.04.
+ki: 0.04
+
+# error_deadband / 误差死区（对数域）
+# Purpose / 作用: Ignore tiny ratio drift so the controller does not keep nudging around neutral forever.
+# Meaning / 意义: When |log(ratio/target)| is inside this band, the integral term treats it as zero.
+error_deadband: 0.03
+
+# neutral_log_g_decay / 中性回拉
+# Purpose / 作用: Gradually pull g back toward 1.0 to avoid long-term windup after the environment changes.
+# Meaning / 意义: Each effective update first shrinks log_g toward 0 by this ratio.
+neutral_log_g_decay: 0.03
+
+# counter_windup_gain / 反向解缠增益
+# Purpose / 作用: Speed up recovery when the stored controller state is on the wrong side of neutral.
+# Meaning / 意义:
+#   - Example: g is still >1, but EV/ER has already become too high; then unwinding should be faster.
+counter_windup_gain: 2.5
+
+# g_min / g_max / 控制增益范围
+# Purpose / 作用: Clamp range for the controller output g (positive scale factor).
+# Meaning / 意义: Prevents the controller from driving EV propagation too extreme.
+g_min: 0.2
+
+g_max: 5.0
+
+# min_total_energy_to_update / 低能量冻结阈值
+# Purpose / 作用: If ER_total + EV_total is below this, skip updates to avoid noise.
+# Meaning / 意义: When the system is almost empty, ratios are unstable and should not drive control.
+# Suggested / 建议: Default 0.5.
+min_total_energy_to_update: 0.5
+
+# apply_scales / 输出作用到哪些 HDB 调制键
+# Purpose / 作用: Choose which HDB scale keys are multiplied by g each tick.
+# Meaning / 意义:
+#   - ev_propagation_ratio_scale: scales HDB ev_propagation_ratio (EV 传播比例)
+#   - er_induction_ratio_scale: scales HDB er_induction_ratio (ER 诱发比例)
+# Note / 注意:
+#   - 这些 scale 会与 EMgr（情绪管理器）的 hdb modulation 相乘（而不是互相覆盖）。
+apply_scales:
+  ev_propagation_ratio_scale: false
+  er_induction_ratio_scale: false

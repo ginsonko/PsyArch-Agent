@@ -1,0 +1,153 @@
+# AP 注意力模块配置（AF, Attention Filter）
+# AP Attention (AF) module config
+#
+# 注：界面与注释尽量中文优先；出现简写（AF/CAM/SP/ER/EV/CP 等）时请附中文全称。
+
+# max_cam_items / CAM（当前注意记忆体）对象数量上限（cap）
+# 作用（Purpose）: 限制每 tick 最多允许多少对象进入 CAM（用于控制计算预算与前端可读性）。
+# 注意（Important）:
+#   - 这是“上限”，不是“永远填满 Top-N”。真实入选数量由注意力抑制阈值动态决定，常常会 < cap。
+#   - 这样才能更贴近理论中的“只维持波峰”的注意力现象。
+# 参考（Reference）: 默认 16；典型测试范围 8~24。
+max_cam_items: 16
+
+# top_n / 兼容字段（旧名）
+# 说明：旧版配置使用 top_n，这里保留但建议改用 max_cam_items。
+top_n: 16
+
+# min_cam_items / 最少保留 CAM 项数量（兜底）
+# 作用：避免极端情况下 CAM 为空导致后续结构级查存一体没有输入。
+min_cam_items: 2
+
+# ---- 动态抑制阈值（Dynamic cutoff）----
+# keep_score_ratio_base / 基础阈值比例
+# 含义：cutoff = peak_score * keep_score_ratio，其中 peak_score 是波峰（最高优先级）分数。
+# 低于 cutoff 的对象会被“注意力抑制”，不进入 CAM。
+keep_score_ratio_base: 0.28
+
+# keep_score_ratio_concentration_gain / 集中度增益
+# 含义：当分布更“集中”（一个/少数波峰明显）时，提高阈值，让 CAM 更短；反之让 CAM 更长。
+keep_score_ratio_concentration_gain: 0.22
+
+# keep_score_ratio_min/max / 阈值比例钳制范围
+keep_score_ratio_min: 0.18
+keep_score_ratio_max: 0.72
+
+# score_entropy_eps / 计算熵时的数值稳定 epsilon
+score_entropy_eps: 0.000000001
+
+# consume_energy / 构建 CAM 时是否从状态池对象扣能
+# 作用（Purpose）: 为 CAM 预算进行真实能量转移（记账式），而非复制能量。
+# 意义（Meaning）: 对齐“思考有成本”的记账原则。
+consume_energy: true
+
+# memory_energy_ratio / CAM 抽取比例（0~1）
+# 作用（Purpose）: 从 SP（状态池）向 CAM 转移的 (ER,EV) 比例。
+# 参考（Reference）: 默认 0.5。
+memory_energy_ratio: 0.5
+
+# ---- 注意力能量资源（Attention Energy Resource）----
+# 理论口径：
+# - CAM 先从状态池按 memory_energy_ratio 得到“未滤波基础能量”；
+# - 注意力滤波会抑制低权重对象，并把有限的注意力资源分给高权重对象；
+# - 滤波后 CAM 总能量 - 未滤波基础 CAM 总能量 <= attention_energy_budget_base。
+# 这不是倍率上限，而是每 tick 注意力可额外注入/维持的能量份额。
+attention_energy_budget_enabled: true
+attention_energy_budget_base: 8.0
+attention_energy_budget_min: 0.0
+attention_energy_budget_max: 32.0
+attention_energy_budget_apply_when_not_consuming: false
+
+# attention_filter_* / 滤波参数
+# - suppression_floor 以下会逐渐抑制，最低保留 suppression_min_ratio；
+# - gain_floor 以上才参与预算分配；
+# - gain_exponent 越高，预算越集中给最高权重对象。
+attention_filter_suppression_enabled: true
+attention_filter_suppression_floor: 0.36
+attention_filter_suppression_min_ratio: 0.25
+attention_filter_gain_floor: 0.52
+attention_filter_gain_exponent: 1.15
+
+# fast_source_snapshot_enabled / 注意力候选轻量快照
+# Purpose / 作用: CAM 评分只需要运行态候选的能量、属性、上下文和 canonical 序列信息；
+# 这里直接从 StatePool store 构建轻量候选，避免每 tick 为全部对象生成 UI 级完整快照。
+# Rollback / 回退: 如需调试完整 StatePool snapshot 序列化，可设为 false。
+fast_source_snapshot_enabled: true
+
+# exclude_ref_object_types / 排除的运行态对象类型
+# 参考（Reference）: 默认 ["em"]（情景记忆条目一般不作为 CAM 项）。
+exclude_ref_object_types: ["em"]
+
+# residual_memory_runtime_object_type / 残差记忆运行态对象类型
+# 作用（Purpose）: 决定默认残差记忆投影是按 ST 结构语义参与 CAM，还是保留旧 EM 兼容壳。
+# 参考（Reference）: 默认 "em"；仅在回滚或对照实验时改成 "st"。
+residual_memory_runtime_object_type: "em"
+
+# min_total_energy / 最低能量过滤阈值
+min_total_energy: 0.0
+
+# ---- 选择优先级权重（MVP 默认与 observatory 保持一致）----
+priority_weight_total_energy: 1.25
+priority_weight_cp_abs: 0.35
+priority_weight_salience: 0.15
+priority_weight_updated_at: 0.000000000001
+
+# 预留：疲劳/近因调制（默认 0，不改变当前语义）
+priority_weight_fatigue: 0.0
+priority_weight_recency_gain: 0.0
+
+# ---- 日志 ----
+log_dir: ""
+log_max_file_bytes: 5242880
+stdout_fallback_when_log_fail: true
+
+# ---- reward/action shaping ----
+reward_action_humanlike_v2_enabled: true
+reward_action_priority_enabled: true
+reward_action_structure_first_mode: true
+reward_action_signal_names: ["reward_signal", "punish_signal", "teacher_reward_signal", "teacher_punish_signal"]
+reward_action_special_attribute_names:
+  - reward_signal
+  - punish_signal
+  - teacher_reward_signal
+  - teacher_punish_signal
+  - cfs_dissonance
+  - cfs_correctness
+  - cfs_correct_event
+  - cfs_expectation
+  - cfs_expectation_unverified
+  - cfs_expectation_verified
+  - cfs_pressure
+  - cfs_pressure_unverified
+  - cfs_pressure_verified
+  - cfs_surprise
+  - cfs_grasp
+  - cfs_complexity
+  - cfs_simplicity
+  - cfs_repetition
+  - cfs_relief
+  - cfs_reassurance
+reward_action_bonus_cap: 2.4
+reward_action_penalty_cap: 1.8
+reward_action_special_standalone_penalty: 0.98
+reward_action_special_standalone_energy_gain: 0.3
+reward_action_action_node_penalty: 0.46
+reward_action_action_node_energy_gain: 0.10
+reward_action_structure_carrier_bonus: 0.56
+reward_action_structure_carrier_value_gain: 0.22
+reward_action_structure_carrier_context_gain: 0.28
+reward_action_target_association_bonus: 0.58
+reward_action_target_association_energy_gain: 0.34
+reward_action_min_carrier_score: 0.35
+attention_repeat_fatigue_special_multiplier: 2.0
+attention_repeat_fatigue_structure_carrier_multiplier: 0.82
+
+# ---- repeat-attention fatigue ----
+attention_repeat_fatigue_enabled: true
+attention_repeat_fatigue_semantic_context_first: true
+attention_repeat_fatigue_window_calls: 6
+attention_repeat_fatigue_recovery_per_call: 0.57
+attention_repeat_fatigue_penalty_gain: 0.58
+attention_repeat_fatigue_selected_gain: 1.18
+attention_repeat_fatigue_max_penalty: 1.7
+attention_repeat_fatigue_max_strength: 4.0

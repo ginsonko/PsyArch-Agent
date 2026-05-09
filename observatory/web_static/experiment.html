@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>长期运行数据观测台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="eyebrow">Artificial PsyArch</div>
+        <h1>长期运行数据观测台</h1>
+        <p>用于观察长期运行指标、管理自适应调参、审计调参历史，并与单次 tick 观测台区分。</p>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="/">返回观测台主页</a>
+        <a href="/next/#experiment">新版研究仪表盘（实验页）</a>
+        <a href="#exp_standard">数据集标准</a>
+        <a href="#exp_dataset">数据集</a>
+        <a href="#exp_run">当前状态</a>
+        <a href="#exp_live">持续观测</a>
+        <a href="#exp_runs">运行记录</a>
+        <a href="#exp_metrics">统计与图表</a>
+        <a href="#exp_auto_tuner">自适应调参器</a>
+        <a href="#exp_llm_review">大模型审查</a>
+      </nav>
+      <button id="expBackBtn" class="ghost full" type="button">返回上一页</button>
+    </aside>
+
+    <main class="main">
+      <section class="hero panel">
+        <div class="eyebrow">AP Prototype Long-Run Observatory</div>
+        <h2>长期运行数据观测台</h2>
+        <p>这里面向长跑、长期指标、调参闭环与复盘证据。重点不是看单个 tick 的细枝末节，而是看系统在较长时间内是否稳定、是否贴近理论预期，以及为什么会偏离。</p>
+      </section>
+
+      <section id="exp_standard" class="panel">
+        <div class="section-head">
+          <h3>数据集标准与导入说明</h3>
+          <div class="toolbar">
+            <button id="expRefreshProtocolBtn" class="ghost" type="button">刷新标准说明</button>
+          </div>
+        </div>
+        <div id="expProtocolCards" class="card-grid compact"></div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>YAML 模板标准（推荐）</h4>
+              <span class="meta">适合版本控制、人工审计、批量设计实验片段</span>
+            </div>
+            <div id="expProtocolYamlFields" class="stack"></div>
+            <pre id="expProtocolYamlExample" class="result-box"></pre>
+          </div>
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>JSONL 逐 Tick 标准</h4>
+              <span class="meta">适合直接导入长跑任务或外部脚本生成结果</span>
+            </div>
+            <div id="expProtocolJsonlFields" class="stack"></div>
+            <pre id="expProtocolJsonlExample" class="result-box"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="exp_dataset" class="panel">
+        <div class="section-head">
+          <h3>数据集</h3>
+          <div class="toolbar">
+            <button id="expRefreshDatasetsBtn" class="ghost" type="button">刷新数据集</button>
+          </div>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>选择已有数据集</h4>
+              <span id="expDatasetMeta" class="meta"></span>
+            </div>
+            <select id="expDatasetSelect"></select>
+            <div id="expDatasetOverviewCards" class="card-grid compact exp-spaced-top"></div>
+            <div class="actions">
+              <button id="expPreviewBtn" class="secondary" type="button">预览前 24 个 Tick</button>
+              <button id="expExpandBtn" class="ghost" type="button">展开为 JSONL</button>
+            </div>
+            <div id="expDatasetPreviewMeta" class="inline-feedback">等待预览…</div>
+            <div id="expDatasetPreview" class="stack scroll-shell"></div>
+          </div>
+
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>导入数据集（粘贴）</h4>
+              <span class="meta">支持 YAML 模板或 JSONL 逐 Tick 文本流</span>
+            </div>
+            <div class="settings-grid">
+              <article class="setting-item">
+                <label>文件名（可选）</label>
+                <input id="expImportFilename" type="text" placeholder="例如 emotion_probe_100_v1" />
+                <small>会保存到本地导入目录，仅在当前机器使用。</small>
+              </article>
+              <article class="setting-item">
+                <label>格式</label>
+                <select id="expImportFormat">
+                  <option value="yaml">YAML 模板（推荐）</option>
+                  <option value="jsonl">JSONL 逐 Tick</option>
+                </select>
+                <small>建议优先使用 YAML，便于版本控制与人工审计。</small>
+              </article>
+            </div>
+            <textarea id="expImportContent" class="config-textarea exp-large-textarea" placeholder="请在这里粘贴数据集内容…"></textarea>
+            <div class="actions">
+              <button id="expImportBtn" class="primary" type="button">导入并保存</button>
+            </div>
+            <div id="expImportFeedback" class="inline-feedback">等待导入…</div>
+          </div>
+        </div>
+
+        <div class="subpanel exp-spaced-top">
+          <div class="section-head">
+            <h4>清空与保留</h4>
+            <span class="meta">可按实验阶段选择清空范围</span>
+          </div>
+          <div class="actions">
+            <button id="expClearRuntimeBtn" class="ghost danger" type="button">清空运行态</button>
+            <button id="expClearHdbBtn" class="ghost danger" type="button">清空 HDB</button>
+            <button id="expClearAllBtn" class="ghost danger" type="button">清空全部</button>
+          </div>
+          <div id="expClearFeedback" class="inline-feedback">等待操作…</div>
+        </div>
+      </section>
+
+      <section id="exp_run" class="panel">
+        <div class="section-head">
+          <h3>当前状态</h3>
+          <span id="expJobMeta" class="meta"></span>
+        </div>
+        <div id="expJobOverviewCards" class="card-grid compact"></div>
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>运行控制</h4></div>
+            <div class="settings-grid">
+              <article class="setting-item">
+                <label>重置模式</label>
+                <select id="expResetMode">
+                  <option value="keep">保留全部</option>
+                  <option value="clear_runtime">清空运行态</option>
+                  <option value="clear_all">清空全部</option>
+                </select>
+                <label class="toggle-row"><input id="expCleanRunChk" type="checkbox" /><span>纯净运行：启动前清空全部</span></label>
+              </article>
+              <article class="setting-item">
+                <label>最大 Tick（可选）</label>
+                <input id="expMaxTicks" type="number" min="1" step="1" placeholder="留空表示跑完整数据集" />
+                <label class="toggle-row"><input id="expRunAllTicksChk" type="checkbox" /><span>跑完整数据集（忽略最大 Tick）</span></label>
+              </article>
+              <article class="setting-item">
+                <label>时间基准覆盖（可选）</label>
+                <select id="expTimeBasisOverride">
+                  <option value="">不覆盖</option>
+                  <option value="tick">强制 tick</option>
+                  <option value="wallclock">强制 wallclock</option>
+                </select>
+              </article>
+              <article class="setting-item">
+                <label>导出报告</label>
+                <label class="toggle-row"><input id="expExportJsonChk" type="checkbox" /><span>导出 JSON</span></label>
+                <label class="toggle-row"><input id="expExportHtmlChk" type="checkbox" /><span>导出 HTML</span></label>
+              </article>
+            </div>
+            <div class="actions">
+              <button id="expRunStartBtn" class="primary" type="button">开始运行</button>
+              <button id="expRunStopBtn" class="ghost danger" type="button">停止当前任务</button>
+            </div>
+            <div class="bar"><span id="expProgressBar" style="width:0%"></span></div>
+            <div id="expJobFeedback" class="inline-feedback">等待运行…</div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>运行摘要</h4></div>
+            <div id="expJobSummary" class="stack"></div>
+            <div id="expJobAutoTuner" class="stack exp-spaced-top"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="exp_live" class="panel">
+        <div class="section-head">
+          <h3>持续观测</h3>
+          <div class="toolbar">
+            <button id="expLivePauseBtn" class="ghost" type="button">暂停刷新</button>
+            <button id="expLiveClearBtn" class="ghost" type="button">清空滚动记录</button>
+          </div>
+        </div>
+        <div id="expLiveMeta" class="inline-feedback">等待实时状态…</div>
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>状态池能量 Top</h4></div>
+            <div id="expLiveStateTop" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>事件认知 Top（认知拼接）</h4></div>
+            <div id="expLiveCsTop" class="stack scroll-shell"></div>
+          </div>
+        </div>
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>认知感受实时状态</h4></div>
+            <div id="expLiveCfsTotals" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>短期微调记录（滚动）</h4></div>
+            <div id="expLiveAutoTuneLog" class="stack scroll-shell scroll-shell-tall"></div>
+          </div>
+        </div>
+        <div class="subpanel exp-spaced-top">
+          <div class="section-head"><h4>行动触发与执行记录（滚动）</h4></div>
+          <div id="expLiveActionLog" class="stack scroll-shell scroll-shell-tall"></div>
+        </div>
+      </section>
+
+      <section id="exp_runs" class="panel">
+        <div class="section-head">
+          <h3>运行记录与摘要</h3>
+          <div class="toolbar">
+            <button id="expRefreshRunsBtn" class="ghost" type="button">刷新运行记录</button>
+            <button id="expDeleteRunBtn" class="ghost danger" type="button">删除当前记录</button>
+            <button id="expClearRunsBtn" class="ghost danger" type="button">清空运行记录</button>
+          </div>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>最近实验运行</h4>
+              <div class="toolbar">
+                <label class="toggle-row muted-inline"><span>下采样步长</span><input id="expDownsampleEvery" type="number" min="1" step="1" value="1" /></label>
+              </div>
+            </div>
+            <div id="expRunsList" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head">
+              <h4>运行摘要</h4>
+              <span id="expRunMeta" class="meta"></span>
+            </div>
+            <div id="expRunOverviewCards" class="card-grid compact"></div>
+            <div id="expRunSummary" class="stack exp-spaced-top scroll-shell"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="exp_metrics" class="panel">
+        <div class="section-head">
+          <h3>统计与图表</h3>
+          <span class="meta">每张图都附带说明与摘要统计</span>
+        </div>
+        <div id="expMetricsOverviewCards" class="card-grid compact"></div>
+        <div id="expMetricsNarrative" class="stack exp-spaced-top"></div>
+        <div id="expChartDeck" class="stack exp-spaced-top"></div>
+      </section>
+
+      <section id="exp_auto_tuner" class="panel">
+        <div class="section-head">
+          <h3>自适应调参器</h3>
+          <span class="meta">长期指标、规则、参数目录、审计与回滚</span>
+        </div>
+        <div id="expAutoTunerOverviewCards" class="card-grid compact"></div>
+
+        <div class="subpanel exp-spaced-top">
+          <div class="section-head">
+            <h4>感应生长、运行态分辨率与回滚诊断专项快照</h4>
+            <span class="meta">主链优先看 A+B 生长、完整身份汇聚、组件 ER/EV 与运行态分辨率；旧上下文/CS 只作折叠诊断</span>
+          </div>
+          <div id="expAtMetricInsightCards" class="card-grid compact"></div>
+          <div id="expAtMetricInsightNarrative" class="stack exp-spaced-top"></div>
+        </div>
+
+        <div class="subpanel exp-spaced-top">
+          <div class="section-head">
+            <h4>调参器基础配置</h4>
+            <span id="expAtConfigMeta" class="meta"></span>
+          </div>
+          <div class="settings-grid">
+            <article class="setting-item">
+              <label class="toggle-row"><input id="expAtEnabledChk" type="checkbox" /><span>启用调参器</span></label>
+              <label class="toggle-row"><input id="expAtShortChk" type="checkbox" /><span>启用短期调参</span></label>
+              <label class="toggle-row"><input id="expAtLongChk" type="checkbox" /><span>启用长期调参</span></label>
+              <label class="toggle-row"><input id="expAtLlmAssistChk" type="checkbox" /><span>启用 LLM 辅助</span></label>
+            </article>
+            <article class="setting-item">
+              <label>短期窗口</label>
+              <input id="expAtShortWindow" type="number" min="1" step="1" />
+            </article>
+            <article class="setting-item">
+              <label>长期窗口</label>
+              <input id="expAtLongWindow" type="number" min="1" step="1" />
+            </article>
+            <article class="setting-item">
+              <label>决策冷却 Tick</label>
+              <input id="expAtCooldown" type="number" min="0" step="1" />
+            </article>
+            <article class="setting-item">
+              <label>每 Tick 最多改动参数数</label>
+              <input id="expAtMaxUpdates" type="number" min="1" step="1" />
+            </article>
+            <article class="setting-item">
+              <label class="toggle-row"><input id="expAtAutoValidationChk" type="checkbox" /><span>启用自动验证</span></label>
+              <label class="toggle-row"><input id="expAtAutoValidationEveryRunChk" type="checkbox" /><span>每轮自动验证</span></label>
+            </article>
+            <article class="setting-item">
+              <label>自动验证最少运行数</label>
+              <input id="expAtAutoValidationMinRuns" type="number" min="1" step="1" />
+            </article>
+            <article class="setting-item">
+              <label>自动验证最多检查项</label>
+              <input id="expAtAutoValidationMaxItems" type="number" min="1" step="1" />
+            </article>
+          </div>
+          <div class="actions">
+            <button id="expAtRefreshBtn" class="ghost" type="button">刷新调参器</button>
+            <button id="expAtConfigSaveBtn" class="primary" type="button">保存基础配置</button>
+          </div>
+          <div id="expAtConfigFeedback" class="inline-feedback">等待加载…</div>
+        </div>
+
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>指标目标与权重</h4></div>
+            <div id="expAtMetricTargets" class="stack scroll-shell"></div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>参数目录</h4></div>
+            <input id="expAtParamSearch" type="text" placeholder="搜索参数名 / 模块 / 标签" />
+            <div id="expAtParamCatalog" class="stack scroll-shell scroll-shell-tall exp-spaced-top"></div>
+          </div>
+        </div>
+
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>规则目录</h4><span id="expAtRuleSummary" class="meta"></span></div>
+            <div id="expAtRuleCatalog" class="stack scroll-shell scroll-shell-tall"></div>
+            <textarea id="expAtCustomRulesEditor" class="config-textarea exp-large-textarea exp-spaced-top" placeholder="自定义规则 JSON 会显示在这里"></textarea>
+            <div class="actions">
+              <button id="expAtRulesSaveBtn" class="primary" type="button">保存规则设置</button>
+            </div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>状态、观察与回滚点</h4></div>
+            <div id="expAtStateSummary" class="stack"></div>
+            <div id="expAtObservationSummary" class="stack exp-spaced-top"></div>
+            <div id="expAtObservationReview" class="stack exp-spaced-top"></div>
+            <div id="expAtObservationHistory" class="stack scroll-shell exp-spaced-top"></div>
+            <div id="expAtObservationZone" class="stack exp-spaced-top"></div>
+            <div id="expAtAuditLog" class="stack scroll-shell"></div>
+            <div id="expAtRollbackList" class="stack scroll-shell exp-spaced-top"></div>
+          </div>
+        </div>
+
+        <div class="dual-grid exp-spaced-top">
+          <div class="subpanel">
+            <div class="section-head"><h4>LLM 分析配置与反馈</h4><span id="expAtLlmMeta" class="meta"></span></div>
+            <div class="settings-grid">
+              <article class="setting-item">
+                <label class="toggle-row"><input id="expAtLlmEnabledChk" type="checkbox" /><span>启用 LLM 分析</span></label>
+                <label class="toggle-row"><input id="expAtLlmAutoChk" type="checkbox" /><span>自动分析</span></label>
+              </article>
+              <article class="setting-item">
+                <label>Base URL</label>
+                <input id="expAtLlmBaseUrl" type="text" />
+              </article>
+              <article class="setting-item">
+                <label>模型</label>
+                <input id="expAtLlmModel" type="text" />
+              </article>
+              <article class="setting-item">
+                <label>API Key</label>
+                <input id="expAtLlmApiKey" type="password" />
+              </article>
+              <article class="setting-item">
+                <label>最大 Prompt 字符数</label>
+                <input id="expAtLlmMaxPromptChars" type="number" min="1000" step="1000" />
+              </article>
+            </div>
+            <textarea id="expAtLlmPrompt" class="config-textarea exp-large-textarea exp-spaced-top" placeholder="最近一次 LLM 分析提示词会显示在这里"></textarea>
+            <div class="actions">
+              <button id="expAtLlmSaveBtn" class="primary" type="button">保存 LLM 配置</button>
+              <button id="expAtLlmAnalyzeBtn" class="secondary" type="button">立即分析</button>
+            </div>
+            <div id="expAtLlmFeedback" class="inline-feedback">等待 LLM 配置…</div>
+            <div id="expAtLlmAnalyzeFeedback" class="inline-feedback exp-spaced-top">等待分析任务…</div>
+          </div>
+          <div class="subpanel">
+            <div class="section-head"><h4>LLM 分析结果与建议</h4></div>
+            <div class="actions">
+              <button id="expAtLlmJobsRefreshBtn" class="ghost" type="button">刷新任务</button>
+            </div>
+            <div id="expAtLlmJobs" class="stack scroll-shell"></div>
+            <div id="expAtLlmSuggestionList" class="stack scroll-shell exp-spaced-top"></div>
+            <pre id="expAtLlmReport" class="result-box scroll-shell-tall exp-spaced-top"></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="exp_llm_review" class="panel">
+        <div class="section-head">
+          <h3>大模型审查</h3>
+          <span class="meta">对当前运行记录生成结构化审查报告</span>
+        </div>
+        <div class="dual-grid">
+          <div class="subpanel">
+            <div class="section-head"><h4>配置</h4><span id="expLlmConfigMeta" class="meta"></span></div>
+            <div class="settings-grid">
+              <article class="setting-item">
+                <label class="toggle-row"><input id="expLlmEnabledChk" type="checkbox" /><span>启用 LLM 审查</span></label>
+                <label class="toggle-row"><input id="expLlmAutoChk" type="checkbox" /><span>运行结束自动审查</span></label>
+              </article>
+              <article class="setting-item">
+                <label>Base URL</label>
+                <input id="expLlmBaseUrl" type="text" placeholder="例如 http://127.0.0.1:11434/v1" />
+              </article>
+              <article class="setting-item">
+                <label>模型</label>
+                <input id="expLlmModel" type="text" placeholder="例如 gpt-4.1 / qwen / deepseek" />
+              </article>
+              <article class="setting-item">
+                <label>API Key</label>
+                <input id="expLlmApiKey" type="password" placeholder="可留空" />
+              </article>
+              <article class="setting-item">
+                <label>最大 Prompt 字符数</label>
+                <input id="expLlmMaxPromptChars" type="number" min="1000" step="1000" value="900000" />
+              </article>
+            </div>
+            <div class="actions">
+              <button id="expLlmRefreshBtn" class="ghost" type="button">刷新配置</button>
+              <button id="expLlmSaveBtn" class="primary" type="button">保存配置</button>
+            </div>
+            <div id="expLlmSaveFeedback" class="inline-feedback">等待保存…</div>
+          </div>
+
+          <div class="subpanel">
+            <div class="section-head"><h4>状态与报告</h4><span id="expLlmStatusMeta" class="meta"></span></div>
+            <div class="actions">
+              <button id="expLlmStatusRefreshBtn" class="ghost" type="button">刷新状态</button>
+              <button id="expLlmStartBtn" class="secondary" type="button">启动审查</button>
+              <button id="expLlmStartForceBtn" class="ghost" type="button">强制重新审查</button>
+              <button id="expLlmCopyReportBtn" class="ghost" type="button">复制报告</button>
+              <button id="expLlmDownloadReportBtn" class="ghost" type="button">下载报告</button>
+            </div>
+            <div id="expLlmStatusFeedback" class="inline-feedback">等待状态…</div>
+            <pre id="expLlmReport" class="result-box scroll-shell-tall"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="expChartModal" class="modal-shell" hidden>
+    <div id="expChartModalScrim" class="modal-scrim"></div>
+    <div class="modal-card exp-chart-modal-card">
+      <div class="section-head">
+        <div>
+          <h3 id="expChartModalTitle">图表</h3>
+          <div id="expChartModalSubtitle" class="meta"></div>
+        </div>
+        <div class="toolbar">
+          <button id="expChartModalFullscreenBtn" class="ghost" type="button">全屏</button>
+          <button id="expChartModalCloseBtn" class="ghost danger" type="button">关闭</button>
+        </div>
+      </div>
+      <p id="expChartModalDesc" class="exp-chart-description"></p>
+      <div id="expChartModalChart" class="chart-wrap"></div>
+      <div id="expChartModalStats" class="stack exp-chart-stats-scroll exp-spaced-top"></div>
+      <div id="expChartModalFactors" class="exp-spaced-top"></div>
+    </div>
+  </div>
+
+  <script src="/experiment.js"></script>
+  <script src="/experiment_auto_tuner.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HDB Structure Object",
+  "type": "object",
+  "required": ["id", "object_type", "structure", "db_pointer", "stats", "created_at", "updated_at", "status"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^st_[0-9]+$"},
+    "object_type": {"const": "st"},
+    "sub_type": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "structure": {
+      "type": "object",
+      "required": ["display_text", "flat_tokens", "content_signature"],
+      "properties": {
+        "unit_type": {"type": "string"},
+        "display_text": {"type": "string"},
+        "member_refs": {"type": "array", "items": {"type": "string"}},
+        "sequence_groups": {"type": "array", "items": {"type": "object"}},
+        "flat_tokens": {"type": "array", "items": {"type": "string"}},
+        "content_signature": {"type": "string"},
+        "semantic_signature": {"type": "string"},
+        "token_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "db_pointer": {
+      "type": "object",
+      "required": ["structure_db_id", "pointer_status", "fallback_index_key"],
+      "properties": {
+        "structure_db_id": {"type": "string", "pattern": "^sdb_[0-9]+$"},
+        "pointer_status": {"type": "string"},
+        "fallback_index_key": {"type": "string"},
+        "last_known_parent_db": {"type": "string"}
+      }
+    },
+    "stats": {"type": "object"},
+    "source": {"type": "object"},
+    "trace_id": {"type": "string"},
+    "tick_id": {"type": "string"},
+    "created_at": {"type": "integer"},
+    "updated_at": {"type": "integer"},
+    "status": {"type": "string"},
+    "meta": {"type": "object"}
+  }
+}

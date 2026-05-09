@@ -1,0 +1,4336 @@
+export type ChartType = 'line' | 'bar' | 'bar_grouped' | 'bar_stacked' | 'area';
+
+export type ChartConfig = {
+  id: string;
+  section: string;
+  title: string;
+  subtitle?: string;
+  description: string;
+  type?: ChartType;
+  diagnostic?: boolean;
+  keys: string[];
+  preserveFlatLineKeys?: string[];
+};
+
+export const chartSections = [
+  {
+    "id": "overview",
+    "label": "运行总览",
+    "description": "先看整体稳态：能量、负载与状态池规模是否健康。",
+    "diagnostic": false
+  },
+  {
+    "id": "context",
+    "label": "激活/旧上下文审计",
+    "description": "折叠观察旧 residual/context/provenance 口径。新版正式 growth 身份优先看完整特征汇聚，不把 owner DB 当身份。",
+    "diagnostic": true
+  },
+  {
+    "id": "induction",
+    "label": "能量传播",
+    "description": "把局部 EV 传播与 ER 诱发 EV 拆开看，避免只盯总能量。",
+    "diagnostic": false
+  },
+  {
+    "id": "sensor",
+    "label": "感受器",
+    "description": "专门观察文本感受器输入文本、输入长度、外源构成与残响参与情况。",
+    "diagnostic": false
+  },
+  {
+    "id": "stimulus",
+    "label": "刺激链路",
+    "description": "观察外源输入、内源补充、合流中和与落地是否连贯。",
+    "diagnostic": false
+  },
+  {
+    "id": "internal",
+    "label": "内源解析与查存",
+    "description": "检查内源刺激来源、预算约束、分辨率和刺激级查存一体是否能把多对象叠加态重新采样为新种子。",
+    "diagnostic": false
+  },
+  {
+    "id": "stitching",
+    "label": "CS 回滚诊断",
+    "description": "仅在显式开启 residual/CS 对照时观察认知拼接；默认 growth 主链下它不是主要结论来源。",
+    "diagnostic": true
+  },
+  {
+    "id": "cfs",
+    "label": "认知感受",
+    "description": "把峰值、运行态维持量与触发频次拆开看，避免语义混杂。",
+    "diagnostic": false
+  },
+  {
+    "id": "reward",
+    "label": "奖惩与监督",
+    "description": "观察系统奖惩、教师信号与期望契约监督是否生效。",
+    "diagnostic": false
+  },
+  {
+    "id": "neuro",
+    "label": "情绪递质",
+    "description": "将应激稳定与奖励趋近两类递质分开观察。",
+    "diagnostic": false
+  },
+  {
+    "id": "action",
+    "label": "行动链路",
+    "description": "拆开执行结果、尝试调度、驱动力与节点规模。",
+    "diagnostic": false
+  },
+  {
+    "id": "time",
+    "label": "时间感受器",
+    "description": "区分时间绑定活动与延迟任务活动。",
+    "diagnostic": false
+  },
+  {
+    "id": "map",
+    "label": "MAP兼容诊断",
+    "description": "观察旧 MAP/记忆反馈兼容支路；默认主链优先看感应生长和运行态记忆旁路。",
+    "diagnostic": true
+  },
+  {
+    "id": "performance",
+    "label": "性能分析",
+    "description": "主性能与细分性能分开显示，方便定位真正大头。",
+    "diagnostic": false
+  },
+  {
+    "id": "diagnostic",
+    "label": "诊断图表",
+    "description": "保留调试所需的补充指标，但不干扰主视图。",
+    "diagnostic": true
+  }
+] as const;
+
+export const chartConfigs: ChartConfig[] = [
+  {
+    "id": "pool_energy",
+    "section": "overview",
+    "title": "状态池总能量",
+    "subtitle": "实能量、虚能量与认知压的整体趋势",
+    "description": "用于判断系统是否稳定维持活跃运行。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "pool_total_er",
+      "pool_total_ev",
+      "pool_total_cp"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "pool_load",
+    "section": "overview",
+    "title": "状态池规模与负载",
+    "subtitle": "活跃条目、高压条目与注意力负载",
+    "description": "用于判断状态池是否过载、过空或被某类负载占满。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "pool_active_item_count",
+      "pool_high_cp_item_count",
+      "attention_memory_item_count",
+      "attention_cam_item_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "pool_structure_vs_atomic_top",
+    "section": "overview",
+    "title": "结构 Top 与原子 SA 证据",
+    "subtitle": "ER/EV Top5 中完整结构峰和原子特征证据的数量对照",
+    "description": "用于避免把外源字符 SA 的真实证据峰误读成旧 residual/context 半成品。新版默认口径下，ER 侧可以保留原子 SA 证据；真正判断感应生长是否有效，应重点看结构 Top、EV 侧原子 SA 数、induction_growth_* 与 CS 是否关闭。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "pool_er_structure_top5_count",
+      "pool_ev_structure_top5_count",
+      "pool_er_atomic_feature_sa_top5_count",
+      "pool_ev_atomic_feature_sa_top5_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "attention_energy_resource",
+    "section": "overview",
+    "title": "注意力能量资源",
+    "subtitle": "预算、净增、抑制与滤波后 CAM 能量",
+    "description": "用于观察注意力滤波到底给系统注入了多少受限能量，以及它如何和基础 CAM 能量、抑制量共同形成最终内源刺激强度。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "attention_energy_budget",
+      "attention_net_delta_energy",
+      "attention_gain_budget_applied",
+      "attention_suppressed_total_energy",
+      "attention_base_memory_total_energy",
+      "attention_final_memory_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "pool_complexity_score",
+    "section": "overview",
+    "title": "状态池复杂度双口径",
+    "subtitle": "全量复杂度与核心复杂度并排对照",
+    "description": "用于区分“弱 SA 长尾很多”与“真正结构性复杂度高”这两种不同图景。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "complexity_score",
+      "core_complexity_score"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "pool_peak_concentration",
+    "section": "overview",
+    "title": "状态池峰形集中度",
+    "subtitle": "全量/核心能量集中度",
+    "description": "用于观察能量是被少数峰锁住，还是正在向更均匀的多峰结构展开。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "energy_concentration",
+      "core_energy_concentration"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "pool_peak_count",
+    "section": "overview",
+    "title": "状态池有效峰数",
+    "subtitle": "全量/核心有效峰数",
+    "description": "用于观察复杂度变化到底来自整体尾巴膨胀，还是来自核心结构峰真的变多。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "effective_peak_count",
+      "core_effective_peak_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "overview_hdb",
+    "section": "overview",
+    "title": "长期积累规模",
+    "subtitle": "结构、结构组与情节记忆的增长",
+    "description": "用于观察长期积累是否在稳定形成。",
+    "type": "area",
+    "diagnostic": false,
+    "keys": [
+      "hdb_structure_count",
+      "hdb_group_count",
+      "hdb_episodic_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "runtime_resolution_state_pool",
+    "section": "overview",
+    "title": "运行态分辨率",
+    "subtitle": "状态池对象组件在运行态保留、淡出与维护刷新",
+    "description": "用于审计新版退化口径：组件能量低于阈值时只是状态池显示/解释分辨率下降，仍保留完整 root identity，不重新查存一体，也不创建退化 HDB 身份。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "pool_runtime_resolution_degraded_item_count",
+      "pool_runtime_resolution_active_component_count",
+      "pool_runtime_resolution_dropped_component_count",
+      "maintenance_runtime_resolution_refreshed_item_count",
+      "maintenance_runtime_resolution_degraded_item_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "energy_balance_ratio_track",
+    "section": "diagnostic",
+    "title": "旧式虚实比诊断",
+    "subtitle": "当前 EV/ER、旧闭环平滑比值与目标比值",
+    "description": "默认新口径下它主要用于诊断或回退实验，不应再被误读成系统必须追踪的主目标。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "pool_ev_to_er_ratio",
+      "energy_balance_ratio_smooth",
+      "energy_balance_target_ratio"
+    ],
+    "preserveFlatLineKeys": [
+      "energy_balance_target_ratio"
+    ]
+  },
+  {
+    "id": "energy_balance_gain_track",
+    "section": "diagnostic",
+    "title": "旧式能量平衡控制输出",
+    "subtitle": "当前共享控制增益",
+    "description": "仅在启用可选旧闭环控制器后才有实质意义；默认关闭时它更像回退实验探针。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "energy_balance_g_after"
+    ],
+    "preserveFlatLineKeys": [
+      "energy_balance_g_after"
+    ]
+  },
+  {
+    "id": "energy_balance_effective_track",
+    "section": "diagnostic",
+    "title": "旧式闭环 HDB 生效比例",
+    "subtitle": "请求比例、实际比例与运行时截断后的差异",
+    "description": "用于审计可选旧闭环控制器虽已出手时，HDB 真实生效值是否已经撞上 0~1 的运行时上限。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "hdb_requested_ev_propagation_ratio",
+      "hdb_effective_ev_propagation_ratio",
+      "hdb_requested_er_induction_ratio",
+      "hdb_effective_er_induction_ratio"
+    ],
+    "preserveFlatLineKeys": [
+      "hdb_requested_ev_propagation_ratio",
+      "hdb_effective_ev_propagation_ratio",
+      "hdb_requested_er_induction_ratio",
+      "hdb_effective_er_induction_ratio"
+    ]
+  },
+  {
+    "id": "context_pool",
+    "section": "context",
+    "title": "状态池激活/旧上下文审计",
+    "subtitle": "广义激活链、显式旧上下文、多路径与残差来源占比",
+    "description": "用于把 provenance、legacy residual/context 半成品和正式 growth 完整身份分开观察。新版默认下，正式 HDB-backed 生长对象应按完整特征身份汇聚；显式上下文升高通常表示兼容/诊断路径仍在产生带 context 的对象。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "pool_contextual_item_ratio",
+      "pool_explicit_context_item_ratio",
+      "pool_multi_context_item_ratio",
+      "pool_residual_origin_item_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "context_hdb",
+    "section": "context",
+    "title": "HDB 上下文化残留诊断",
+    "subtitle": "上下文化结构、多上下文结构与同内容多上下文占比",
+    "description": "用于审计 legacy context/provenance 身份是否还在长期库里残留。新版感应生长下，A+B 的身份应由完整特征解析并聚合，owner/context 只应作为激活来源或审计信息；该图不再代表主身份哲学。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "hdb_contextual_structure_ratio",
+      "hdb_multi_context_structure_ratio",
+      "hdb_same_content_multi_context_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "context_path",
+    "section": "context",
+    "title": "来源路径深度诊断",
+    "subtitle": "状态池广义/显式路径与 HDB 平均上下文路径深度",
+    "description": "用于判断对象是否仍携带较深 legacy context/provenance 路径。默认 growth 主链只把这些路径作为审计来源，不把它们当完整结构身份；低值不代表感应生长失败。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "pool_context_path_depth_mean",
+      "pool_explicit_context_path_depth_mean",
+      "hdb_structure_context_path_depth_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "residual_linking",
+    "section": "context",
+    "title": "残差局部链接",
+    "subtitle": "上下文差异链接与残差局部链接占比",
+    "description": "用于诊断 HDB 内部 diff/residual 边是否仍保持局部传播。它描述数据库内部边，不代表状态池对象必须以 B(context=A) 半成品存在。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "hdb_contextual_diff_entry_ratio",
+      "hdb_residual_diff_entry_ratio"
+    ],
+    "preserveFlatLineKeys": [
+      "hdb_contextual_diff_entry_ratio",
+      "hdb_residual_diff_entry_ratio"
+    ]
+  },
+  {
+    "id": "hdb_pointer_cache",
+    "section": "context",
+    "title": "HDB 指针与缓存诊断",
+    "subtitle": "主/回退指针、签名索引、缓存与数值桶规模",
+    "description": "用于观察新的查存一体缓存是否真的积累起来，以及 fallback / 数值软匹配索引是否已经建稳。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "hdb_primary_pointer_count",
+      "hdb_fallback_pointer_count",
+      "hdb_signature_index_count",
+      "hdb_recent_cache_count",
+      "hdb_exact_lookup_cache_count",
+      "hdb_numeric_bucket_family_count",
+      "hdb_numeric_bucket_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_energy",
+    "section": "induction",
+    "title": "感应赋能能量构成",
+    "subtitle": "总增量、局部传播与 ER 诱发 EV 的拆分",
+    "description": "用于把“已有预期继续扩散”和“现实证据诱发新预期”明确拆开。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_total_delta_ev",
+      "induction_propagated_ev_total",
+      "induction_ev_from_er_total"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_split",
+    "section": "induction",
+    "title": "感应赋能去向分流",
+    "subtitle": "总 EV 中有多少走结构直投，有多少走记忆激活路径",
+    "description": "用于避免把 memory path 的正常分流，误判成结构直投失败。",
+    "type": "area",
+    "diagnostic": false,
+    "keys": [
+      "induction_total_delta_ev",
+      "induction_structure_target_total_ev",
+      "induction_memory_target_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_landing",
+    "section": "induction",
+    "title": "感应赋能结构直投落地质量",
+    "subtitle": "结构路径计划 EV、实际落地 EV 与被跳过 EV",
+    "description": "用于判断真正投向状态池结构路径的那部分 EV，是否在投影阶段被挡住。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_structure_target_total_ev",
+      "induction_applied_total_ev",
+      "induction_skipped_target_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_growth_projection",
+    "section": "induction",
+    "title": "感应生长投影质量",
+    "subtitle": "A+B 生长目标、完整身份命中/创建、暂存、剪枝与去重",
+    "description": "用于审计新版默认感应生长方案是否真的把 A 的局部残差 B 直接投影成完整结构 A+B，而不是回到旧的 B(context=A) 半成品路径。重点看完整身份命中/创建是否稳定、runtime-only 是否过多，以及低能剪枝是否在控制规模。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_projection_mode_growth",
+      "induction_projection_raw_target_count",
+      "induction_projection_projected_target_count",
+      "induction_growth_target_count",
+      "induction_growth_identity_hit_count",
+      "induction_growth_identity_created_count",
+      "induction_growth_identity_local_cache_hit_count",
+      "induction_growth_identity_shared_cache_hit_count",
+      "induction_growth_identity_shared_cache_stale_count",
+      "induction_growth_identity_create_exact_lookup_skipped_count",
+      "induction_growth_persistence_batch_enabled",
+      "induction_growth_target_apply_ref_fast_merge_enabled",
+      "induction_growth_target_apply_fast_ref_hit_merge_count",
+      "induction_growth_target_apply_insert_log_enabled",
+      "induction_growth_target_apply_insert_log_suppressed_count",
+      "induction_growth_runtime_only_count",
+      "induction_growth_pruned_low_energy_count",
+      "induction_growth_failed_count",
+      "induction_growth_deduped_count"
+    ],
+    "preserveFlatLineKeys": [
+      "induction_projection_mode_growth"
+    ]
+  },
+  {
+    "id": "induction_growth_energy",
+    "section": "induction",
+    "title": "感应生长 ER/EV 份额",
+    "subtitle": "生长对象统计 ER、预测 EV 与总体感应 EV 对照",
+    "description": "用于确认 A+B 结构整体显示的 ER/EV 只是组件统计：来源 A 的真实 ER 可以作为 source-side ER 份额出现，残差 B 的预测能量仍应主要体现为 EV。若 ER 份额异常高，要检查 source_er_runtime_share_ratio；若 EV 为 0，则说明生长投影没有真正落地。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_growth_total_delta_er",
+      "induction_growth_total_delta_ev",
+      "induction_growth_source_component_er_total",
+      "induction_growth_residual_component_ev_total",
+      "induction_total_delta_er",
+      "induction_total_delta_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_growth_guardrails",
+    "section": "induction",
+    "title": "感应生长保护与旁路",
+    "subtitle": "低能剪枝、缺源/缺残差、运行态暂存与记忆终端旁路",
+    "description": "用于确认 growth 主链没有退回旧半成品路径，同时也没有无界物化：低能候选可被剪掉，纯虚/未绑定候选可暂存，终端记忆可旁路到记忆激活路径。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_growth_pruned_low_energy_count",
+      "induction_growth_runtime_only_count",
+      "induction_growth_memory_candidate_count",
+      "induction_growth_memory_terminal_passthrough_count",
+      "induction_growth_skipped_missing_source_count",
+      "induction_growth_skipped_missing_residual_count",
+      "induction_growth_failed_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_topology",
+    "section": "induction",
+    "title": "感应赋能路径规模",
+    "subtitle": "源对象数、总目标、结构目标与记忆目标",
+    "description": "用于判断感应赋能更偏直接入池，还是更多先进入记忆激活池。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_source_item_count",
+      "induction_target_count",
+      "induction_structure_target_count",
+      "induction_memory_target_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_source_mix",
+    "section": "induction",
+    "title": "感应源构成",
+    "subtitle": "全池运行态源中的 ST / ER / EV 参与情况",
+    "description": "用于判断默认“全状态池有能量对象参与”口径下，真正进入传播的源对象更偏 ST、ER 还是 EV；旧混合模式下仍可用来观察 cp 回退补位。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_source_available_st_count",
+      "induction_source_selected_from_ev_count",
+      "induction_source_selected_from_er_count",
+      "induction_source_selected_from_cp_abs_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_source_quality",
+    "section": "induction",
+    "title": "感应源本地候选质量",
+    "subtitle": "可继续传播源提示、真正可传播源与空候选源",
+    "description": "用于判断参与的高能 source 里，有多少真的带着可用局部残差目标，而不是只有能量没有局部数据库路径。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_source_available_with_local_target_hint_count",
+      "induction_source_selected_with_local_target_hint_count",
+      "induction_source_selected_zero_local_target_hint_count",
+      "induction_source_local_target_hint_diagnostics_skipped",
+      "induction_target_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_hit",
+    "section": "induction",
+    "title": "原始残差结构复用/补建",
+    "subtitle": "原始残差条目、命中已存结构、现场补建结构与最终结构候选",
+    "description": "用于判断 residual/context 局部链里，是已有结构在被复用，还是主路已经现场补出了新的结构对象。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_entry_count",
+      "induction_raw_residual_entry_with_existing_structure_count",
+      "induction_raw_residual_entry_materialized_structure_count",
+      "induction_raw_residual_entry_routed_to_structure_count",
+      "induction_raw_residual_existing_structure_target_count",
+      "induction_raw_residual_materialized_structure_target_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_component_hit",
+    "section": "induction",
+    "title": "原始残差组分回退命中",
+    "subtitle": "全签名 miss 后，组分结构命中与实际转结构情况",
+    "description": "用于判断晚期 residual 是否只是整体签名太新，但局部组分其实已经能在 HDB 里复用。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_entry_count",
+      "induction_raw_residual_entry_with_component_structure_count",
+      "induction_raw_residual_entry_routed_to_component_structure_count",
+      "induction_raw_residual_component_structure_target_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_split",
+    "section": "induction",
+    "title": "原始残差双路径分流",
+    "subtitle": "原始残差走结构与走记忆的 EV 分流",
+    "description": "用于判断原始残差命中现成结构之后，预算是否真的流向结构链，而不是仍几乎全部留在记忆路径。",
+    "type": "area",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_target_total_ev",
+      "induction_raw_residual_structure_target_total_ev",
+      "induction_raw_residual_memory_target_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_structure_kind",
+    "section": "induction",
+    "title": "原始残差结构路径细分",
+    "subtitle": "结构路径中的完整签名复用与组分回退 EV",
+    "description": "用于区分结构路径变厚后，究竟是完整签名命中在起作用，还是组分级回退在托底。",
+    "type": "area",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_structure_target_total_ev",
+      "induction_raw_residual_exact_structure_target_total_ev",
+      "induction_raw_residual_component_structure_target_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_budget_kind",
+    "section": "induction",
+    "title": "原始残差结构预算细分",
+    "subtitle": "总体结构预算、完整签名预算、现场补建预算与组分回退预算",
+    "description": "用于判断结构路径预算具体投向了哪种复用方式。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_structure_budget_weight",
+      "induction_raw_residual_exact_structure_budget_weight",
+      "induction_raw_residual_materialized_structure_budget_weight",
+      "induction_raw_residual_component_structure_budget_weight"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_static_cache",
+    "section": "induction",
+    "title": "原始残差静态解析缓存",
+    "subtitle": "投影 profile、完整候选、组分候选与完整包含判定的本轮/跨 tick 缓存",
+    "description": "用于确认性能优化是否减少重复 owner-subtract、签名查询、组分查询和包含判定；默认只开启投影 profile 缓存，候选列表缓存因活跃学习期索引版本变化频繁而默认关闭。这些字段只缓存结构形状和候选身份，不缓存 entry runtime_weight、疲劳或本轮 EV/ER 分配。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_projection_profile_local_cache_hit_count",
+      "induction_raw_residual_projection_profile_shared_cache_hit_count",
+      "induction_raw_residual_projection_profile_cache_store_count",
+      "induction_raw_residual_exact_candidates_local_cache_hit_count",
+      "induction_raw_residual_exact_candidates_shared_cache_hit_count",
+      "induction_raw_residual_exact_candidates_cache_store_count",
+      "induction_raw_residual_component_candidates_local_cache_hit_count",
+      "induction_raw_residual_component_candidates_shared_cache_hit_count",
+      "induction_raw_residual_component_candidates_cache_store_count",
+      "induction_full_inclusion_shared_cache_hit_count",
+      "induction_full_inclusion_shared_cache_store_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_structure_db_update_dedupe",
+    "section": "induction",
+    "title": "归纳结构库更新去重",
+    "subtitle": "同一轮内结构 DB 更新请求、实际提交与去重次数",
+    "description": "用于判断 HDB 感应传播是否反复触达同一个局部结构库。去重只合并同一轮内重复的 update_db 提交，不改变源对象、目标对象或能量分配。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_structure_db_update_request_count",
+      "induction_structure_db_update_applied_count",
+      "induction_structure_db_update_deduped_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_raw_residual_hit_split",
+    "section": "induction",
+    "title": "原始残差命中内部分流",
+    "subtitle": "只看“已命中现成结构”的条目：转结构 EV、命中后仍走记忆 EV，以及未命中纯记忆 EV",
+    "description": "用于区分“结构 share 太保守”和“其实是命中率太低”这两种完全不同的问题。",
+    "type": "area",
+    "diagnostic": false,
+    "keys": [
+      "induction_raw_residual_structure_target_total_ev",
+      "induction_raw_residual_hit_memory_target_total_ev",
+      "induction_raw_residual_miss_memory_target_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_ratio",
+    "section": "induction",
+    "title": "感应赋能局部性",
+    "subtitle": "局部传播目标占比、ER 诱发 EV 占比与每源平均目标数",
+    "description": "用于判断当前更像“沿局部残差链扩散”，还是“由现实证据大规模诱发新预期”。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_propagated_target_ratio",
+      "induction_ev_from_er_ratio",
+      "induction_targets_per_source_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_energy_graph_shape",
+    "section": "induction",
+    "title": "分层能量图景形态",
+    "subtitle": "V2 是否开启、配置轮数上限、实际轮数、深度、层数与最大层宽",
+    "description": "用于判断新的分形式 ER/EV 图景是否真的在多轮多层地展开，并区分“配置允许几轮”和“本 tick 实际跑出了几轮”。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_energy_graph_v2_enabled",
+      "induction_energy_graph_config_max_rounds",
+      "induction_energy_graph_round_count_max",
+      "induction_energy_graph_depth_max",
+      "induction_energy_graph_layer_max_width",
+      "induction_energy_graph_layer_count"
+    ],
+    "preserveFlatLineKeys": [
+      "induction_energy_graph_v2_enabled",
+      "induction_energy_graph_config_max_rounds"
+    ]
+  },
+  {
+    "id": "induction_energy_graph_budget",
+    "section": "induction",
+    "title": "分层能量图景预算拆分",
+    "subtitle": "累计传播预算、前沿预算、根源再诱发预算与实际总增量",
+    "description": "用于并排核对“预算投了多少”和“最终真正长出了多少 EV”，判断 V2 图景是否在有效工作。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_propagated_budget_total_ev",
+      "induction_energy_graph_frontier_budget_total_ev",
+      "induction_energy_graph_root_induction_budget_total_ev",
+      "induction_total_delta_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_energy_graph_frontier",
+    "section": "induction",
+    "title": "分层能量图景前沿演化",
+    "subtitle": "前沿生成、剪枝、终端记忆与根源再诱发次数",
+    "description": "用于观察前沿是持续展开、被大量剪枝，还是逐渐沉到终端记忆节点。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "induction_energy_graph_frontier_generated_count",
+      "induction_energy_graph_frontier_pruned_count",
+      "induction_energy_graph_terminal_memory_count",
+      "induction_energy_graph_root_reinduction_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_energy_graph_layers",
+    "section": "induction",
+    "title": "分层能量图景层级规模",
+    "subtitle": "总层节点数、最大层宽与单轮最大前沿进出量",
+    "description": "用于观察层内是否形成真正的扇出，以及传播是否在某一层突然卡死或过度膨胀。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_energy_graph_layer_total_nodes",
+      "induction_energy_graph_layer_max_width",
+      "induction_energy_graph_frontier_in_count_max",
+      "induction_energy_graph_frontier_out_count_max"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "induction_energy_graph_delta",
+    "section": "induction",
+    "title": "分层能量图景轮增量",
+    "subtitle": "各轮增量总和、单轮最大增量与末轮增量",
+    "description": "用于判断 V2 图景是在前几轮迅速衰减，还是能在多轮中持续保留有效的 EV 贡献。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "induction_energy_graph_round_delta_ev_total",
+      "induction_energy_graph_round_delta_ev_max",
+      "induction_energy_graph_round_delta_ev_last"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "sensor_text",
+    "section": "sensor",
+    "title": "输入文本与外源长度",
+    "subtitle": "输入字符数、外源 SA 与输入 token 规模",
+    "description": "用于直接观察文本感受器当前输入规模与分段后的外源量。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "input_len",
+      "external_sa_count",
+      "cache_input_flat_token_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "sensor_compose",
+    "section": "sensor",
+    "title": "文本感受器输出构成",
+    "subtitle": "基础刺激元、属性刺激元、结构包与残响参与情况",
+    "description": "用于判断文本感受器输出是否完整，以及残响是否正常介入。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "sensor_feature_sa_count",
+      "sensor_attribute_sa_count",
+      "sensor_csa_bundle_count",
+      "sensor_echo_frames_used_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_size",
+    "section": "stimulus",
+    "title": "刺激规模",
+    "subtitle": "从外源输入到合流、中和、落地的规模变化",
+    "description": "如果某一段长期为 0 或骤降，通常意味着链路缺数或中和异常。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "external_sa_count",
+      "merged_flat_token_count",
+      "cache_residual_flat_token_count",
+      "landed_flat_token_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_balance",
+    "section": "stimulus",
+    "title": "内外源平衡",
+    "subtitle": "观察内源刺激与外源刺激的相对规模",
+    "description": "用于判断内源刺激是否过弱、过强或失去约束。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "external_sa_count",
+      "internal_sa_count",
+      "internal_minus_external_sa_count",
+      "internal_to_external_sa_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_v2_match",
+    "section": "stimulus",
+    "title": "刺激级 V2 匹配质量",
+    "subtitle": "综合分、基础分、数值匹配、时间因子与顺序对齐",
+    "description": "用于并排审计刺激级新评分口径是否真的比 legacy 更贴近“像人”的软匹配哲学。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_score_mean",
+      "stimulus_match_v2_base_score_mean",
+      "stimulus_match_v2_numeric_score_mean",
+      "stimulus_match_v2_numeric_time_like_score_mean",
+      "stimulus_match_v2_order_alignment_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_v2_support",
+    "section": "stimulus",
+    "title": "刺激级 V2 支撑与混合效果",
+    "subtitle": "可参与比例、属性锚点、上下文支撑、能量图景、阈值余量与混合增益",
+    "description": "用于区分 V2 分数偏低是候选根本不合格，还是支撑因子、阈值余量或 blended 夺权力度不够。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_eligible_ratio",
+      "stimulus_match_v2_attribute_anchor_mean",
+      "stimulus_match_v2_context_support_mean",
+      "stimulus_match_v2_energy_profile_mean",
+      "stimulus_match_v2_threshold_margin_mean",
+      "stimulus_match_v2_blend_gain_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_transfer_residual_balance",
+    "section": "stimulus",
+    "title": "刺激级命中赋能 vs 最终残余",
+    "subtitle": "命中结构实际获得的能量、最终残余尾巴与转移占优情况",
+    "description": "用于验收刺激级查存一体是否把大多数可解释能量赋给命中对象，而不是长期留在残余尾巴中。新版默认期望大多数 source tick 中 stimulus_transfer_matched_total 高于 stimulus_final_residual_total；若长期低于残余，应检查覆盖率曲线、命中候选、内外源合流规模和低能剪枝。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_transfer_matched_total",
+      "stimulus_final_residual_total",
+      "stimulus_transfer_minus_residual_total",
+      "stimulus_transfer_to_residual_ratio",
+      "stimulus_transfer_dominates_residual",
+      "stimulus_effective_transfer_fraction_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_object_projection_stop_guard",
+    "section": "stimulus",
+    "title": "刺激早停的命中赋能保护",
+    "subtitle": "对象投影早停被命中赋能占优条件挡住的次数，以及最终停止时的命中/残余比例",
+    "description": "用于验收新版口径下的刺激级查存一体不是只靠 memory-id 尾巴吸收来显得干净，而是在允许对象投影早停前，也让逐轮 selected-match 命中赋能相对 raw tail 达到占优。若 blocked 很高且耗时上涨，说明当前输入需要更多刺激级轮次；若 transfer_ratio_at_stop 长期低于 1，则应检查配置是否关闭了该保护或 max_rounds 是否太低。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_early_stop_object_projection_transfer_guard_blocked_count",
+      "stimulus_early_stop_object_projection_transfer_total_at_stop",
+      "stimulus_early_stop_object_projection_transfer_ratio_at_stop",
+      "stimulus_early_stop_object_projection_dominance_triggered"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_growth_projection_balance",
+    "section": "stimulus",
+    "title": "刺激级对象投影 vs 净残余",
+    "subtitle": "完整种子、逐轮命中与记忆尾巴吸收后的新版能量口径",
+    "description": "新版 growth 主链中，能量不只通过逐轮 selected_match 落到对象侧，也会通过本轮完整字符串/结构种子和 residual tail -> memory_id 进入状态池。此图用于验收 stimulus_object_projection_total 是否多数高于 stimulus_unhandled_residual_total；旧 stimulus_final_residual_total 保留为 raw 尾巴审计，不等于最终未处理污染。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_object_projection_total",
+      "stimulus_object_projection_seed_total",
+      "stimulus_object_projection_matched_total",
+      "stimulus_memory_tail_absorbed_total",
+      "stimulus_unhandled_residual_total",
+      "stimulus_object_projection_minus_unhandled_residual_total",
+      "stimulus_object_projection_to_unhandled_residual_ratio",
+      "stimulus_object_projection_dominates_unhandled_residual",
+      "stimulus_early_stop_object_projection_dominance_triggered",
+      "stimulus_early_stop_object_projection_dominance_ratio",
+      "stimulus_early_stop_object_projection_transfer_ratio_at_stop"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "numeric_v2_activation",
+    "section": "stimulus",
+    "title": "数值刺激元显影覆盖率",
+    "subtitle": "刺激级/结构级数值显影占比与刺激级数值已评分占比",
+    "description": "用于直接区分“数值通路根本没进来”“数值通路进来了但大多没起作用”“数值通路已经真实参与匹配”。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_numeric_scored_ratio",
+      "stimulus_match_v2_numeric_nonzero_ratio",
+      "structure_match_v2_numeric_scored_ratio",
+      "structure_match_v2_numeric_nonzero_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_activation",
+    "section": "time",
+    "title": "时间因子显影覆盖率",
+    "subtitle": "时间绑定活跃度与 V2 时间因子显影占比",
+    "description": "用于判断时间感受是否只是被绑定出来，还是已经真实进入后续 stimulus / structure 匹配评分。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "time_sensor_attribute_binding_count",
+      "stimulus_match_v2_numeric_time_like_nonzero_ratio",
+      "structure_match_v2_numeric_time_like_nonzero_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_pipeline",
+    "section": "time",
+    "title": "时间因子显影链路",
+    "subtitle": "绑定、内源属性显影、刺激级显影与结构级显影的逐段数量",
+    "description": "用于直接排查“时间感受到底卡在绑定、内源展开、刺激级竞争还是结构级竞争”这四个阶段中的哪一段。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "time_sensor_attribute_binding_count",
+      "time_sensor_projection_binding_count",
+      "internal_time_like_attribute_count",
+      "stimulus_match_v2_numeric_time_like_nonzero_count",
+      "structure_match_v2_numeric_time_like_nonzero_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_bonus",
+    "section": "time",
+    "title": "时间因子软增益",
+    "subtitle": "刺激级/结构级的时间软增益均值与触发数量",
+    "description": "用于判断时间感受不只是“被看见”，而是有没有真的对候选竞争分数形成放大。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_time_factor_bonus_mean",
+      "structure_match_v2_time_factor_bonus_mean",
+      "stimulus_match_v2_time_factor_bonus_applied_count",
+      "structure_match_v2_time_factor_bonus_applied_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_wildcard",
+    "section": "time",
+    "title": "时间 wildcard 显影",
+    "subtitle": "刺激级/结构级时间 wildcard 使用次数",
+    "description": "用于审计 runtime-em 主链下，残差记忆是否真的通过时间 wildcard 进入软匹配，而不是仍依赖旧记忆池硬查询。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_numeric_time_like_wildcard_applied_count",
+      "structure_match_v2_numeric_time_like_wildcard_applied_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_memory_shadow",
+    "section": "time",
+    "title": "时间记忆影子显影",
+    "subtitle": "影子残差记忆候选中的时间显影、soft bonus 与 wildcard",
+    "description": "用于在不改主竞争赢家的前提下，先观察 owner-local residual memory 候选是否真实吃到 V2 时间口径。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_shadow_memory_match_v2_candidate_count",
+      "stimulus_shadow_memory_match_v2_eligible_count",
+      "stimulus_shadow_memory_match_v2_numeric_time_like_nonzero_count",
+      "stimulus_shadow_memory_match_v2_time_factor_bonus_applied_count",
+      "stimulus_shadow_memory_match_v2_numeric_time_like_wildcard_applied_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_factor_v2_memory_shadow_quality",
+    "section": "time",
+    "title": "时间记忆影子质量",
+    "subtitle": "影子残差记忆候选的综合分、时间接近度与时间软增益均值",
+    "description": "用于区分“影子候选存在但时间因子没起作用”和“时间口径已经真实抬分”。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_shadow_memory_match_v2_score_mean",
+      "stimulus_shadow_memory_match_v2_numeric_time_like_score_mean",
+      "stimulus_shadow_memory_match_v2_time_factor_bonus_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "numeric_v2_cost",
+    "section": "stimulus",
+    "title": "数值刺激元负载与代价",
+    "subtitle": "属性刺激元数量、属性比率与关键耗时",
+    "description": "用于同时观察数值刺激元显影带来的感受器负载和刺激级检索代价，方便做性能-效果折中。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "sensor_attribute_sa_count",
+      "sensor_attribute_sa_per_feature_ratio",
+      "timing_sensor_ms",
+      "timing_stimulus_level_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_candidate_cost",
+    "section": "stimulus",
+    "title": "刺激级候选代价",
+    "subtitle": "owner-local 候选、剪枝与最大共同切割次数",
+    "description": "用于定位刺激级查存一体是否被某些局部数据库的候选数量或共同切割拖慢。新版性能护栏会优先保留局部权重/近因更高的候选；promotion 关闭时影子残差精评分可默认跳过，只保留计数诊断。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_local_child_candidate_count",
+      "stimulus_local_child_candidate_pruned_count",
+      "stimulus_best_match_candidate_count",
+      "stimulus_best_match_pruned_count",
+      "stimulus_best_match_strict_overlap_fast_reject_count",
+      "stimulus_cut_common_part_total_count",
+      "stimulus_best_match_common_part_count",
+      "stimulus_cut_exact_fast_path_hit_count",
+      "stimulus_cut_full_inclusion_fast_path_hit_count",
+      "stimulus_cut_single_group_fast_path_hit_count",
+      "stimulus_cut_ordered_subsequence_fast_path_hit_count",
+      "stimulus_cut_cache_hit_count",
+      "stimulus_cut_cache_zero_copy_hit_count",
+      "stimulus_cut_cache_store_count",
+      "stimulus_cut_normalize_cache_hit_count",
+      "stimulus_cut_normalize_cache_zero_copy_hit_count",
+      "stimulus_cut_normalize_reusable_hit_count",
+      "stimulus_cut_normalize_reusable_group_count",
+      "stimulus_cut_signature_fast_path_hit_count",
+      "stimulus_cut_empty_group_fast_path_hit_count",
+      "stimulus_cut_full_group_fast_path_hit_count",
+      "stimulus_cut_reindex_fast_path_hit_count",
+      "stimulus_shadow_raw_residual_candidate_count",
+      "stimulus_shadow_raw_residual_candidate_pruned_count",
+      "stimulus_shadow_raw_residual_skipped_count",
+      "stimulus_shadow_raw_residual_common_part_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stimulus_owner_local_residual_normalization",
+    "section": "stimulus",
+    "title": "owner-local 残差归一化",
+    "subtitle": "局部残差列表/索引缓存、签名命中、严格上界剪枝、等价缓存与共同切割",
+    "description": "用于定位刺激级 owner-local residual normalization 是否仍在重复扫描同一个 owner DB。unit 分桶与严格签名上界剪枝只跳过已经不可能达标的候选，不改变残差共有结构或完整身份语义。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_owner_local_residual_list_cache_hit_count",
+      "stimulus_owner_local_residual_index_build_count",
+      "stimulus_owner_local_residual_index_cache_hit_count",
+      "stimulus_owner_local_residual_raw_signature_hit_count",
+      "stimulus_owner_local_residual_common_signature_hit_count",
+      "stimulus_owner_local_residual_fuzzy_equivalent_call_count",
+      "stimulus_owner_local_residual_fuzzy_equivalent_cache_hit_count",
+      "stimulus_owner_local_residual_fuzzy_equivalent_signature_hit_count",
+      "stimulus_owner_local_residual_fuzzy_equivalent_fast_reject_count",
+      "stimulus_owner_local_residual_common_overlap_fast_reject_count",
+      "stimulus_owner_local_residual_fuzzy_unit_bucket_pruned_count",
+      "stimulus_owner_local_residual_fuzzy_equivalent_cut_count",
+      "stimulus_anchor_owner_residual_presence_cache_hit_count",
+      "stimulus_anchor_owner_residual_presence_scan_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_source",
+    "section": "internal",
+    "title": "内源解析与预算",
+    "subtitle": "候选结构、入选结构、片段数与细节预算的合并视图",
+    "description": "用于同时判断上游候选是否足够，以及内源分辨率预算是否真的压缩了当前内源刺激。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_candidate_structure_count",
+      "internal_selected_structure_count",
+      "internal_fragment_count",
+      "internal_resolution_raw_sa_count",
+      "internal_resolution_selected_sa_count",
+      "internal_resolution_budget_sa_cap"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_attribute_projection",
+    "section": "internal",
+    "title": "内源属性刺激元投影",
+    "subtitle": "内源属性总数、数值属性数与时间类属性数",
+    "description": "用于判断运行时绑定属性是否已经真正进入内源刺激，而不是只停留在结构级 debug 或 state-pool 绑定层。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_attribute_count",
+      "internal_numeric_attribute_count",
+      "internal_time_like_attribute_count",
+      "internal_sa_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_cfs_projection",
+    "section": "internal",
+    "title": "内源 CFS 属性显影",
+    "subtitle": "CFS 总属性、压力族与期待族在内源中的投影计数",
+    "description": "用于观察认知感受运行态是否会在下一 tick 真正进入内源刺激流，而不是只停留在 state-pool 绑定层。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_cfs_attribute_count",
+      "internal_cfs_pressure_family_attribute_count",
+      "internal_cfs_expectation_family_attribute_count",
+      "internal_numeric_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_feedback_projection",
+    "section": "internal",
+    "title": "内源奖惩/教师属性显影",
+    "subtitle": "教师奖励、教师惩罚、奖励信号与惩罚信号在内源中的投影计数",
+    "description": "用于直接核对 runtime-bound feedback 属性是否跨 tick 进入内源刺激。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_teacher_reward_signal_attribute_count",
+      "internal_teacher_punish_signal_attribute_count",
+      "internal_reward_signal_attribute_count",
+      "internal_punish_signal_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_resolution_detail",
+    "section": "internal",
+    "title": "内源分辨率细项",
+    "subtitle": "细节预算、原始细节单元、已选细节单元与已选结构数",
+    "description": "用于更细地查看注意力滤波和内源分辨率预算到底压掉了哪些细节。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_resolution_detail_budget",
+      "internal_resolution_raw_unit_count",
+      "internal_resolution_selected_unit_count",
+      "internal_resolution_structure_count_selected"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_runtime_priority_resolution",
+    "section": "internal",
+    "title": "高优先级运行时属性保留链路",
+    "subtitle": "高优先级属性结构入选、属性单元保留与 rescue 计数",
+    "description": "用于直接判断 teacher / reward / punish / cfs / 时间感受 这类运行时属性，是卡在结构入选阶段，还是卡在 unit trim 阶段。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_resolution_runtime_priority_structure_count_total_candidates",
+      "internal_resolution_runtime_priority_structure_count",
+      "internal_resolution_selected_priority_attribute_unit_count",
+      "internal_resolution_rescued_priority_attribute_unit_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_cam_runtime_priority_sidepath",
+    "section": "internal",
+    "title": "CAM 高优先级属性侧路",
+    "subtitle": "侧路候选、投影片段、family 数与属性单元数",
+    "description": "用于观察当主 fragment 尚未表达 teacher / reward / punish / CFS / 时间感受 family 时，CAM 侧路是否补出了一条轻量属性片段。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "internal_cam_runtime_priority_projection_candidate_count",
+      "internal_cam_runtime_priority_projection_fragment_count",
+      "internal_cam_runtime_priority_projection_family_count",
+      "internal_cam_runtime_priority_projection_unit_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "internal_resolution_pool",
+    "section": "internal",
+    "title": "内源来源与工作集关系",
+    "subtitle": "当前工作集、来源结构、候选结构与最终片段",
+    "description": "用于观察注意力工作集经过内源解析后，最终有多少结构真的吐出了片段。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cam_item_count",
+      "internal_source_structure_count",
+      "internal_candidate_structure_count",
+      "internal_fragment_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "retrieval_rounds",
+    "section": "internal",
+    "title": "查存轮次",
+    "subtitle": "结构级、刺激级与内源重采样活动",
+    "description": "用于判断系统是否真正经历结构级/刺激级查存一体，并让内源刺激把状态池叠加图景重新采样为新种子。CS 动作数只作为显式开启时的兼容背景，不再是默认主链验收项。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "structure_round_count",
+      "stimulus_round_count",
+      "cs_action_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "structure_v2_match",
+    "section": "internal",
+    "title": "结构级 V2 匹配质量",
+    "subtitle": "综合分、基础分、数值匹配、时间因子与顺序对齐",
+    "description": "用于观察结构级候选组的软匹配质量，避免只看组命中数量而忽略命中是否合理。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "structure_match_v2_score_mean",
+      "structure_match_v2_base_score_mean",
+      "structure_match_v2_numeric_score_mean",
+      "structure_match_v2_numeric_time_like_score_mean",
+      "structure_match_v2_order_alignment_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "structure_v2_support",
+    "section": "internal",
+    "title": "结构级 V2 支撑与混合效果",
+    "subtitle": "可参与比例、属性锚点、上下文支撑、能量图景、结构包含度、阈值余量与混合增益",
+    "description": "用于判断结构级 blended 排序偏移到底来自上下文/属性支撑，还是来自新的 V2 曲线与阈值余量。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "structure_match_v2_eligible_ratio",
+      "structure_match_v2_attribute_anchor_mean",
+      "structure_match_v2_context_support_mean",
+      "structure_match_v2_energy_profile_mean",
+      "structure_match_v2_structure_inclusion_mean",
+      "structure_match_v2_threshold_margin_mean",
+      "structure_match_v2_blend_gain_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "v2_soft_partial_competition",
+    "section": "internal",
+    "title": "软部分匹配竞争",
+    "subtitle": "刺激级/结构级软部分候选与入竞数量",
+    "description": "用于审计“尽可能匹配”是否真的进入主竞争链，而不是仍被完全包含门槛硬挡在外面。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_soft_partial_eligible_count",
+      "stimulus_match_v2_soft_partial_selected_count",
+      "structure_match_v2_soft_partial_eligible_count",
+      "structure_match_v2_soft_partial_selected_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "v2_bundle_exact_retention",
+    "section": "internal",
+    "title": "精确 bundle 保真",
+    "subtitle": "刺激级/结构级精确 bundle 与完全匹配入竞数量",
+    "description": "用于同时观察软竞争已经放开以后，系统是否仍保留足够的身份保真，而不是把所有候选都糊成一片。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "stimulus_match_v2_bundle_exact_selected_count",
+      "stimulus_match_v2_exact_match_selected_count",
+      "structure_match_v2_bundle_exact_selected_count",
+      "structure_match_v2_exact_match_selected_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "structure_v2_path",
+    "section": "internal",
+    "title": "结构级路径分流",
+    "subtitle": "synthetic 单组、implicit_single_st 与真实候选竞争轮次",
+    "description": "用于直接区分“结构级没跑”“结构级只走 synthetic 单组快捷路径”和“结构级真的进入 group 竞争”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "structure_round_count",
+      "structure_round_synthetic_count",
+      "structure_round_implicit_single_count",
+      "structure_round_competitive_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_flow",
+    "section": "stitching",
+    "title": "认知拼接流程",
+    "subtitle": "种子、候选、动作、上下文拼接与强化",
+    "description": "仅用于 residual/CS 回滚或 A/B 对照；默认 growth + CS disabled 时，这张图全 0 是预期背景，不应解读成感应生长缺失。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "cs_seed_event_count",
+      "cs_seed_structure_count",
+      "cs_candidate_count",
+      "cs_action_count",
+      "cs_concat_count",
+      "cs_reinforced_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_output",
+    "section": "stitching",
+    "title": "认知拼接产出",
+    "subtitle": "动作、上下文拼接、强化、刺激级新建结构、新建、扩展与合并",
+    "description": "仅用于旧 residual/CS 路径排查。新版主链的新结构形成优先看感应生长身份命中/创建和刺激级查存一体，不再把 CS 产出当默认主指标。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "cs_action_count",
+      "cs_concat_count",
+      "cs_reinforced_count",
+      "stimulus_new_structure_count",
+      "cs_created_count",
+      "cs_extended_count",
+      "cs_merged_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_grasp_flow",
+    "section": "stitching",
+    "title": "认知拼接把握链路",
+    "subtitle": "焦点种子、入选事件与真正发射次数",
+    "description": "旧 CS 叙事事件链路诊断。默认新版叙事应优先看状态池 Top、感应生长 A+B 与内源刺激重采样，不要求每 tick 都有 CS 把握事件。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "cs_event_grasp_cam_seed_count",
+      "cs_event_grasp_post_action_seed_count",
+      "cs_event_grasp_selected_event_count",
+      "cs_event_grasp_emitted_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_grasp_sources",
+    "section": "stitching",
+    "title": "认知拼接把握来源",
+    "subtitle": "CAM 入选与后拼接入选的来源拆分",
+    "description": "旧 CS 把握来源诊断，只在显式启用 CS 时用于区分 CAM 旧事件与本 tick 拼接事件。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "cs_event_grasp_cam_selected_event_count",
+      "cs_event_grasp_post_action_selected_event_count",
+      "cs_event_grasp_focus_candidate_item_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_narrative",
+    "section": "stitching",
+    "title": "认知拼接叙事成熟度",
+    "subtitle": "主叙事总能量、主叙事把握感、普通拼接叙事数与叙事区最大把握感",
+    "description": "旧 CS 叙事成熟度诊断。默认 growth 主链下，应把它作为回滚参考，而不是把 0 值视为叙事失败。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "cs_narrative_top_total_energy",
+      "cs_narrative_top_grasp",
+      "cs_concat_narrative_count",
+      "cs_narrative_grasp_max"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_v2_match",
+    "section": "stitching",
+    "title": "认知拼接 V2 匹配质量",
+    "subtitle": "综合分数、上下文覆盖、顺序对齐、尾端匹配与匹配数量",
+    "description": "用于在 legacy 仍执行时，并排审计 V2 口径认为“这批候选到底匹不匹配”，并观察长上下文是否真的更容易胜出。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "cs_candidate_v2_score_mean",
+      "cs_candidate_v2_context_cover_mean",
+      "cs_candidate_v2_order_alignment_mean",
+      "cs_candidate_v2_tail_match_mean",
+      "cs_candidate_v2_match_count_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "stitching_v2_support",
+    "section": "stitching",
+    "title": "认知拼接 V2 支撑与余量",
+    "subtitle": "基础分数、上下文库支撑、能量图景相似度、属性加分与阈值余量",
+    "description": "用于判断 V2 分数偏低，到底是边支撑弱、能量图景不合、属性上下文没接上，还是整体离阈值太近。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "cs_candidate_v2_base_score_mean",
+      "cs_candidate_v2_context_db_support_mean",
+      "cs_candidate_v2_energy_profile_mean",
+      "cs_candidate_v2_attribute_bonus_mean",
+      "cs_candidate_v2_threshold_margin_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_peak",
+    "section": "cfs",
+    "title": "认知感受峰值",
+    "subtitle": "关注本轮最强的主观感受峰值",
+    "description": "峰值适合看“有没有触发”，不适合代替总量。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_dissonance_max",
+      "cfs_pressure_max",
+      "cfs_grasp_max",
+      "cfs_complexity_max",
+      "cfs_simplicity_max",
+      "cfs_relief_max",
+      "cfs_reassurance_max",
+      "cfs_surprise_max",
+      "cfs_correct_event_max",
+      "cfs_repetition_max"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_live",
+    "section": "cfs",
+    "title": "认知感受运行态总量",
+    "subtitle": "关注感受在运行态中的维持强度",
+    "description": "用于判断感受是否只是一闪而过，还是持续维持。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_dissonance_live_total_energy",
+      "cfs_correctness_live_total_energy",
+      "cfs_correct_event_live_total_energy",
+      "cfs_expectation_live_total_energy",
+      "cfs_pressure_live_total_energy",
+      "cfs_grasp_live_total_energy",
+      "cfs_complexity_live_total_energy",
+      "cfs_simplicity_live_total_energy",
+      "cfs_relief_live_total_energy",
+      "cfs_reassurance_live_total_energy",
+      "cfs_repetition_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_count",
+    "section": "cfs",
+    "title": "认知感受即时触发频次",
+    "subtitle": "只看本 tick 新产生的感受信号",
+    "description": "适合发现某条感受通道有没有新触发，但不代表持续态是否还在衰减维持。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_signal_count",
+      "cfs_dissonance_count",
+      "cfs_surprise_count",
+      "cfs_repetition_count",
+      "cfs_expectation_count",
+      "cfs_pressure_count",
+      "cfs_simplicity_count",
+      "cfs_relief_count",
+      "cfs_reassurance_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_global_balance",
+    "section": "cfs",
+    "title": "全局认知感受平衡",
+    "subtitle": "复杂度、简感与重复感的持续态对照",
+    "description": "用于观察系统当前更偏紧张复杂、轻松简化，还是陷入重复疲劳。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_complexity_live_total_energy",
+      "cfs_simplicity_live_total_energy",
+      "cfs_repetition_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_global_count",
+    "section": "cfs",
+    "title": "全局认知感受即时触发",
+    "subtitle": "只看复杂度、简感与重复感在本 tick 是否新增触发",
+    "description": "适合配合全局认知感受持续态一起看，区分“新触发”与“旧状态仍在维持”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_complexity_count",
+      "cfs_simplicity_count",
+      "cfs_repetition_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_positive_guidance",
+    "section": "cfs",
+    "title": "正向认知感受持续态",
+    "subtitle": "正确事件、把握感、简感以及恢复/安抚感受的维持强度",
+    "description": "用于观察系统是否不仅能报错和警觉，也能维持正向判断与恢复后的安定感。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_correct_event_live_total_energy",
+      "cfs_grasp_live_total_energy",
+      "cfs_simplicity_live_total_energy",
+      "cfs_relief_live_total_energy",
+      "cfs_reassurance_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_positive_count",
+    "section": "cfs",
+    "title": "正向认知感受即时触发",
+    "subtitle": "正确事件、把握感、简感以及恢复/安抚感受的当 tick 触发频次",
+    "description": "用于配合正向持续态图，判断“正向感受是新近产生还是只是余波未退”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_correct_event_count",
+      "cfs_grasp_count",
+      "cfs_simplicity_count",
+      "cfs_relief_count",
+      "cfs_reassurance_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_pressure_semantics",
+    "section": "cfs",
+    "title": "压力即时触发 vs 持续态",
+    "subtitle": "区分“本 tick 新触发”与“旧压力仍在持续”",
+    "description": "若 `压力即时触发次数=0` 但 `压力运行态激活标记=1`，说明不是没压力，而是没有新增触发，旧压力仍在衰减维持。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_pressure_count",
+      "cfs_pressure_live_active",
+      "cfs_pressure_decay_only",
+      "cfs_pressure_live_attribute_count",
+      "cfs_pressure_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_next_tick_projection",
+    "section": "cfs",
+    "title": "CFS next-tick 显影链路",
+    "subtitle": "运行态压力/期待族与内源投影的分段对照",
+    "description": "用于排查 CFS 是“已经维持但没投影到内源”，还是“根本没有运行态维持”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_pressure_family_live_attribute_count",
+      "internal_cfs_pressure_family_attribute_count",
+      "cfs_expectation_family_live_attribute_count",
+      "internal_cfs_expectation_family_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_verification_count",
+    "section": "cfs",
+    "title": "期待/压力验证频次",
+    "subtitle": "已证实/未证实期待与压力的当 tick 触发频次",
+    "description": "用于直接观察教师奖惩和运行态奖惩进入 CFS 后，更常落成被追认的期待/压力，还是只是未被现实追认的预期/威胁。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_expectation_verified_count",
+      "cfs_expectation_unverified_count",
+      "cfs_pressure_verified_count",
+      "cfs_pressure_unverified_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_expectation_verification_mix",
+    "section": "cfs",
+    "title": "期待验证分叉",
+    "subtitle": "已证实/未证实期待与期待族总量",
+    "description": "用于直接判断期待通道更偏向被现实追认，还是主要停留在未证实预期。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_expectation_verified_live_total_energy",
+      "cfs_expectation_unverified_live_total_energy",
+      "cfs_expectation_family_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cfs_pressure_verification_mix",
+    "section": "cfs",
+    "title": "压力验证分叉",
+    "subtitle": "已证实/未证实压力与压力族总量",
+    "description": "用于直接判断压力通道更偏向被现实验证，还是主要停留在未证实威胁。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "cfs_pressure_verified_live_total_energy",
+      "cfs_pressure_unverified_live_total_energy",
+      "cfs_pressure_family_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "reward_system",
+    "section": "reward",
+    "title": "系统奖惩",
+    "subtitle": "系统自身的奖励与惩罚信号构成",
+    "description": "用于观察单个 tick 内部奖励与惩罚是如何共同组成的。",
+    "type": "bar_stacked",
+    "diagnostic": false,
+    "keys": [
+      "rwd_pun_rwd",
+      "rwd_pun_pun"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "reward_teacher",
+    "section": "reward",
+    "title": "教师监督与期望契约",
+    "subtitle": "教师信号、监督标签与绑定次数",
+    "description": "用于核对监督链路有没有真正打到运行中。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "teacher_rwd",
+      "teacher_pun",
+      "teacher_applied_count",
+      "teacher_total_binding_applied_count",
+      "label_teacher_rwd",
+      "label_teacher_pun",
+      "label_should_call_weather"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "reward_runtime_projection",
+    "section": "reward",
+    "title": "运行态奖惩显影链路",
+    "subtitle": "教师应用、上下文镜像绑定、运行态绑定与内源投影的逐段视图",
+    "description": "用于直接判断奖励/惩罚类 runtime 属性卡在主绑定、上下文承载、运行态保持还是内源展开。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "teacher_applied_count",
+      "teacher_context_binding_applied_count",
+      "teacher_reward_signal_live_attribute_count",
+      "teacher_punish_signal_live_attribute_count",
+      "internal_teacher_reward_signal_attribute_count",
+      "internal_teacher_punish_signal_attribute_count",
+      "reward_signal_live_attribute_count",
+      "punish_signal_live_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "teacher_feedback_focus",
+    "section": "reward",
+    "title": "教师反馈下一拍聚焦",
+    "subtitle": "教师标签、主目标原子化、上下文镜像绑定、focus 指令与运行态教师信号",
+    "description": "用于判断教师反馈是否不仅绑定成功，还真的沿着合适的上下文载体创造了再进 CAM 的机会。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "teacher_rwd",
+      "teacher_pun",
+      "teacher_primary_target_atomic",
+      "teacher_context_binding_candidate_count",
+      "teacher_context_binding_applied_count",
+      "teacher_focus_directive_count",
+      "teacher_focus_context_carrier_count",
+      "teacher_focus_directive_total_strength",
+      "teacher_focus_directive_max_focus_boost",
+      "teacher_reward_signal_live_total_energy",
+      "teacher_punish_signal_live_total_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "teacher_local_alias_bridge",
+    "section": "reward",
+    "title": "教师局部塑形别名桥",
+    "subtitle": "教师反馈短期别名缓存的活跃、匹配、注入与天气局部奖惩",
+    "description": "用于确认教师侧信号是否被桥接到下一次同类输入的 action target，而不是只停留在教师绑定或全局奖惩层。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "teacher_local_alias_active_count",
+      "teacher_local_alias_available_count",
+      "teacher_local_alias_matched_count",
+      "teacher_local_alias_overlay_applied_count",
+      "teacher_local_alias_overlay_rwd",
+      "teacher_local_alias_overlay_pun",
+      "teacher_local_alias_overlay_match_score",
+      "action_local_reward_signal_total_weather_stub",
+      "action_local_punish_signal_total_weather_stub",
+      "action_local_reward_drive_bonus_total_weather_stub",
+      "action_local_punish_drive_penalty_total_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_stress",
+    "section": "neuro",
+    "title": "应激与稳定递质",
+    "subtitle": "应激、稳定与恢复相关递质",
+    "description": "用于观察系统是否长期过度紧绷或持续低活性。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "nt_COR",
+      "nt_ADR",
+      "nt_SER",
+      "nt_END"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_reward",
+    "section": "neuro",
+    "title": "奖励与趋近递质",
+    "subtitle": "趋近、社会联结与奖赏倾向",
+    "description": "用于观察奖励驱动是否与任务阶段一致。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "nt_DA",
+      "nt_OXY",
+      "nt_END"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_explore_focus",
+    "section": "neuro",
+    "title": "探索与专注递质",
+    "subtitle": "新颖探索、专注锁定与其收放平衡",
+    "description": "用于观察系统当前更偏探索扩散，还是更偏聚焦收窄。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "nt_NOV",
+      "nt_FOC",
+      "nt_DA",
+      "nt_COR"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_iesm_update_summary",
+    "section": "neuro",
+    "title": "IESM 递质脚本调制概览",
+    "subtitle": "规则层本 tick 直接下发的递质调制规模",
+    "description": "用于确认 NT 调制是否仍完全埋在 EMgr 内部，还是已经开始由先天脚本层显式参与。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "iesm_emotion_update_key_count",
+      "iesm_emotion_update_abs_total"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_iesm_update_channels",
+    "section": "neuro",
+    "title": "IESM 递质脚本分通道调制",
+    "subtitle": "规则层对 8 通道的逐通道增减",
+    "description": "用于调试和验收 emotion_update 规则到底改了哪些递质，而不是只看最终 NT 状态被动变化。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "iesm_emotion_update_DA",
+      "iesm_emotion_update_ADR",
+      "iesm_emotion_update_OXY",
+      "iesm_emotion_update_SER",
+      "iesm_emotion_update_END",
+      "iesm_emotion_update_COR",
+      "iesm_emotion_update_NOV",
+      "iesm_emotion_update_FOC"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_attention_mod",
+    "section": "neuro",
+    "title": "NT 对注意力的实时调制",
+    "subtitle": "容量、最小保留、聚焦增益、能量门槛与能量预算",
+    "description": "用于直接观察 NT 通道如何改变本轮注意力的选取风格，以及调制后的注意力能量预算是否真的落到净增量上。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "attention_cam_item_cap",
+      "attention_mod_min_cam_items",
+      "attention_mod_focus_boost_weight",
+      "attention_mod_min_total_energy",
+      "attention_mod_attention_energy_budget",
+      "attention_energy_budget",
+      "attention_net_delta_energy"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_attention_energy_budget",
+    "section": "neuro",
+    "title": "注意力能量预算调制",
+    "subtitle": "预算基线、NT/行动调制值、最终预算与滤波开关",
+    "description": "用于单独审计“注意力资源”这条能量预算链路：基线是否保持在 8 附近，NT/行动是否只是在边界内调制，最终净增是否受预算约束。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "attention_energy_budget_base",
+      "attention_mod_attention_energy_budget",
+      "attention_energy_budget",
+      "attention_energy_budget_min",
+      "attention_energy_budget_max",
+      "attention_energy_filter_applied"
+    ],
+    "preserveFlatLineKeys": [
+      "attention_energy_budget_base",
+      "attention_energy_budget_min",
+      "attention_energy_budget_max",
+      "attention_energy_filter_applied"
+    ]
+  },
+  {
+    "id": "neuro_attention_priority",
+    "section": "neuro",
+    "title": "NT 对注意力排序的权重调制",
+    "subtitle": "总能量、认知压、显著性、疲劳与近因偏置",
+    "description": "用于观察当前 NT 口径下，注意力更偏向能量、压力、突发性还是近因新鲜度。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "attention_mod_priority_weight_total_energy",
+      "attention_mod_priority_weight_cp_abs",
+      "attention_mod_priority_weight_salience",
+      "attention_mod_priority_weight_fatigue",
+      "attention_mod_priority_weight_recency_gain"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "neuro_attention_sa_count_pref",
+    "section": "neuro",
+    "title": "注意力对对象长度的偏好",
+    "subtitle": "4-SA 偏好峰值、奖励/惩罚边界与本轮入选对象的实际长度图景",
+    "description": "用于观察注意力是否真的更偏向 4 个左右 SA 的对象，同时确认过短或过长对象只是被软惩罚，而不是被硬性排除。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "attention_sa_count_pref_peak",
+      "attention_sa_count_pref_no_reward_below_or_equal",
+      "attention_sa_count_pref_no_reward_above_or_equal",
+      "attention_sa_count_pref_selected_bonus_total",
+      "attention_sa_count_pref_selected_scale_mean",
+      "attention_sa_count_pref_selected_token_count_mean"
+    ],
+    "preserveFlatLineKeys": [
+      "attention_sa_count_pref_peak",
+      "attention_sa_count_pref_no_reward_below_or_equal",
+      "attention_sa_count_pref_no_reward_above_or_equal"
+    ]
+  },
+  {
+    "id": "neuro_hdb_mod",
+    "section": "neuro",
+    "title": "NT 对学习传播的调制",
+    "subtitle": "现实学习增益、虚循环磨损、传播阈值、传播比例与 ER 诱发比例",
+    "description": "用于直接观察 NT 通道如何改变 HDB 的学习与传播风格。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "emotion_hdb_base_weight_er_gain_scale",
+      "emotion_hdb_base_weight_ev_wear_scale",
+      "emotion_hdb_ev_propagation_threshold_scale",
+      "emotion_hdb_ev_propagation_ratio_scale",
+      "emotion_hdb_er_induction_ratio_scale"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_result",
+    "section": "action",
+    "title": "行动执行结果",
+    "subtitle": "单个 tick 内执行结果的组成",
+    "description": "适合观察 weather_stub、回忆、注意聚焦链路是否真的跑通。",
+    "type": "bar_stacked",
+    "diagnostic": false,
+    "keys": [
+      "action_executed_attention_focus",
+      "action_executed_recall",
+      "action_executed_weather_stub",
+      "action_executed_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_schedule",
+    "section": "action",
+    "title": "行动尝试与调度",
+    "subtitle": "执行前的尝试与调度活动",
+    "description": "用于区分“没有想做”还是“想做但没执行成功”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_attempted_count",
+      "action_scheduled_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_iesm_front",
+    "section": "action",
+    "title": "IESM 前端触发",
+    "subtitle": "规则命中、脚本命中与行动触发数",
+    "description": "用于判断问题在先天规则前段，还是在行动器后段落地。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "iesm_triggered_rule_count",
+      "iesm_triggered_script_count",
+      "iesm_action_trigger_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_attention_mode_bridge",
+    "section": "action",
+    "title": "复杂度到注意力模式桥",
+    "subtitle": "复杂度/简感触发与 focus/diverge 尝试、执行",
+    "description": "用于直接验收 `cfs_complexity / cfs_simplicity -> attention_focus_mode / attention_diverge_mode` 是否已经贯通，而不是只停留在 CFS 层。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_complexity_count",
+      "cfs_simplicity_count",
+      "action_attempted_focus_mode",
+      "action_executed_focus_mode",
+      "action_attempted_diverge_mode",
+      "action_executed_diverge_mode"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_chain",
+    "section": "action",
+    "title": "天气行动全链路",
+    "subtitle": "天气规则触发、尝试、调度与执行",
+    "description": "用于直接区分“规则已经触发”与“行动器真正执行”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "iesm_action_trigger_weather_stub_count",
+      "action_attempted_weather_stub",
+      "action_scheduled_weather_stub",
+      "action_executed_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_rule_split",
+    "section": "action",
+    "title": "天气规则三档分流",
+    "subtitle": "弱提及、隐式问句、强查询与执行落点",
+    "description": "用于判断当前样本只是顺手提天气，还是已经形成隐式/显式天气求助。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "iesm_triggered_rule_innate_action_weather_stub_from_weather_only_count",
+      "iesm_triggered_rule_innate_action_weather_stub_from_weather_question_count",
+      "iesm_triggered_rule_innate_action_weather_stub_from_query_weather_count",
+      "action_executed_weather_stub_source_visible",
+      "action_executed_weather_stub_synthetic_only"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_drive",
+    "section": "action",
+    "title": "天气驱动力与阈值",
+    "subtitle": "天气节点驱动力、阈值与最大裕量",
+    "description": "用于直接判断天气行动是根本没被唤醒，还是被阈值卡住。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_drive_weather_stub_max",
+      "action_effective_threshold_weather_stub_mean",
+      "action_drive_margin_weather_stub_max"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_threshold_components",
+    "section": "action",
+    "title": "行动阈值调制构成",
+    "subtitle": "基础阈值、实时阈值、NT/奖惩/疲劳缩放",
+    "description": "用于直接审计行动阈值究竟被哪一层调高或调低，避免把“不行动”误判成单纯 drive 不足。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_base_threshold_mean",
+      "action_effective_threshold_mean",
+      "action_threshold_nt_scale_mean",
+      "action_threshold_rwd_pun_scale_mean",
+      "action_threshold_fatigue_scale_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_reward_learning",
+    "section": "action",
+    "title": "奖惩对行动的全局影响",
+    "subtitle": "系统奖惩、阈值偏移、奖励增益与惩罚代价",
+    "description": "用于核对 reward 是否真的在降阈值、punish 是否真的在升阈值，而不是只存在于情绪或状态池里。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "rwd_pun_rwd",
+      "rwd_pun_pun",
+      "action_learning_threshold_delta_mean",
+      "action_learning_reward_drive_gain_total",
+      "action_learning_punish_drive_penalty_total"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_local_drive_learning",
+    "section": "action",
+    "title": "局部奖惩对drive塑形",
+    "subtitle": "局部目标覆盖、命中、drive缩放与奖惩增减",
+    "description": "用于判断对象级 reward/punish 是否真的改变了对应行动节点本轮获得的 drive，而不是只有全局阈值在动。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_local_targeted_node_count",
+      "action_local_lookup_hit_count",
+      "action_local_drive_modulated_node_count",
+      "action_local_drive_scale_mean",
+      "action_local_reward_drive_bonus_total",
+      "action_local_punish_drive_penalty_total"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_local_lookup_detail",
+    "section": "action",
+    "title": "局部奖惩查找明细",
+    "subtitle": "局部命中、文本回落命中、真实 miss、skipped、缺目标与关闭节点",
+    "description": "用于区分“直查命中”“文本桥接命中”“查了但没找到”“压根不该查/不能查”和“节点主动关闭局部塑形”，避免误读局部奖惩链路。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_local_targeted_node_count",
+      "action_local_lookup_hit_count",
+      "action_local_lookup_text_fallback_hit_count",
+      "action_local_lookup_miss_count",
+      "action_local_lookup_skipped_count",
+      "action_local_target_missing_count",
+      "action_local_modulation_disabled_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_local_exec_split",
+    "section": "action",
+    "title": "局部奖惩执行分化",
+    "subtitle": "局部命中、drive 缩放、尝试与执行的并排走势",
+    "description": "用于直接观察“局部奖惩命中以后，行动尝试/执行有没有真的分化”，避免只看 scale 却看不到行为后果。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_local_lookup_hit_count",
+      "action_local_drive_scale_mean",
+      "action_attempted_count",
+      "action_executed_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_trigger_target_status",
+    "section": "action",
+    "title": "天气触发目标绑定状态",
+    "subtitle": "weather_stub 的总触发、带目标触发与缺目标触发",
+    "description": "用于直接判断天气行动局部奖惩失效究竟是因为 IESM 没给目标，还是给了目标但后续 lookup 仍没命中。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "iesm_action_trigger_weather_stub_count",
+      "iesm_action_trigger_targeted_weather_stub_count",
+      "iesm_action_trigger_target_missing_weather_stub_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_local_lookup_detail",
+    "section": "action",
+    "title": "天气局部奖惩查找明细",
+    "subtitle": "只看 weather_stub 的命中、文本回落命中、miss、skipped、缺目标与关闭原因",
+    "description": "用于判断天气行动没有被塑形时，究竟卡在 target 缺失、直查 miss，还是已经通过文本桥接命中。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_local_targeted_node_count_weather_stub",
+      "action_local_lookup_hit_count_weather_stub",
+      "action_local_lookup_text_fallback_hit_count_weather_stub",
+      "action_local_lookup_miss_count_weather_stub",
+      "action_local_lookup_skipped_count_weather_stub",
+      "action_local_target_missing_count_weather_stub",
+      "action_local_modulation_disabled_count_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_local_exec_split",
+    "section": "action",
+    "title": "天气局部塑形 vs 执行",
+    "subtitle": "weather_stub 的局部命中、scale 与尝试/执行并排",
+    "description": "用于直接判断天气局部塑形是否真的传导到了 weather_stub 的尝试与执行，而不是被总体动作指标淹没。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_local_lookup_hit_count_weather_stub",
+      "action_local_drive_scale_mean_weather_stub",
+      "action_attempted_weather_stub",
+      "action_executed_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_teacher_cfs_bridge",
+    "section": "action",
+    "title": "教师奖惩到行动塑形桥",
+    "subtitle": "教师应用、奖惩 live、期待/压力验证与天气局部 drive 的并排链路",
+    "description": "用于把 `teacher -> reward/punish live -> expectation/pressure -> weather 局部塑形` 放到一张图里，直接验收新口径联动。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "teacher_applied_count",
+      "reward_signal_live_total_energy",
+      "punish_signal_live_total_energy",
+      "cfs_expectation_verified_count",
+      "cfs_pressure_verified_count",
+      "action_local_reward_drive_bonus_total_weather_stub",
+      "action_local_punish_drive_penalty_total_weather_stub",
+      "action_executed_weather_stub"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_weather_nodes",
+    "section": "action",
+    "title": "天气节点活化状态",
+    "subtitle": "天气节点总数、活跃数与就绪数",
+    "description": "用于区分“节点没生成”“节点已活化”“节点已过阈值但没执行”。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_node_weather_stub_count",
+      "action_active_weather_stub_count",
+      "action_ready_weather_stub_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_contract_visibility",
+    "section": "action",
+    "title": "契约可见执行口径",
+    "subtitle": "拆开 source tick 可见执行与 synthetic feedback tick 上的执行",
+    "description": "用于避免把反馈 tick 上的执行错读成契约窗口内已经满足的执行。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_executed_weather_stub",
+      "action_executed_weather_stub_source_visible",
+      "action_executed_weather_stub_synthetic_only",
+      "action_executed_count_source_visible",
+      "action_executed_count_synthetic_only"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_drive",
+    "section": "action",
+    "title": "行动驱动力",
+    "subtitle": "行动系统的最大与平均驱动力",
+    "description": "驱动力是连续值，应与节点规模分开观察。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "action_drive_max",
+      "action_drive_mean"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "action_nodes",
+    "section": "action",
+    "title": "行动节点规模",
+    "subtitle": "行动节点总数与活跃行动节点数",
+    "description": "用于判断行动网络是否在增长或僵死。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "action_node_count",
+      "action_drive_active_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_binding",
+    "section": "time",
+    "title": "时间绑定活动",
+    "subtitle": "时间桶与时间属性的绑定活动",
+    "description": "用于判断时间感受器是否在正常生成绑定，以及绑定是否仍然只停留在旧的原子峰值对象。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "time_sensor_bucket_update_count",
+      "time_sensor_attribute_binding_count",
+      "time_sensor_projection_binding_count",
+      "time_sensor_legacy_binding_count",
+      "time_sensor_memory_sample_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "time_delayed",
+    "section": "time",
+    "title": "延迟任务活动",
+    "subtitle": "延迟任务的注册、更新、执行与清理",
+    "description": "用于观察延迟反馈、期望契约与时间任务的活动负载。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "time_sensor_delayed_task_registered_count",
+      "time_sensor_delayed_task_updated_count",
+      "time_sensor_delayed_task_executed_count",
+      "time_sensor_delayed_task_pruned_count",
+      "time_sensor_delayed_task_capacity_skip_count",
+      "time_sensor_delayed_task_table_size"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_scale",
+    "section": "map",
+    "title": "记忆赋能规模",
+    "subtitle": "赋能、反馈与应用次数",
+    "description": "旧 MAP/记忆池兼容诊断。默认 growth 主链下，记忆终端更应结合 `induction_growth_memory_terminal_passthrough_count` 与运行态记忆投影理解。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "map_count",
+      "map_feedback_count",
+      "map_apply_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_runtime_projection",
+    "section": "map",
+    "title": "残差主链 / MAP兼容显影",
+    "subtitle": "MAP 兼容应用、运行态投影、兼容回流与结构直投",
+    "description": "用于确认 legacy MAP 兼容支路是否仍在运行。新版默认主链下，它不是感应生长的主验收项；若需要看记忆终端旁路，应配合感应生长保护图。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "map_apply_count",
+      "memory_runtime_projection_count",
+      "memory_feedback_applied_count",
+      "memory_feedback_structure_projection_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_feedback_split",
+    "section": "map",
+    "title": "MAP兼容反馈分流次数",
+    "subtitle": "兼容回流总落地、整包回放与结构直投",
+    "description": "旧 MAP 反馈兼容诊断，用于回滚或对照旧记忆反馈支路，不代表新版完整身份生长的默认路径。",
+    "type": "bar_grouped",
+    "diagnostic": true,
+    "keys": [
+      "memory_feedback_applied_count",
+      "memory_feedback_packet_count",
+      "memory_feedback_structure_projection_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_energy",
+    "section": "map",
+    "title": "记忆赋能能量",
+    "subtitle": "MAP 与反馈链路的能量变化",
+    "description": "旧 MAP 能量诊断。默认主口径请优先看感应生长 source-side ER 与 residual-side EV 的组件审计。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "map_total_er",
+      "map_total_ev",
+      "map_feedback_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_feedback_energy_split",
+    "section": "map",
+    "title": "记忆反馈能量分流",
+    "subtitle": "反馈总 EV、整包回放 EV 与结构直投 EV",
+    "description": "旧记忆反馈预算诊断；在新版默认下主要用于解释兼容支路是否仍产生额外运行态投影。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "memory_feedback_total_ev",
+      "memory_feedback_packet_total_ev",
+      "memory_feedback_structure_projection_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "map_feedback_projection_quality",
+    "section": "map",
+    "title": "结构直投有效性",
+    "subtitle": "尝试次数、有效次数、被裁掉次数与有效率",
+    "description": "旧 MAP 结构直投诊断，用于确认兼容反馈是否被疲劳/阈值裁掉；默认生长路径请优先看 induction_growth_*。",
+    "type": "line",
+    "diagnostic": true,
+    "keys": [
+      "memory_feedback_structure_projection_attempted_count",
+      "memory_feedback_structure_projection_count",
+      "memory_feedback_structure_projection_skipped_count",
+      "memory_feedback_structure_projection_effective_ratio"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "timing_main",
+    "section": "performance",
+    "title": "主性能耗时",
+    "subtitle": "最主要的四个耗时大头",
+    "description": "适合先看哪条链路在拖慢整体 Tick。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "timing_total_logic_ms",
+      "timing_induction_and_memory_ms",
+      "timing_maintenance_ms",
+      "timing_stimulus_level_ms",
+      "timing_cache_neutralization_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "timing_detail",
+    "section": "performance",
+    "title": "细分性能耗时",
+    "subtitle": "其余主要模块耗时",
+    "description": "适合进一步判断是归纳、注意力、IESM 还是情绪链路偏慢。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "timing_structure_level_ms",
+      "timing_attention_ms",
+      "timing_cognitive_stitching_ms",
+      "timing_iesm_ms",
+      "timing_action_ms",
+      "timing_pool_apply_ms",
+      "timing_emotion_ms",
+      "timing_cfs_ms",
+      "timing_time_sensor_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "cache_neutralization_cut_cache",
+    "section": "performance",
+    "title": "缓存中和切割缓存",
+    "subtitle": "优先中和阶段的共同切割快路径、缓存命中与零拷贝",
+    "description": "用于判断新刺激进入状态池前的优先中和是否被重复 common-part 计算拖慢。cache_priority_cut_* 只统计中和阶段的 CutEngine，不改变 SA 粒度能量结算；理论低分剪枝只在 token 重叠上界已经达不到阈值时提前跳过共同切割。缓存命中和零拷贝命中越高，通常说明重复比较被吸收。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cache_priority_cut_exact_fast_path_hit_count",
+      "cache_priority_cut_full_inclusion_fast_path_hit_count",
+      "cache_priority_cut_single_group_fast_path_hit_count",
+      "cache_priority_cut_ordered_subsequence_fast_path_hit_count",
+      "cache_priority_cut_cache_hit_count",
+      "cache_priority_cut_cache_zero_copy_hit_count",
+      "cache_priority_cut_cache_store_count",
+      "cache_priority_cut_cache_deepcopy_count",
+      "cache_priority_cut_normalize_cache_hit_count",
+      "cache_priority_cut_normalize_cache_zero_copy_hit_count",
+      "cache_priority_cut_normalize_reusable_hit_count",
+      "cache_priority_cut_normalize_reusable_group_count",
+      "cache_priority_cut_signature_fast_path_hit_count",
+      "cache_priority_cut_empty_group_fast_path_hit_count",
+      "cache_priority_cut_full_group_fast_path_hit_count",
+      "cache_priority_cut_reindex_fast_path_hit_count",
+      "cache_priority_theoretical_match_fast_reject_count",
+      "timing_cache_neutralization_ms"
+    ],
+    "preserveFlatLineKeys": [
+      "timing_cache_neutralization_ms"
+    ]
+  },
+  {
+    "id": "runtime_residual_promotion",
+    "section": "performance",
+    "title": "刺激尾巴记忆投影 / 旧残余包回退",
+    "subtitle": "本轮记忆 id 合并、旧残余包晋升与回退诊断",
+    "description": "新版默认把刺激级查存一体后未完全吸收的尾巴直接按本轮 episodic memory id 合并为运行态记忆对象；旧 rt_residual_* 残余包和晋升链路只作为 fallback 或 A/B 对照。正常 growth 主链优先看 residual_tail_memory_projection_*，旧 runtime_residual_* 非零时先检查配置是否显式开启旧路径。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "residual_tail_memory_projection_applied",
+      "residual_tail_memory_projection_handled",
+      "residual_tail_memory_projection_total_energy",
+      "residual_tail_memory_projection_token_count",
+      "runtime_residual_immediate_promotion_promoted_count",
+      "runtime_residual_promotion_attempted_count",
+      "runtime_residual_promotion_promoted_count",
+      "runtime_residual_promotion_exact_rebind_count",
+      "runtime_residual_promotion_full_identity_count",
+      "runtime_residual_promotion_hdb_fallback_count",
+      "runtime_residual_immediate_promotion_hdb_fallback_count",
+      "runtime_residual_promotion_created_count",
+      "runtime_residual_promotion_matched_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "timing_induction_memory_detail",
+    "section": "performance",
+    "title": "归纳与记忆内部耗时",
+    "subtitle": "源选择、HDB 传播、目标落地、记忆激活与运行态投影",
+    "description": "用于定位“归纳与记忆耗时”内部到底慢在源对象筛选、HDB 残差展开、感应目标入池，还是记忆激活/投影这些子阶段。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "timing_induction_source_snapshot_ms",
+      "timing_induction_hdb_propagation_ms",
+      "timing_induction_projection_prepare_ms",
+      "timing_induction_target_apply_ms",
+      "timing_memory_activation_apply_ms",
+      "timing_memory_runtime_projection_ms",
+      "timing_memory_activation_snapshot_ms",
+      "timing_memory_feedback_apply_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "timing_maintenance_detail",
+    "section": "performance",
+    "title": "维护阶段内部耗时",
+    "subtitle": "维护前摘要、状态池维护本体、维护后摘要与事件收集",
+    "description": "用于判断维护阶段慢在状态池衰减/剪枝本体，还是慢在摘要统计和历史事件回收；这能避免把维护后期的成本误判成归纳与记忆成本。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "timing_maintenance_pool_maintenance_ms",
+      "timing_maintenance_before_summary_ms",
+      "timing_maintenance_after_summary_ms",
+      "timing_maintenance_history_events_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "timing_runner_outer",
+    "section": "performance",
+    "title": "实验运行外围耗时",
+    "subtitle": "含锁等待的单 tick 墙钟、runner 包裹开销与指标抽取",
+    "description": "用于判断数据集运行慢是不是发生在 run_cycle 认知逻辑之外，例如等待实时观测/闲时整理释放主循环锁、写指标前的包裹开销，或 metrics 抽取本身偏慢。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "timing_runner_cycle_wall_ms",
+      "timing_runner_cycle_overhead_ms",
+      "timing_runner_metrics_extract_ms"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_pool_apply",
+    "section": "diagnostic",
+    "title": "状态池落地应用",
+    "subtitle": "新增、更新、合并与能量增量",
+    "description": "用于检查刺激包落地到状态池时，增量结构是否合理。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "pool_apply_merged_item_count",
+      "pool_apply_new_item_count",
+      "pool_apply_updated_item_count",
+      "pool_apply_total_delta_cp",
+      "pool_apply_total_delta_er",
+      "pool_apply_total_delta_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_attention",
+    "section": "diagnostic",
+    "title": "注意力诊断",
+    "subtitle": "候选量、容量预算、能量预算、跳过量与消耗能量",
+    "description": "用于分析注意力为什么没有选中更多记忆，或为什么耗能异常；同时把数量上限和能量资源分开看，避免把 CAM 容量误读成能量预算。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "attention_state_pool_candidate_count",
+      "attention_cam_item_cap",
+      "attention_skipped_memory_item_count",
+      "attention_consumed_total_energy",
+      "attention_energy_budget",
+      "attention_net_delta_energy",
+      "attention_gross_gain_energy_applied"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_maintenance",
+    "section": "diagnostic",
+    "title": "维护阶段诊断",
+    "subtitle": "维护前后状态与维护事件数",
+    "description": "用于检查维护模块是否在实际清理，而不是形同虚设。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "maintenance_before_active_item_count",
+      "maintenance_after_active_item_count",
+      "maintenance_delta_active_item_count",
+      "maintenance_before_high_cp_item_count",
+      "maintenance_after_high_cp_item_count",
+      "maintenance_delta_high_cp_item_count",
+      "maintenance_event_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_map_detail",
+    "section": "diagnostic",
+    "title": "记忆赋能补充诊断",
+    "subtitle": "MAP 条目、反馈与能量细项",
+    "description": "用于进一步查看 MAP 的应用次数、反馈次数与能量变化。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "map_count",
+      "map_feedback_count",
+      "map_apply_count",
+      "map_total_er",
+      "map_total_ev",
+      "map_feedback_total_ev"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_cfs_coverage",
+    "section": "diagnostic",
+    "title": "认知感受覆盖诊断",
+    "subtitle": "认知感受覆盖对象数与属性条目数",
+    "description": "用于判断某种感受是没触发，还是触发了但绑定覆盖太窄。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_dissonance_live_item_count",
+      "cfs_dissonance_live_attribute_count",
+      "cfs_correctness_live_item_count",
+      "cfs_correctness_live_attribute_count",
+      "cfs_expectation_live_item_count",
+      "cfs_expectation_live_attribute_count",
+      "cfs_pressure_live_item_count",
+      "cfs_pressure_live_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_cfs_global_coverage",
+    "section": "diagnostic",
+    "title": "全局/正向感受覆盖诊断",
+    "subtitle": "复杂度、简感、重复感、正确事件与把握感的覆盖对象数和属性条目数",
+    "description": "用于快速看出全局或偏正向感受是根本没落地，还是已经写进状态池但能量偏弱。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cfs_complexity_live_item_count",
+      "cfs_complexity_live_attribute_count",
+      "cfs_simplicity_live_item_count",
+      "cfs_simplicity_live_attribute_count",
+      "cfs_repetition_live_item_count",
+      "cfs_repetition_live_attribute_count",
+      "cfs_correct_event_live_item_count",
+      "cfs_correct_event_live_attribute_count",
+      "cfs_grasp_live_item_count",
+      "cfs_grasp_live_attribute_count"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_echo_and_input",
+    "section": "diagnostic",
+    "title": "输入与残响诊断",
+    "subtitle": "原始输入长度、残响池与情节节奏",
+    "description": "用于判断输入分段、残响池与情节节奏是否异常。",
+    "type": "line",
+    "diagnostic": false,
+    "keys": [
+      "input_len",
+      "sensor_echo_current_round",
+      "sensor_echo_pool_size",
+      "tick_in_episode_index",
+      "episode_repeat_index"
+    ],
+    "preserveFlatLineKeys": []
+  },
+  {
+    "id": "diag_cs_detail",
+    "section": "diagnostic",
+    "title": "认知拼接诊断",
+    "subtitle": "候选、上下文拼接、新建、扩展、合并与强化",
+    "description": "用于查看认知拼接到底是没候选，还是候选很多但主要落在 context-match V2 的普通结构拼接上。",
+    "type": "bar_grouped",
+    "diagnostic": false,
+    "keys": [
+      "cs_candidate_count",
+      "cs_concat_count",
+      "cs_created_count",
+      "cs_extended_count",
+      "cs_merged_count",
+      "cs_reinforced_count",
+      "cs_seed_event_count",
+      "cs_seed_structure_count"
+    ],
+    "preserveFlatLineKeys": []
+  }
+];
+
+export const metricLabels: Record<string, string> = {
+  "action_active_weather_stub_count": "action_active_weather_stub_count",
+  "action_attempted_count": "action_attempted_count",
+  "action_attempted_diverge_mode": "action_attempted_diverge_mode",
+  "action_attempted_focus_mode": "action_attempted_focus_mode",
+  "action_attempted_weather_stub": "action_attempted_weather_stub",
+  "action_base_threshold_mean": "action_base_threshold_mean",
+  "action_drive_active_count": "action_drive_active_count",
+  "action_drive_margin_weather_stub_max": "action_drive_margin_weather_stub_max",
+  "action_drive_max": "action_drive_max",
+  "action_drive_mean": "action_drive_mean",
+  "action_drive_weather_stub_max": "action_drive_weather_stub_max",
+  "action_effective_threshold_mean": "action_effective_threshold_mean",
+  "action_effective_threshold_weather_stub_mean": "action_effective_threshold_weather_stub_mean",
+  "action_executed_attention_focus": "action_executed_attention_focus",
+  "action_executed_count": "action_executed_count",
+  "action_executed_count_source_visible": "action_executed_count_source_visible",
+  "action_executed_count_synthetic_only": "action_executed_count_synthetic_only",
+  "action_executed_diverge_mode": "action_executed_diverge_mode",
+  "action_executed_focus_mode": "action_executed_focus_mode",
+  "action_executed_recall": "action_executed_recall",
+  "action_executed_weather_stub": "action_executed_weather_stub",
+  "action_executed_weather_stub_source_visible": "action_executed_weather_stub_source_visible",
+  "action_executed_weather_stub_synthetic_only": "action_executed_weather_stub_synthetic_only",
+  "action_learning_punish_drive_penalty_total": "action_learning_punish_drive_penalty_total",
+  "action_learning_reward_drive_gain_total": "action_learning_reward_drive_gain_total",
+  "action_learning_threshold_delta_mean": "action_learning_threshold_delta_mean",
+  "action_local_drive_modulated_node_count": "action_local_drive_modulated_node_count",
+  "action_local_drive_scale_mean": "action_local_drive_scale_mean",
+  "action_local_drive_scale_mean_weather_stub": "action_local_drive_scale_mean_weather_stub",
+  "action_local_lookup_hit_count": "action_local_lookup_hit_count",
+  "action_local_lookup_hit_count_weather_stub": "action_local_lookup_hit_count_weather_stub",
+  "action_local_lookup_miss_count": "action_local_lookup_miss_count",
+  "action_local_lookup_miss_count_weather_stub": "action_local_lookup_miss_count_weather_stub",
+  "action_local_lookup_skipped_count": "action_local_lookup_skipped_count",
+  "action_local_lookup_skipped_count_weather_stub": "action_local_lookup_skipped_count_weather_stub",
+  "action_local_lookup_text_fallback_hit_count": "action_local_lookup_text_fallback_hit_count",
+  "action_local_lookup_text_fallback_hit_count_weather_stub": "action_local_lookup_text_fallback_hit_count_weather_stub",
+  "action_local_modulation_disabled_count": "action_local_modulation_disabled_count",
+  "action_local_modulation_disabled_count_weather_stub": "action_local_modulation_disabled_count_weather_stub",
+  "action_local_punish_drive_penalty_total": "action_local_punish_drive_penalty_total",
+  "action_local_punish_drive_penalty_total_weather_stub": "action_local_punish_drive_penalty_total_weather_stub",
+  "action_local_punish_signal_total_weather_stub": "action_local_punish_signal_total_weather_stub",
+  "action_local_reward_drive_bonus_total": "action_local_reward_drive_bonus_total",
+  "action_local_reward_drive_bonus_total_weather_stub": "action_local_reward_drive_bonus_total_weather_stub",
+  "action_local_reward_signal_total_weather_stub": "action_local_reward_signal_total_weather_stub",
+  "action_local_target_missing_count": "action_local_target_missing_count",
+  "action_local_target_missing_count_weather_stub": "action_local_target_missing_count_weather_stub",
+  "action_local_targeted_node_count": "action_local_targeted_node_count",
+  "action_local_targeted_node_count_weather_stub": "action_local_targeted_node_count_weather_stub",
+  "action_node_count": "action_node_count",
+  "action_node_weather_stub_count": "action_node_weather_stub_count",
+  "action_ready_weather_stub_count": "action_ready_weather_stub_count",
+  "action_scheduled_weather_stub": "action_scheduled_weather_stub",
+  "action_threshold_fatigue_scale_mean": "action_threshold_fatigue_scale_mean",
+  "action_threshold_nt_scale_mean": "action_threshold_nt_scale_mean",
+  "action_threshold_rwd_pun_scale_mean": "action_threshold_rwd_pun_scale_mean",
+  "attention_base_memory_total_energy": "attention_base_memory_total_energy",
+  "attention_cam_item_cap": "attention_cam_item_cap",
+  "attention_cam_item_count": "attention_cam_item_count",
+  "attention_consumed_total_energy": "attention_consumed_total_energy",
+  "attention_energy_budget": "attention_energy_budget",
+  "attention_energy_budget_base": "attention_energy_budget_base",
+  "attention_energy_budget_max": "attention_energy_budget_max",
+  "attention_energy_budget_min": "attention_energy_budget_min",
+  "attention_energy_filter_applied": "attention_energy_filter_applied",
+  "attention_final_memory_total_energy": "attention_final_memory_total_energy",
+  "attention_gain_budget_applied": "attention_gain_budget_applied",
+  "attention_gross_gain_energy_applied": "attention_gross_gain_energy_applied",
+  "attention_memory_item_count": "attention_memory_item_count",
+  "attention_mod_attention_energy_budget": "attention_mod_attention_energy_budget",
+  "attention_mod_focus_boost_weight": "attention_mod_focus_boost_weight",
+  "attention_mod_min_cam_items": "attention_mod_min_cam_items",
+  "attention_mod_min_total_energy": "attention_mod_min_total_energy",
+  "attention_mod_priority_weight_cp_abs": "attention_mod_priority_weight_cp_abs",
+  "attention_mod_priority_weight_fatigue": "attention_mod_priority_weight_fatigue",
+  "attention_mod_priority_weight_recency_gain": "attention_mod_priority_weight_recency_gain",
+  "attention_mod_priority_weight_salience": "attention_mod_priority_weight_salience",
+  "attention_mod_priority_weight_total_energy": "attention_mod_priority_weight_total_energy",
+  "attention_net_delta_energy": "attention_net_delta_energy",
+  "attention_skipped_memory_item_count": "attention_skipped_memory_item_count",
+  "attention_state_pool_candidate_count": "attention_state_pool_candidate_count",
+  "attention_suppressed_total_energy": "attention_suppressed_total_energy",
+  "cache_input_flat_token_count": "cache_input_flat_token_count",
+  "cache_residual_flat_token_count": "cache_residual_flat_token_count",
+  "cam_item_count": "cam_item_count",
+  "cfs_complexity_count": "cfs_complexity_count",
+  "cfs_complexity_live_attribute_count": "cfs_complexity_live_attribute_count",
+  "cfs_complexity_live_item_count": "cfs_complexity_live_item_count",
+  "cfs_complexity_live_total_energy": "cfs_complexity_live_total_energy",
+  "cfs_complexity_max": "cfs_complexity_max",
+  "cfs_correct_event_count": "cfs_correct_event_count",
+  "cfs_correct_event_live_attribute_count": "cfs_correct_event_live_attribute_count",
+  "cfs_correct_event_live_item_count": "cfs_correct_event_live_item_count",
+  "cfs_correct_event_live_total_energy": "cfs_correct_event_live_total_energy",
+  "cfs_correct_event_max": "cfs_correct_event_max",
+  "cfs_correctness_live_attribute_count": "cfs_correctness_live_attribute_count",
+  "cfs_correctness_live_item_count": "cfs_correctness_live_item_count",
+  "cfs_correctness_live_total_energy": "cfs_correctness_live_total_energy",
+  "cfs_dissonance_count": "cfs_dissonance_count",
+  "cfs_dissonance_live_attribute_count": "cfs_dissonance_live_attribute_count",
+  "cfs_dissonance_live_item_count": "cfs_dissonance_live_item_count",
+  "cfs_dissonance_live_total_energy": "cfs_dissonance_live_total_energy",
+  "cfs_dissonance_max": "cfs_dissonance_max",
+  "cfs_expectation_count": "cfs_expectation_count",
+  "cfs_expectation_family_live_attribute_count": "cfs_expectation_family_live_attribute_count",
+  "cfs_expectation_family_live_total_energy": "cfs_expectation_family_live_total_energy",
+  "cfs_expectation_live_attribute_count": "cfs_expectation_live_attribute_count",
+  "cfs_expectation_live_item_count": "cfs_expectation_live_item_count",
+  "cfs_expectation_live_total_energy": "cfs_expectation_live_total_energy",
+  "cfs_expectation_unverified_count": "cfs_expectation_unverified_count",
+  "cfs_expectation_unverified_live_total_energy": "cfs_expectation_unverified_live_total_energy",
+  "cfs_expectation_verified_count": "cfs_expectation_verified_count",
+  "cfs_expectation_verified_live_total_energy": "cfs_expectation_verified_live_total_energy",
+  "cfs_grasp_count": "cfs_grasp_count",
+  "cfs_grasp_live_attribute_count": "cfs_grasp_live_attribute_count",
+  "cfs_grasp_live_item_count": "cfs_grasp_live_item_count",
+  "cfs_grasp_live_total_energy": "cfs_grasp_live_total_energy",
+  "cfs_grasp_max": "cfs_grasp_max",
+  "cfs_pressure_count": "cfs_pressure_count",
+  "cfs_pressure_decay_only": "cfs_pressure_decay_only",
+  "cfs_pressure_family_live_attribute_count": "cfs_pressure_family_live_attribute_count",
+  "cfs_pressure_family_live_total_energy": "cfs_pressure_family_live_total_energy",
+  "cfs_pressure_live_active": "cfs_pressure_live_active",
+  "cfs_pressure_live_attribute_count": "cfs_pressure_live_attribute_count",
+  "cfs_pressure_live_item_count": "cfs_pressure_live_item_count",
+  "cfs_pressure_live_total_energy": "cfs_pressure_live_total_energy",
+  "cfs_pressure_max": "cfs_pressure_max",
+  "cfs_pressure_unverified_count": "cfs_pressure_unverified_count",
+  "cfs_pressure_unverified_live_total_energy": "cfs_pressure_unverified_live_total_energy",
+  "cfs_pressure_verified_count": "cfs_pressure_verified_count",
+  "cfs_pressure_verified_live_total_energy": "cfs_pressure_verified_live_total_energy",
+  "cfs_reassurance_count": "cfs_reassurance_count",
+  "cfs_reassurance_live_total_energy": "cfs_reassurance_live_total_energy",
+  "cfs_reassurance_max": "cfs_reassurance_max",
+  "cfs_relief_count": "cfs_relief_count",
+  "cfs_relief_live_total_energy": "cfs_relief_live_total_energy",
+  "cfs_relief_max": "cfs_relief_max",
+  "cfs_repetition_count": "cfs_repetition_count",
+  "cfs_repetition_live_attribute_count": "cfs_repetition_live_attribute_count",
+  "cfs_repetition_live_item_count": "cfs_repetition_live_item_count",
+  "cfs_repetition_live_total_energy": "cfs_repetition_live_total_energy",
+  "cfs_repetition_max": "cfs_repetition_max",
+  "cfs_signal_count": "cfs_signal_count",
+  "cfs_simplicity_count": "cfs_simplicity_count",
+  "cfs_simplicity_live_attribute_count": "cfs_simplicity_live_attribute_count",
+  "cfs_simplicity_live_item_count": "cfs_simplicity_live_item_count",
+  "cfs_simplicity_live_total_energy": "cfs_simplicity_live_total_energy",
+  "cfs_simplicity_max": "cfs_simplicity_max",
+  "cfs_surprise_count": "cfs_surprise_count",
+  "cfs_surprise_max": "cfs_surprise_max",
+  "complexity_score": "complexity_score",
+  "core_complexity_score": "core_complexity_score",
+  "core_effective_peak_count": "core_effective_peak_count",
+  "core_energy_concentration": "core_energy_concentration",
+  "cs_action_count": "cs_action_count",
+  "cs_candidate_count": "cs_candidate_count",
+  "cs_candidate_v2_attribute_bonus_mean": "cs_candidate_v2_attribute_bonus_mean",
+  "cs_candidate_v2_base_score_mean": "cs_candidate_v2_base_score_mean",
+  "cs_candidate_v2_context_cover_mean": "cs_candidate_v2_context_cover_mean",
+  "cs_candidate_v2_context_db_support_mean": "cs_candidate_v2_context_db_support_mean",
+  "cs_candidate_v2_energy_profile_mean": "cs_candidate_v2_energy_profile_mean",
+  "cs_candidate_v2_match_count_mean": "cs_candidate_v2_match_count_mean",
+  "cs_candidate_v2_order_alignment_mean": "cs_candidate_v2_order_alignment_mean",
+  "cs_candidate_v2_score_mean": "cs_candidate_v2_score_mean",
+  "cs_candidate_v2_tail_match_mean": "cs_candidate_v2_tail_match_mean",
+  "cs_candidate_v2_threshold_margin_mean": "cs_candidate_v2_threshold_margin_mean",
+  "cs_concat_count": "cs_concat_count",
+  "cs_concat_narrative_count": "cs_concat_narrative_count",
+  "cs_created_count": "cs_created_count",
+  "cs_event_grasp_cam_seed_count": "cs_event_grasp_cam_seed_count",
+  "cs_event_grasp_cam_selected_event_count": "cs_event_grasp_cam_selected_event_count",
+  "cs_event_grasp_emitted_count": "cs_event_grasp_emitted_count",
+  "cs_event_grasp_focus_candidate_item_count": "cs_event_grasp_focus_candidate_item_count",
+  "cs_event_grasp_post_action_seed_count": "cs_event_grasp_post_action_seed_count",
+  "cs_event_grasp_post_action_selected_event_count": "cs_event_grasp_post_action_selected_event_count",
+  "cs_event_grasp_selected_event_count": "cs_event_grasp_selected_event_count",
+  "cs_extended_count": "cs_extended_count",
+  "cs_merged_count": "cs_merged_count",
+  "cs_narrative_grasp_max": "cs_narrative_grasp_max",
+  "cs_narrative_top_grasp": "cs_narrative_top_grasp",
+  "cs_narrative_top_total_energy": "cs_narrative_top_total_energy",
+  "cs_reinforced_count": "cs_reinforced_count",
+  "cs_seed_event_count": "cs_seed_event_count",
+  "cs_seed_structure_count": "cs_seed_structure_count",
+  "effective_peak_count": "effective_peak_count",
+  "emotion_hdb_base_weight_er_gain_scale": "emotion_hdb_base_weight_er_gain_scale",
+  "emotion_hdb_base_weight_ev_wear_scale": "emotion_hdb_base_weight_ev_wear_scale",
+  "emotion_hdb_er_induction_ratio_scale": "emotion_hdb_er_induction_ratio_scale",
+  "emotion_hdb_ev_propagation_ratio_scale": "emotion_hdb_ev_propagation_ratio_scale",
+  "emotion_hdb_ev_propagation_threshold_scale": "emotion_hdb_ev_propagation_threshold_scale",
+  "energy_balance_g_after": "energy_balance_g_after",
+  "energy_balance_ratio_smooth": "energy_balance_ratio_smooth",
+  "energy_balance_target_ratio": "energy_balance_target_ratio",
+  "energy_concentration": "energy_concentration",
+  "episode_repeat_index": "episode_repeat_index",
+  "external_sa_count": "external_sa_count",
+  "hdb_contextual_diff_entry_ratio": "hdb_contextual_diff_entry_ratio",
+  "hdb_contextual_structure_ratio": "hdb_contextual_structure_ratio",
+  "hdb_effective_er_induction_ratio": "hdb_effective_er_induction_ratio",
+  "hdb_effective_ev_propagation_ratio": "hdb_effective_ev_propagation_ratio",
+  "hdb_episodic_count": "hdb_episodic_count",
+  "hdb_exact_lookup_cache_count": "hdb_exact_lookup_cache_count",
+  "hdb_fallback_pointer_count": "hdb_fallback_pointer_count",
+  "hdb_group_count": "hdb_group_count",
+  "hdb_multi_context_structure_ratio": "hdb_multi_context_structure_ratio",
+  "hdb_numeric_bucket_count": "hdb_numeric_bucket_count",
+  "hdb_numeric_bucket_family_count": "hdb_numeric_bucket_family_count",
+  "hdb_primary_pointer_count": "hdb_primary_pointer_count",
+  "hdb_recent_cache_count": "hdb_recent_cache_count",
+  "hdb_requested_er_induction_ratio": "hdb_requested_er_induction_ratio",
+  "hdb_requested_ev_propagation_ratio": "hdb_requested_ev_propagation_ratio",
+  "hdb_residual_diff_entry_ratio": "hdb_residual_diff_entry_ratio",
+  "hdb_same_content_multi_context_ratio": "hdb_same_content_multi_context_ratio",
+  "hdb_signature_index_count": "hdb_signature_index_count",
+  "hdb_structure_context_path_depth_mean": "hdb_structure_context_path_depth_mean",
+  "hdb_structure_count": "hdb_structure_count",
+  "iesm_action_trigger_count": "iesm_action_trigger_count",
+  "iesm_action_trigger_target_missing_weather_stub_count": "iesm_action_trigger_target_missing_weather_stub_count",
+  "iesm_action_trigger_targeted_weather_stub_count": "iesm_action_trigger_targeted_weather_stub_count",
+  "iesm_action_trigger_weather_stub_count": "iesm_action_trigger_weather_stub_count",
+  "iesm_emotion_update_abs_total": "iesm_emotion_update_abs_total",
+  "iesm_emotion_update_ADR": "iesm_emotion_update_ADR",
+  "iesm_emotion_update_COR": "iesm_emotion_update_COR",
+  "iesm_emotion_update_DA": "iesm_emotion_update_DA",
+  "iesm_emotion_update_END": "iesm_emotion_update_END",
+  "iesm_emotion_update_FOC": "iesm_emotion_update_FOC",
+  "iesm_emotion_update_key_count": "iesm_emotion_update_key_count",
+  "iesm_emotion_update_NOV": "iesm_emotion_update_NOV",
+  "iesm_emotion_update_OXY": "iesm_emotion_update_OXY",
+  "iesm_emotion_update_SER": "iesm_emotion_update_SER",
+  "iesm_triggered_rule_count": "iesm_triggered_rule_count",
+  "iesm_triggered_rule_innate_action_weather_stub_from_query_weather_count": "iesm_triggered_rule_innate_action_weather_stub_from_query_weather_count",
+  "iesm_triggered_rule_innate_action_weather_stub_from_weather_only_count": "iesm_triggered_rule_innate_action_weather_stub_from_weather_only_count",
+  "iesm_triggered_rule_innate_action_weather_stub_from_weather_question_count": "iesm_triggered_rule_innate_action_weather_stub_from_weather_question_count",
+  "iesm_triggered_script_count": "iesm_triggered_script_count",
+  "induction_applied_total_ev": "induction_applied_total_ev",
+  "induction_energy_graph_config_max_rounds": "induction_energy_graph_config_max_rounds",
+  "induction_energy_graph_depth_max": "induction_energy_graph_depth_max",
+  "induction_energy_graph_frontier_budget_total_ev": "induction_energy_graph_frontier_budget_total_ev",
+  "induction_energy_graph_frontier_generated_count": "induction_energy_graph_frontier_generated_count",
+  "induction_energy_graph_frontier_in_count_max": "induction_energy_graph_frontier_in_count_max",
+  "induction_energy_graph_frontier_out_count_max": "induction_energy_graph_frontier_out_count_max",
+  "induction_energy_graph_frontier_pruned_count": "induction_energy_graph_frontier_pruned_count",
+  "induction_energy_graph_layer_count": "induction_energy_graph_layer_count",
+  "induction_energy_graph_layer_max_width": "induction_energy_graph_layer_max_width",
+  "induction_energy_graph_layer_total_nodes": "induction_energy_graph_layer_total_nodes",
+  "induction_energy_graph_root_induction_budget_total_ev": "induction_energy_graph_root_induction_budget_total_ev",
+  "induction_energy_graph_root_reinduction_count": "induction_energy_graph_root_reinduction_count",
+  "induction_energy_graph_round_count_max": "induction_energy_graph_round_count_max",
+  "induction_energy_graph_round_delta_ev_last": "induction_energy_graph_round_delta_ev_last",
+  "induction_energy_graph_round_delta_ev_max": "induction_energy_graph_round_delta_ev_max",
+  "induction_energy_graph_round_delta_ev_total": "induction_energy_graph_round_delta_ev_total",
+  "induction_energy_graph_terminal_memory_count": "induction_energy_graph_terminal_memory_count",
+  "induction_energy_graph_v2_enabled": "induction_energy_graph_v2_enabled",
+  "induction_ev_from_er_ratio": "induction_ev_from_er_ratio",
+  "induction_ev_from_er_total": "induction_ev_from_er_total",
+  "induction_growth_deduped_count": "induction_growth_deduped_count",
+  "induction_growth_failed_count": "induction_growth_failed_count",
+  "induction_growth_identity_created_count": "induction_growth_identity_created_count",
+  "induction_growth_identity_hit_count": "induction_growth_identity_hit_count",
+  "induction_growth_identity_local_cache_hit_count": "induction_growth_identity_local_cache_hit_count",
+  "induction_growth_identity_shared_cache_hit_count": "induction_growth_identity_shared_cache_hit_count",
+  "induction_growth_identity_shared_cache_stale_count": "induction_growth_identity_shared_cache_stale_count",
+  "induction_growth_identity_create_exact_lookup_skipped_count": "induction_growth_identity_create_exact_lookup_skipped_count",
+  "induction_growth_identity_lookup_disabled_count": "induction_growth_identity_lookup_disabled_count",
+  "induction_growth_target_apply_ref_fast_merge_enabled": "induction_growth_target_apply_ref_fast_merge_enabled",
+  "induction_growth_target_apply_fast_ref_hit_merge_count": "induction_growth_target_apply_fast_ref_hit_merge_count",
+  "induction_growth_target_apply_insert_log_enabled": "induction_growth_target_apply_insert_log_enabled",
+  "induction_growth_target_apply_insert_log_suppressed_count": "induction_growth_target_apply_insert_log_suppressed_count",
+  "induction_growth_memory_candidate_count": "induction_growth_memory_candidate_count",
+  "induction_growth_memory_terminal_passthrough_count": "induction_growth_memory_terminal_passthrough_count",
+  "induction_growth_pruned_low_energy_count": "induction_growth_pruned_low_energy_count",
+  "induction_growth_runtime_only_count": "induction_growth_runtime_only_count",
+  "induction_growth_skipped_missing_residual_count": "induction_growth_skipped_missing_residual_count",
+  "induction_growth_skipped_missing_source_count": "induction_growth_skipped_missing_source_count",
+  "induction_growth_target_count": "induction_growth_target_count",
+  "induction_growth_total_delta_er": "induction_growth_total_delta_er",
+  "induction_growth_total_delta_ev": "induction_growth_total_delta_ev",
+  "induction_growth_source_component_er_total": "induction_growth_source_component_er_total",
+  "induction_growth_residual_component_ev_total": "induction_growth_residual_component_ev_total",
+  "induction_source_memory_terminal_prefilter_skipped_count": "induction_source_memory_terminal_prefilter_skipped_count",
+  "residual_tail_memory_projection_applied": "residual_tail_memory_projection_applied",
+  "residual_tail_memory_projection_handled": "residual_tail_memory_projection_handled",
+  "residual_tail_memory_projection_total_energy": "residual_tail_memory_projection_total_energy",
+  "residual_tail_memory_projection_token_count": "residual_tail_memory_projection_token_count",
+  "residual_tail_memory_projection_full_memory_token_count": "residual_tail_memory_projection_full_memory_token_count",
+  "residual_tail_memory_projection_tail_component_er_share": "residual_tail_memory_projection_tail_component_er_share",
+  "residual_tail_memory_projection_tail_component_ev_share": "residual_tail_memory_projection_tail_component_ev_share",
+  "runtime_residual_immediate_promotion_promoted_count": "runtime_residual_immediate_promotion_promoted_count",
+  "runtime_residual_immediate_promotion_created_count": "runtime_residual_immediate_promotion_created_count",
+  "runtime_residual_immediate_promotion_matched_count": "runtime_residual_immediate_promotion_matched_count",
+  "runtime_residual_immediate_promotion_hdb_fallback_count": "runtime_residual_immediate_promotion_hdb_fallback_count",
+  "runtime_residual_promotion_exact_rebind_count": "runtime_residual_promotion_exact_rebind_count",
+  "runtime_residual_promotion_full_identity_count": "runtime_residual_promotion_full_identity_count",
+  "runtime_residual_promotion_hdb_fallback_count": "runtime_residual_promotion_hdb_fallback_count",
+  "stimulus_local_child_candidate_count": "stimulus_local_child_candidate_count",
+  "stimulus_local_child_candidate_pruned_count": "stimulus_local_child_candidate_pruned_count",
+  "stimulus_best_match_candidate_count": "stimulus_best_match_candidate_count",
+  "stimulus_best_match_pruned_count": "stimulus_best_match_pruned_count",
+  "stimulus_best_match_strict_overlap_fast_reject_count": "stimulus_best_match_strict_overlap_fast_reject_count",
+  "stimulus_cut_common_part_total_count": "stimulus_cut_common_part_total_count",
+  "stimulus_best_match_common_part_count": "stimulus_best_match_common_part_count",
+  "stimulus_cut_exact_fast_path_hit_count": "stimulus_cut_exact_fast_path_hit_count",
+  "stimulus_cut_full_inclusion_fast_path_hit_count": "stimulus_cut_full_inclusion_fast_path_hit_count",
+  "stimulus_cut_single_group_fast_path_hit_count": "stimulus_cut_single_group_fast_path_hit_count",
+  "stimulus_cut_ordered_subsequence_fast_path_hit_count": "stimulus_cut_ordered_subsequence_fast_path_hit_count",
+  "stimulus_cut_cache_hit_count": "stimulus_cut_cache_hit_count",
+  "stimulus_cut_cache_zero_copy_hit_count": "stimulus_cut_cache_zero_copy_hit_count",
+  "stimulus_cut_cache_store_count": "stimulus_cut_cache_store_count",
+  "stimulus_cut_cache_deepcopy_count": "stimulus_cut_cache_deepcopy_count",
+  "stimulus_cut_normalize_cache_hit_count": "stimulus_cut_normalize_cache_hit_count",
+  "stimulus_cut_normalize_cache_zero_copy_hit_count": "stimulus_cut_normalize_cache_zero_copy_hit_count",
+  "stimulus_cut_normalize_reusable_hit_count": "stimulus_cut_normalize_reusable_hit_count",
+  "stimulus_cut_normalize_reusable_group_count": "stimulus_cut_normalize_reusable_group_count",
+  "stimulus_cut_signature_fast_path_hit_count": "stimulus_cut_signature_fast_path_hit_count",
+  "stimulus_cut_empty_group_fast_path_hit_count": "stimulus_cut_empty_group_fast_path_hit_count",
+  "stimulus_cut_full_group_fast_path_hit_count": "stimulus_cut_full_group_fast_path_hit_count",
+  "stimulus_cut_reindex_fast_path_hit_count": "stimulus_cut_reindex_fast_path_hit_count",
+  "induction_cut_cache_hit_count": "induction_cut_cache_hit_count",
+  "induction_cut_cache_zero_copy_hit_count": "induction_cut_cache_zero_copy_hit_count",
+  "induction_cut_cache_store_count": "induction_cut_cache_store_count",
+  "induction_cut_cache_deepcopy_count": "induction_cut_cache_deepcopy_count",
+  "induction_cut_normalize_cache_zero_copy_hit_count": "induction_cut_normalize_cache_zero_copy_hit_count",
+  "induction_cut_normalize_reusable_hit_count": "induction_cut_normalize_reusable_hit_count",
+  "induction_cut_normalize_reusable_group_count": "induction_cut_normalize_reusable_group_count",
+  "induction_cut_signature_fast_path_hit_count": "induction_cut_signature_fast_path_hit_count",
+  "induction_cut_empty_group_fast_path_hit_count": "induction_cut_empty_group_fast_path_hit_count",
+  "induction_cut_full_group_fast_path_hit_count": "induction_cut_full_group_fast_path_hit_count",
+  "induction_cut_reindex_fast_path_hit_count": "induction_cut_reindex_fast_path_hit_count",
+  "induction_cut_full_inclusion_fast_path_hit_count": "induction_cut_full_inclusion_fast_path_hit_count",
+  "induction_cut_single_group_fast_path_hit_count": "induction_cut_single_group_fast_path_hit_count",
+  "induction_cut_ordered_subsequence_fast_path_hit_count": "induction_cut_ordered_subsequence_fast_path_hit_count",
+  "stimulus_shadow_raw_residual_candidate_count": "stimulus_shadow_raw_residual_candidate_count",
+  "stimulus_shadow_raw_residual_candidate_pruned_count": "stimulus_shadow_raw_residual_candidate_pruned_count",
+  "stimulus_shadow_raw_residual_skipped_count": "stimulus_shadow_raw_residual_skipped_count",
+  "stimulus_shadow_raw_residual_common_part_count": "stimulus_shadow_raw_residual_common_part_count",
+  "stimulus_owner_local_residual_list_cache_hit_count": "stimulus_owner_local_residual_list_cache_hit_count",
+  "stimulus_owner_local_residual_index_build_count": "stimulus_owner_local_residual_index_build_count",
+  "stimulus_owner_local_residual_index_cache_hit_count": "stimulus_owner_local_residual_index_cache_hit_count",
+  "stimulus_owner_local_residual_raw_signature_hit_count": "stimulus_owner_local_residual_raw_signature_hit_count",
+  "stimulus_owner_local_residual_common_signature_hit_count": "stimulus_owner_local_residual_common_signature_hit_count",
+  "stimulus_owner_local_residual_fuzzy_equivalent_call_count": "stimulus_owner_local_residual_fuzzy_equivalent_call_count",
+  "stimulus_owner_local_residual_fuzzy_equivalent_cache_hit_count": "stimulus_owner_local_residual_fuzzy_equivalent_cache_hit_count",
+  "stimulus_owner_local_residual_fuzzy_equivalent_signature_hit_count": "stimulus_owner_local_residual_fuzzy_equivalent_signature_hit_count",
+  "stimulus_owner_local_residual_fuzzy_equivalent_fast_reject_count": "stimulus_owner_local_residual_fuzzy_equivalent_fast_reject_count",
+  "stimulus_owner_local_residual_common_overlap_fast_reject_count": "stimulus_owner_local_residual_common_overlap_fast_reject_count",
+  "stimulus_owner_local_residual_fuzzy_unit_bucket_pruned_count": "stimulus_owner_local_residual_fuzzy_unit_bucket_pruned_count",
+  "stimulus_owner_local_residual_fuzzy_equivalent_cut_count": "stimulus_owner_local_residual_fuzzy_equivalent_cut_count",
+  "stimulus_anchor_owner_residual_presence_cache_hit_count": "stimulus_anchor_owner_residual_presence_cache_hit_count",
+  "stimulus_anchor_owner_residual_presence_scan_count": "stimulus_anchor_owner_residual_presence_scan_count",
+  "induction_memory_target_count": "induction_memory_target_count",
+  "induction_memory_target_total_ev": "induction_memory_target_total_ev",
+  "induction_propagated_budget_total_ev": "induction_propagated_budget_total_ev",
+  "induction_propagated_ev_total": "induction_propagated_ev_total",
+  "induction_propagated_target_ratio": "induction_propagated_target_ratio",
+  "induction_projection_mode_growth": "induction_projection_mode_growth",
+  "induction_projection_projected_target_count": "induction_projection_projected_target_count",
+  "induction_projection_raw_target_count": "induction_projection_raw_target_count",
+  "induction_raw_residual_component_structure_budget_weight": "induction_raw_residual_component_structure_budget_weight",
+  "induction_raw_residual_component_structure_target_count": "induction_raw_residual_component_structure_target_count",
+  "induction_raw_residual_component_structure_target_total_ev": "induction_raw_residual_component_structure_target_total_ev",
+  "induction_raw_residual_entry_count": "induction_raw_residual_entry_count",
+  "induction_raw_residual_entry_materialized_structure_count": "induction_raw_residual_entry_materialized_structure_count",
+  "induction_raw_residual_entry_routed_to_component_structure_count": "induction_raw_residual_entry_routed_to_component_structure_count",
+  "induction_raw_residual_entry_routed_to_structure_count": "induction_raw_residual_entry_routed_to_structure_count",
+  "induction_raw_residual_entry_with_component_structure_count": "induction_raw_residual_entry_with_component_structure_count",
+  "induction_raw_residual_entry_with_existing_structure_count": "induction_raw_residual_entry_with_existing_structure_count",
+  "induction_raw_residual_exact_structure_budget_weight": "induction_raw_residual_exact_structure_budget_weight",
+  "induction_raw_residual_exact_structure_target_total_ev": "induction_raw_residual_exact_structure_target_total_ev",
+  "induction_raw_residual_existing_structure_target_count": "induction_raw_residual_existing_structure_target_count",
+  "induction_raw_residual_hit_memory_target_total_ev": "induction_raw_residual_hit_memory_target_total_ev",
+  "induction_raw_residual_materialized_structure_budget_weight": "induction_raw_residual_materialized_structure_budget_weight",
+  "induction_raw_residual_materialized_structure_target_count": "induction_raw_residual_materialized_structure_target_count",
+  "induction_raw_residual_memory_target_total_ev": "induction_raw_residual_memory_target_total_ev",
+  "induction_raw_residual_miss_memory_target_total_ev": "induction_raw_residual_miss_memory_target_total_ev",
+  "induction_raw_residual_projection_profile_local_cache_hit_count": "induction_raw_residual_projection_profile_local_cache_hit_count",
+  "induction_raw_residual_projection_profile_shared_cache_hit_count": "induction_raw_residual_projection_profile_shared_cache_hit_count",
+  "induction_raw_residual_projection_profile_cache_store_count": "induction_raw_residual_projection_profile_cache_store_count",
+  "induction_raw_residual_exact_candidates_local_cache_hit_count": "induction_raw_residual_exact_candidates_local_cache_hit_count",
+  "induction_raw_residual_exact_candidates_shared_cache_hit_count": "induction_raw_residual_exact_candidates_shared_cache_hit_count",
+  "induction_raw_residual_exact_candidates_cache_store_count": "induction_raw_residual_exact_candidates_cache_store_count",
+  "induction_raw_residual_component_candidates_local_cache_hit_count": "induction_raw_residual_component_candidates_local_cache_hit_count",
+  "induction_raw_residual_component_candidates_shared_cache_hit_count": "induction_raw_residual_component_candidates_shared_cache_hit_count",
+  "induction_raw_residual_component_candidates_cache_store_count": "induction_raw_residual_component_candidates_cache_store_count",
+  "induction_full_inclusion_shared_cache_hit_count": "induction_full_inclusion_shared_cache_hit_count",
+  "induction_full_inclusion_shared_cache_store_count": "induction_full_inclusion_shared_cache_store_count",
+  "induction_raw_residual_structure_budget_weight": "induction_raw_residual_structure_budget_weight",
+  "induction_raw_residual_structure_target_total_ev": "induction_raw_residual_structure_target_total_ev",
+  "induction_raw_residual_target_total_ev": "induction_raw_residual_target_total_ev",
+  "induction_skipped_target_total_ev": "induction_skipped_target_total_ev",
+  "induction_source_available_st_count": "induction_source_available_st_count",
+  "induction_source_available_with_local_target_hint_count": "induction_source_available_with_local_target_hint_count",
+  "induction_source_item_count": "induction_source_item_count",
+  "induction_source_local_target_hint_diagnostics_skipped": "induction_source_local_target_hint_diagnostics_skipped",
+  "induction_source_selected_from_cp_abs_count": "induction_source_selected_from_cp_abs_count",
+  "induction_source_selected_from_er_count": "induction_source_selected_from_er_count",
+  "induction_source_selected_from_ev_count": "induction_source_selected_from_ev_count",
+  "induction_source_selected_with_local_target_hint_count": "induction_source_selected_with_local_target_hint_count",
+  "induction_source_selected_zero_local_target_hint_count": "induction_source_selected_zero_local_target_hint_count",
+  "induction_structure_target_count": "induction_structure_target_count",
+  "induction_structure_target_total_ev": "induction_structure_target_total_ev",
+  "induction_structure_db_update_applied_count": "induction_structure_db_update_applied_count",
+  "induction_structure_db_update_deduped_count": "induction_structure_db_update_deduped_count",
+  "induction_structure_db_update_request_count": "induction_structure_db_update_request_count",
+  "induction_target_count": "induction_target_count",
+  "induction_targets_per_source_mean": "induction_targets_per_source_mean",
+  "induction_total_delta_ev": "induction_total_delta_ev",
+  "input_len": "input_len",
+  "internal_attribute_count": "internal_attribute_count",
+  "internal_cam_runtime_priority_projection_candidate_count": "internal_cam_runtime_priority_projection_candidate_count",
+  "internal_cam_runtime_priority_projection_family_count": "internal_cam_runtime_priority_projection_family_count",
+  "internal_cam_runtime_priority_projection_fragment_count": "internal_cam_runtime_priority_projection_fragment_count",
+  "internal_cam_runtime_priority_projection_unit_count": "internal_cam_runtime_priority_projection_unit_count",
+  "internal_candidate_structure_count": "internal_candidate_structure_count",
+  "internal_cfs_attribute_count": "internal_cfs_attribute_count",
+  "internal_cfs_expectation_family_attribute_count": "internal_cfs_expectation_family_attribute_count",
+  "internal_cfs_pressure_family_attribute_count": "internal_cfs_pressure_family_attribute_count",
+  "internal_fragment_count": "internal_fragment_count",
+  "internal_minus_external_sa_count": "internal_minus_external_sa_count",
+  "internal_numeric_attribute_count": "internal_numeric_attribute_count",
+  "internal_punish_signal_attribute_count": "internal_punish_signal_attribute_count",
+  "internal_resolution_budget_sa_cap": "internal_resolution_budget_sa_cap",
+  "internal_resolution_detail_budget": "internal_resolution_detail_budget",
+  "internal_resolution_raw_sa_count": "internal_resolution_raw_sa_count",
+  "internal_resolution_raw_unit_count": "internal_resolution_raw_unit_count",
+  "internal_resolution_rescued_priority_attribute_unit_count": "internal_resolution_rescued_priority_attribute_unit_count",
+  "internal_resolution_runtime_priority_structure_count": "internal_resolution_runtime_priority_structure_count",
+  "internal_resolution_runtime_priority_structure_count_total_candidates": "internal_resolution_runtime_priority_structure_count_total_candidates",
+  "internal_resolution_selected_priority_attribute_unit_count": "internal_resolution_selected_priority_attribute_unit_count",
+  "internal_resolution_selected_sa_count": "internal_resolution_selected_sa_count",
+  "internal_resolution_selected_unit_count": "internal_resolution_selected_unit_count",
+  "internal_resolution_structure_count_selected": "internal_resolution_structure_count_selected",
+  "internal_reward_signal_attribute_count": "internal_reward_signal_attribute_count",
+  "internal_sa_count": "internal_sa_count",
+  "internal_selected_structure_count": "internal_selected_structure_count",
+  "internal_source_structure_count": "internal_source_structure_count",
+  "internal_teacher_punish_signal_attribute_count": "internal_teacher_punish_signal_attribute_count",
+  "internal_teacher_reward_signal_attribute_count": "internal_teacher_reward_signal_attribute_count",
+  "internal_time_like_attribute_count": "internal_time_like_attribute_count",
+  "internal_to_external_sa_ratio": "internal_to_external_sa_ratio",
+  "label_should_call_weather": "label_should_call_weather",
+  "label_teacher_pun": "label_teacher_pun",
+  "label_teacher_rwd": "label_teacher_rwd",
+  "landed_flat_token_count": "landed_flat_token_count",
+  "maintenance_after_active_item_count": "maintenance_after_active_item_count",
+  "maintenance_after_high_cp_item_count": "maintenance_after_high_cp_item_count",
+  "maintenance_before_active_item_count": "maintenance_before_active_item_count",
+  "maintenance_before_high_cp_item_count": "maintenance_before_high_cp_item_count",
+  "maintenance_delta_active_item_count": "maintenance_delta_active_item_count",
+  "maintenance_delta_high_cp_item_count": "maintenance_delta_high_cp_item_count",
+  "maintenance_event_count": "maintenance_event_count",
+  "map_apply_count": "map_apply_count",
+  "map_count": "map_count",
+  "map_feedback_count": "map_feedback_count",
+  "map_feedback_total_ev": "map_feedback_total_ev",
+  "map_total_er": "map_total_er",
+  "map_total_ev": "map_total_ev",
+  "memory_feedback_applied_count": "memory_feedback_applied_count",
+  "memory_feedback_packet_count": "memory_feedback_packet_count",
+  "memory_feedback_packet_total_ev": "memory_feedback_packet_total_ev",
+  "memory_feedback_structure_projection_attempted_count": "memory_feedback_structure_projection_attempted_count",
+  "memory_feedback_structure_projection_count": "memory_feedback_structure_projection_count",
+  "memory_feedback_structure_projection_effective_ratio": "memory_feedback_structure_projection_effective_ratio",
+  "memory_feedback_structure_projection_skipped_count": "memory_feedback_structure_projection_skipped_count",
+  "memory_feedback_structure_projection_total_ev": "memory_feedback_structure_projection_total_ev",
+  "memory_feedback_total_ev": "memory_feedback_total_ev",
+  "memory_runtime_projection_count": "memory_runtime_projection_count",
+  "merged_flat_token_count": "merged_flat_token_count",
+  "nt_ADR": "nt_ADR",
+  "nt_COR": "nt_COR",
+  "nt_DA": "nt_DA",
+  "nt_END": "nt_END",
+  "nt_FOC": "nt_FOC",
+  "nt_NOV": "nt_NOV",
+  "nt_OXY": "nt_OXY",
+  "nt_SER": "nt_SER",
+  "pool_active_item_count": "pool_active_item_count",
+  "pool_apply_merged_item_count": "pool_apply_merged_item_count",
+  "pool_apply_new_item_count": "pool_apply_new_item_count",
+  "pool_apply_total_delta_cp": "pool_apply_total_delta_cp",
+  "pool_apply_total_delta_er": "pool_apply_total_delta_er",
+  "pool_apply_total_delta_ev": "pool_apply_total_delta_ev",
+  "pool_apply_updated_item_count": "pool_apply_updated_item_count",
+  "pool_context_path_depth_mean": "pool_context_path_depth_mean",
+  "pool_contextual_item_ratio": "pool_contextual_item_ratio",
+  "pool_ev_to_er_ratio": "pool_ev_to_er_ratio",
+  "pool_explicit_context_item_ratio": "pool_explicit_context_item_ratio",
+  "pool_explicit_context_path_depth_mean": "pool_explicit_context_path_depth_mean",
+  "pool_high_cp_item_count": "pool_high_cp_item_count",
+  "pool_multi_context_item_ratio": "pool_multi_context_item_ratio",
+  "pool_residual_origin_item_ratio": "pool_residual_origin_item_ratio",
+  "pool_total_cp": "pool_total_cp",
+  "pool_total_er": "pool_total_er",
+  "pool_total_ev": "pool_total_ev",
+  "punish_signal_live_attribute_count": "punish_signal_live_attribute_count",
+  "punish_signal_live_total_energy": "punish_signal_live_total_energy",
+  "reward_signal_live_attribute_count": "reward_signal_live_attribute_count",
+  "reward_signal_live_total_energy": "reward_signal_live_total_energy",
+  "rwd_pun_pun": "rwd_pun_pun",
+  "rwd_pun_rwd": "rwd_pun_rwd",
+  "sensor_attribute_sa_count": "sensor_attribute_sa_count",
+  "sensor_attribute_sa_per_feature_ratio": "sensor_attribute_sa_per_feature_ratio",
+  "sensor_csa_bundle_count": "sensor_csa_bundle_count",
+  "sensor_echo_current_round": "sensor_echo_current_round",
+  "sensor_echo_frames_used_count": "sensor_echo_frames_used_count",
+  "sensor_echo_pool_size": "sensor_echo_pool_size",
+  "sensor_feature_sa_count": "sensor_feature_sa_count",
+  "stimulus_match_v2_attribute_anchor_mean": "stimulus_match_v2_attribute_anchor_mean",
+  "stimulus_match_v2_base_score_mean": "stimulus_match_v2_base_score_mean",
+  "stimulus_match_v2_blend_gain_mean": "stimulus_match_v2_blend_gain_mean",
+  "stimulus_match_v2_bundle_exact_selected_count": "stimulus_match_v2_bundle_exact_selected_count",
+  "stimulus_match_v2_context_support_mean": "stimulus_match_v2_context_support_mean",
+  "stimulus_match_v2_eligible_ratio": "stimulus_match_v2_eligible_ratio",
+  "stimulus_match_v2_energy_profile_mean": "stimulus_match_v2_energy_profile_mean",
+  "stimulus_match_v2_exact_match_selected_count": "stimulus_match_v2_exact_match_selected_count",
+  "stimulus_match_v2_numeric_nonzero_ratio": "stimulus_match_v2_numeric_nonzero_ratio",
+  "stimulus_match_v2_numeric_score_mean": "stimulus_match_v2_numeric_score_mean",
+  "stimulus_match_v2_numeric_scored_ratio": "stimulus_match_v2_numeric_scored_ratio",
+  "stimulus_match_v2_numeric_time_like_nonzero_count": "stimulus_match_v2_numeric_time_like_nonzero_count",
+  "stimulus_match_v2_numeric_time_like_nonzero_ratio": "stimulus_match_v2_numeric_time_like_nonzero_ratio",
+  "stimulus_match_v2_numeric_time_like_score_mean": "stimulus_match_v2_numeric_time_like_score_mean",
+  "stimulus_match_v2_numeric_time_like_wildcard_applied_count": "stimulus_match_v2_numeric_time_like_wildcard_applied_count",
+  "stimulus_match_v2_order_alignment_mean": "stimulus_match_v2_order_alignment_mean",
+  "stimulus_match_v2_score_mean": "stimulus_match_v2_score_mean",
+  "stimulus_match_v2_soft_partial_eligible_count": "stimulus_match_v2_soft_partial_eligible_count",
+  "stimulus_match_v2_soft_partial_selected_count": "stimulus_match_v2_soft_partial_selected_count",
+  "stimulus_match_v2_threshold_margin_mean": "stimulus_match_v2_threshold_margin_mean",
+  "stimulus_match_v2_time_factor_bonus_applied_count": "stimulus_match_v2_time_factor_bonus_applied_count",
+  "stimulus_match_v2_time_factor_bonus_mean": "stimulus_match_v2_time_factor_bonus_mean",
+  "stimulus_new_structure_count": "stimulus_new_structure_count",
+  "stimulus_round_count": "stimulus_round_count",
+  "stimulus_shadow_memory_match_v2_candidate_count": "stimulus_shadow_memory_match_v2_candidate_count",
+  "stimulus_shadow_memory_match_v2_eligible_count": "stimulus_shadow_memory_match_v2_eligible_count",
+  "stimulus_shadow_memory_match_v2_numeric_time_like_nonzero_count": "stimulus_shadow_memory_match_v2_numeric_time_like_nonzero_count",
+  "stimulus_shadow_memory_match_v2_numeric_time_like_score_mean": "stimulus_shadow_memory_match_v2_numeric_time_like_score_mean",
+  "stimulus_shadow_memory_match_v2_numeric_time_like_wildcard_applied_count": "stimulus_shadow_memory_match_v2_numeric_time_like_wildcard_applied_count",
+  "stimulus_shadow_memory_match_v2_score_mean": "stimulus_shadow_memory_match_v2_score_mean",
+  "stimulus_shadow_memory_match_v2_time_factor_bonus_applied_count": "stimulus_shadow_memory_match_v2_time_factor_bonus_applied_count",
+  "stimulus_shadow_memory_match_v2_time_factor_bonus_mean": "stimulus_shadow_memory_match_v2_time_factor_bonus_mean",
+  "structure_match_v2_attribute_anchor_mean": "structure_match_v2_attribute_anchor_mean",
+  "structure_match_v2_base_score_mean": "structure_match_v2_base_score_mean",
+  "structure_match_v2_blend_gain_mean": "structure_match_v2_blend_gain_mean",
+  "structure_match_v2_bundle_exact_selected_count": "structure_match_v2_bundle_exact_selected_count",
+  "structure_match_v2_context_support_mean": "structure_match_v2_context_support_mean",
+  "structure_match_v2_eligible_ratio": "structure_match_v2_eligible_ratio",
+  "structure_match_v2_energy_profile_mean": "structure_match_v2_energy_profile_mean",
+  "structure_match_v2_exact_match_selected_count": "structure_match_v2_exact_match_selected_count",
+  "structure_match_v2_numeric_nonzero_ratio": "structure_match_v2_numeric_nonzero_ratio",
+  "structure_match_v2_numeric_score_mean": "structure_match_v2_numeric_score_mean",
+  "structure_match_v2_numeric_scored_ratio": "structure_match_v2_numeric_scored_ratio",
+  "structure_match_v2_numeric_time_like_nonzero_count": "structure_match_v2_numeric_time_like_nonzero_count",
+  "structure_match_v2_numeric_time_like_nonzero_ratio": "structure_match_v2_numeric_time_like_nonzero_ratio",
+  "structure_match_v2_numeric_time_like_score_mean": "structure_match_v2_numeric_time_like_score_mean",
+  "structure_match_v2_numeric_time_like_wildcard_applied_count": "structure_match_v2_numeric_time_like_wildcard_applied_count",
+  "structure_match_v2_order_alignment_mean": "structure_match_v2_order_alignment_mean",
+  "structure_match_v2_score_mean": "structure_match_v2_score_mean",
+  "structure_match_v2_soft_partial_eligible_count": "structure_match_v2_soft_partial_eligible_count",
+  "structure_match_v2_soft_partial_selected_count": "structure_match_v2_soft_partial_selected_count",
+  "structure_match_v2_structure_inclusion_mean": "structure_match_v2_structure_inclusion_mean",
+  "structure_match_v2_threshold_margin_mean": "structure_match_v2_threshold_margin_mean",
+  "structure_match_v2_time_factor_bonus_applied_count": "structure_match_v2_time_factor_bonus_applied_count",
+  "structure_match_v2_time_factor_bonus_mean": "structure_match_v2_time_factor_bonus_mean",
+  "structure_round_competitive_count": "structure_round_competitive_count",
+  "structure_round_count": "structure_round_count",
+  "structure_round_implicit_single_count": "structure_round_implicit_single_count",
+  "structure_round_synthetic_count": "structure_round_synthetic_count",
+  "teacher_applied_count": "teacher_applied_count",
+  "teacher_context_binding_applied_count": "teacher_context_binding_applied_count",
+  "teacher_context_binding_candidate_count": "teacher_context_binding_candidate_count",
+  "teacher_focus_context_carrier_count": "teacher_focus_context_carrier_count",
+  "teacher_focus_directive_count": "teacher_focus_directive_count",
+  "teacher_focus_directive_max_focus_boost": "teacher_focus_directive_max_focus_boost",
+  "teacher_focus_directive_total_strength": "teacher_focus_directive_total_strength",
+  "teacher_local_alias_active_count": "teacher_local_alias_active_count",
+  "teacher_local_alias_available_count": "teacher_local_alias_available_count",
+  "teacher_local_alias_matched_count": "teacher_local_alias_matched_count",
+  "teacher_local_alias_overlay_applied_count": "teacher_local_alias_overlay_applied_count",
+  "teacher_local_alias_overlay_match_score": "teacher_local_alias_overlay_match_score",
+  "teacher_local_alias_overlay_pun": "teacher_local_alias_overlay_pun",
+  "teacher_local_alias_overlay_rwd": "teacher_local_alias_overlay_rwd",
+  "teacher_primary_target_atomic": "teacher_primary_target_atomic",
+  "teacher_pun": "teacher_pun",
+  "teacher_punish_signal_live_attribute_count": "teacher_punish_signal_live_attribute_count",
+  "teacher_punish_signal_live_total_energy": "teacher_punish_signal_live_total_energy",
+  "teacher_reward_signal_live_attribute_count": "teacher_reward_signal_live_attribute_count",
+  "teacher_reward_signal_live_total_energy": "teacher_reward_signal_live_total_energy",
+  "teacher_rwd": "teacher_rwd",
+  "teacher_total_binding_applied_count": "teacher_total_binding_applied_count",
+  "tick_in_episode_index": "tick_in_episode_index",
+  "time_sensor_attribute_binding_count": "time_sensor_attribute_binding_count",
+  "time_sensor_bucket_update_count": "time_sensor_bucket_update_count",
+  "time_sensor_delayed_task_capacity_skip_count": "time_sensor_delayed_task_capacity_skip_count",
+  "time_sensor_delayed_task_executed_count": "time_sensor_delayed_task_executed_count",
+  "time_sensor_delayed_task_pruned_count": "time_sensor_delayed_task_pruned_count",
+  "time_sensor_delayed_task_registered_count": "time_sensor_delayed_task_registered_count",
+  "time_sensor_delayed_task_table_size": "time_sensor_delayed_task_table_size",
+  "time_sensor_delayed_task_updated_count": "time_sensor_delayed_task_updated_count",
+  "time_sensor_legacy_binding_count": "time_sensor_legacy_binding_count",
+  "time_sensor_memory_sample_count": "time_sensor_memory_sample_count",
+  "time_sensor_projection_binding_count": "time_sensor_projection_binding_count",
+  "timing_action_ms": "timing_action_ms",
+  "timing_attention_ms": "timing_attention_ms",
+  "timing_cache_neutralization_ms": "timing_cache_neutralization_ms",
+  "timing_cfs_ms": "timing_cfs_ms",
+  "timing_cognitive_stitching_ms": "timing_cognitive_stitching_ms",
+  "timing_emotion_ms": "timing_emotion_ms",
+  "timing_iesm_ms": "timing_iesm_ms",
+  "timing_induction_and_memory_ms": "timing_induction_and_memory_ms",
+  "timing_induction_hdb_propagation_ms": "timing_induction_hdb_propagation_ms",
+  "timing_induction_source_consumption_ms": "timing_induction_source_consumption_ms",
+  "timing_induction_source_snapshot_ms": "timing_induction_source_snapshot_ms",
+  "timing_induction_target_apply_ms": "timing_induction_target_apply_ms",
+  "timing_memory_activation_apply_ms": "timing_memory_activation_apply_ms",
+  "timing_memory_activation_snapshot_ms": "timing_memory_activation_snapshot_ms",
+  "timing_memory_feedback_apply_ms": "timing_memory_feedback_apply_ms",
+  "timing_memory_runtime_projection_ms": "timing_memory_runtime_projection_ms",
+  "timing_memory_seed_collect_ms": "timing_memory_seed_collect_ms",
+  "timing_maintenance_after_summary_ms": "timing_maintenance_after_summary_ms",
+  "timing_maintenance_before_summary_ms": "timing_maintenance_before_summary_ms",
+  "timing_maintenance_history_events_ms": "timing_maintenance_history_events_ms",
+  "timing_maintenance_pool_maintenance_ms": "timing_maintenance_pool_maintenance_ms",
+  "timing_action_recall_side_effect_ms": "timing_action_recall_side_effect_ms",
+  "timing_reward_action_runtime_sync_ms": "timing_reward_action_runtime_sync_ms",
+  "timing_runner_cycle_overhead_ms": "timing_runner_cycle_overhead_ms",
+  "timing_runner_cycle_wall_ms": "timing_runner_cycle_wall_ms",
+  "timing_runner_metrics_extract_ms": "timing_runner_metrics_extract_ms",
+  "timing_sensor_ms": "timing_sensor_ms",
+  "timing_stimulus_level_ms": "timing_stimulus_level_ms",
+  "timing_structure_level_ms": "timing_structure_level_ms",
+  "timing_time_sensor_ms": "timing_time_sensor_ms",
+  "timing_total_logic_ms": "timing_total_logic_ms"
+};
+
+export const metricChineseNotes: Record<string, string> = {
+  ER: '实能量：来自外源刺激或先天规则等现实证据侧的能量。',
+  EV: '虚能量：来自感应赋能、记忆预测和内源刺激侧的预期能量。',
+  CP: '认知压：实能量与虚能量之间的偏差压力。',
+  CAM: '注意力记忆体：注意力模块选出的当前可进入内源刺激的候选集合。',
+  CFS: '认知感受：违和、正确、期待、压力等系统对自身状态的感受信号。',
+  IESM: '先天脚本模块：根据规则产生认知感受、行动触发、情绪递质调制等。',
+  NT: '情绪递质：8 通道调制量，会影响注意力、行动阈值、HDB 参数等。',
+  HDB: '层级数据库：结构、残差、结构组和情节记忆的长期存储。',
+};
+
+const preciseMetricLabels: Record<string, string> = {
+  nt_DA: '情绪递质·多巴胺 DA',
+  nt_ADR: '情绪递质·肾上腺素 ADR',
+  nt_OXY: '情绪递质·催产素 OXY',
+  nt_SER: '情绪递质·血清素 SER',
+  nt_END: '情绪递质·内啡肽 END',
+  nt_COR: '情绪递质·皮质醇 COR',
+  nt_NOV: '情绪递质·新奇 NOV',
+  nt_FOC: '情绪递质·聚焦 FOC',
+  attention_cam_item_cap: '注意力容量上限',
+  attention_mod_min_cam_items: '注意力最少保留对象数',
+  attention_mod_focus_boost_weight: '聚焦指令放大权重',
+  attention_mod_min_total_energy: '入选最低总能量阈值',
+  attention_mod_attention_energy_budget: '调制后的注意力预算请求值',
+  attention_energy_budget: '本轮实际注意力能量预算',
+  attention_energy_budget_base: '注意力预算基线',
+  attention_energy_budget_min: '注意力预算下限',
+  attention_energy_budget_max: '注意力预算上限',
+  attention_energy_filter_applied: '注意力能量滤波开关',
+  attention_net_delta_energy: '注意力净增能量',
+  attention_mod_priority_weight_total_energy: '排序时对总能量的权重',
+  attention_mod_priority_weight_cp_abs: '排序时对认知压绝对值的权重',
+  attention_mod_priority_weight_salience: '排序时对显著性的权重',
+  attention_mod_priority_weight_fatigue: '排序时对疲劳惩罚的权重',
+  attention_mod_priority_weight_recency_gain: '排序时对近因新鲜度的权重',
+  attention_sa_count_pref_peak: '注意力偏好峰值 SA 数',
+  attention_sa_count_pref_no_reward_below_or_equal: '无奖励下界 SA 数',
+  attention_sa_count_pref_no_reward_above_or_equal: '无奖励上界 SA 数',
+  attention_sa_count_pref_bonus_cap: '4-SA 偏好最大奖励',
+  attention_sa_count_pref_penalty_cap: '4-SA 偏好最大惩罚',
+  attention_sa_count_pref_min_scale: '4-SA 偏好最低缩放',
+  attention_sa_count_pref_selected_bonus_total: '本轮入选对象的 4-SA 偏好总奖励',
+  attention_sa_count_pref_selected_scale_mean: '本轮入选对象的 4-SA 偏好平均缩放',
+  attention_sa_count_pref_selected_token_count_mean: '本轮入选对象的平均 SA 数',
+  pool_er_atomic_feature_sa_top5_count: 'ER Top5 原子 SA 证据数',
+  pool_ev_atomic_feature_sa_top5_count: 'EV Top5 原子 SA 证据数',
+  pool_er_structure_top5_count: 'ER 结构 Top5 数',
+  pool_ev_structure_top5_count: 'EV 结构 Top5 数',
+  induction_projection_mode_growth: '感应投影模式为生长方案',
+  induction_projection_raw_target_count: '原始感应目标数',
+  induction_projection_projected_target_count: '生长投影后目标数',
+  induction_growth_target_count: 'A+B 生长目标数',
+  induction_growth_identity_hit_count: '完整身份命中数',
+  induction_growth_identity_created_count: '完整身份创建数',
+  induction_growth_identity_local_cache_hit_count: '本轮身份缓存命中数',
+  induction_growth_identity_shared_cache_hit_count: '跨 tick 身份缓存命中数',
+  induction_growth_identity_shared_cache_stale_count: '跨 tick 身份缓存陈旧数',
+  induction_growth_identity_create_exact_lookup_skipped_count: '创建前跳过重复精确查找数',
+  induction_growth_persistence_batch_enabled: '生长创建持久化批处理',
+  induction_growth_target_apply_ref_fast_merge_enabled: '目标入池 ref 快合并开关',
+  induction_growth_target_apply_fast_ref_hit_merge_count: '目标入池 ref 快合并命中数',
+  induction_growth_target_apply_insert_log_enabled: '目标入池逐条日志开关',
+  induction_growth_target_apply_insert_log_suppressed_count: '目标入池日志抑制数',
+  induction_growth_identity_lookup_disabled_count: '身份解析关闭数',
+  induction_growth_runtime_only_count: '未绑定运行态暂存数',
+  induction_growth_memory_candidate_count: '记忆候选数',
+  induction_growth_memory_terminal_passthrough_count: '记忆终端旁路数',
+  induction_growth_pruned_low_energy_count: '低能生长剪枝数',
+  induction_growth_failed_count: '生长投影失败数',
+  induction_growth_skipped_missing_source_count: '缺少来源结构跳过数',
+  induction_growth_skipped_missing_residual_count: '缺少残差结构跳过数',
+  induction_growth_deduped_count: '同一完整结构去重合并数',
+  induction_growth_total_delta_er: '生长对象来源 ER 统计增量',
+  induction_growth_total_delta_ev: '生长对象残差 EV 统计增量',
+  induction_growth_source_component_er_total: 'source-side ER 组件份额',
+  induction_growth_residual_component_ev_total: 'residual-side EV 组件份额',
+  pool_runtime_resolution_degraded_item_count: '运行态降分辨率对象数',
+  pool_runtime_resolution_active_component_count: '运行态活跃组件数',
+  pool_runtime_resolution_dropped_component_count: '运行态淡出组件数',
+  maintenance_runtime_resolution_refreshed_item_count: '维护刷新分辨率对象数',
+  maintenance_runtime_resolution_degraded_item_count: '维护后仍降分辨率对象数',
+  induction_source_memory_terminal_prefilter_skipped_count: '感应源跳过记忆终端数',
+  residual_tail_memory_projection_applied: '刺激尾巴按记忆 id 入池',
+  residual_tail_memory_projection_handled: '刺激尾巴由记忆 id 接管',
+  residual_tail_memory_projection_total_energy: '刺激尾巴记忆能量',
+  residual_tail_memory_projection_token_count: '刺激尾巴 token 数',
+  residual_tail_memory_projection_full_memory_token_count: '完整记忆 token 数',
+  residual_tail_memory_projection_tail_component_er_share: '尾巴组件 ER',
+  residual_tail_memory_projection_tail_component_ev_share: '尾巴组件 EV',
+  runtime_residual_promotion_exact_rebind_count: '残余包精确重绑定数',
+  runtime_residual_promotion_full_identity_count: '残余包完整身份晋升数',
+  runtime_residual_promotion_hdb_fallback_count: '残余包完整查存回退数',
+  runtime_residual_immediate_promotion_promoted_count: '残余包即时晋升数',
+  runtime_residual_immediate_promotion_hdb_fallback_count: '即时晋升查存回退数',
+  stimulus_local_child_candidate_count: '局部子候选数',
+  stimulus_local_child_candidate_pruned_count: '局部子候选剪枝数',
+  stimulus_best_match_candidate_count: '精评分候选数',
+  stimulus_best_match_pruned_count: '精评分候选剪枝数',
+  stimulus_best_match_strict_overlap_fast_reject_count: '精评分严格重叠快拒数',
+  stimulus_cut_common_part_total_count: '共同切割总次数',
+  stimulus_best_match_common_part_count: '精评分共同切割次数',
+  stimulus_cut_exact_fast_path_hit_count: '完全相同切割快路径命中数',
+  stimulus_cut_full_inclusion_fast_path_hit_count: '完整包含切割快路径命中数',
+  stimulus_cut_single_group_fast_path_hit_count: '单共现组切割快路径命中数',
+  stimulus_cut_ordered_subsequence_fast_path_hit_count: '有序子序列切割快路径命中数',
+  stimulus_cut_cache_hit_count: '共同切割缓存命中数',
+  stimulus_cut_cache_zero_copy_hit_count: '共同切割零拷贝命中数',
+  stimulus_cut_cache_store_count: '共同切割缓存写入数',
+  stimulus_cut_cache_deepcopy_count: '共同切割缓存深拷贝数',
+  stimulus_cut_normalize_cache_hit_count: '序列组规范化缓存命中数',
+  stimulus_cut_normalize_cache_zero_copy_hit_count: '序列组规范化缓存零拷贝命中数',
+  stimulus_cut_normalize_reusable_hit_count: '刺激级规范化直接复用次数',
+  stimulus_cut_normalize_reusable_group_count: '刺激级规范化直接复用组数',
+  stimulus_cut_signature_fast_path_hit_count: '刺激级签名直读次数',
+  stimulus_cut_empty_group_fast_path_hit_count: '刺激级空残差组快构造次数',
+  stimulus_cut_full_group_fast_path_hit_count: '刺激级完整组复用次数',
+  stimulus_cut_reindex_fast_path_hit_count: '刺激级重索引复用次数',
+  cache_priority_cut_exact_fast_path_hit_count: '中和完全相同切割快路径命中数',
+  cache_priority_cut_full_inclusion_fast_path_hit_count: '中和完整包含切割快路径命中数',
+  cache_priority_cut_single_group_fast_path_hit_count: '中和单共现组切割快路径命中数',
+  cache_priority_cut_ordered_subsequence_fast_path_hit_count: '中和有序子序列切割快路径命中数',
+  cache_priority_cut_cache_hit_count: '中和共同切割缓存命中数',
+  cache_priority_cut_cache_zero_copy_hit_count: '中和共同切割零拷贝命中数',
+  cache_priority_cut_cache_store_count: '中和共同切割缓存写入数',
+  cache_priority_cut_cache_deepcopy_count: '中和共同切割缓存深拷贝数',
+  cache_priority_cut_normalize_cache_hit_count: '中和序列组规范化缓存命中数',
+  cache_priority_cut_normalize_cache_zero_copy_hit_count: '中和序列组规范化缓存零拷贝命中数',
+  cache_priority_cut_normalize_reusable_hit_count: '中和规范化直接复用次数',
+  cache_priority_cut_normalize_reusable_group_count: '中和规范化直接复用组数',
+  cache_priority_cut_signature_fast_path_hit_count: '中和签名直读次数',
+  cache_priority_cut_empty_group_fast_path_hit_count: '中和空残差组快构造次数',
+  cache_priority_cut_full_group_fast_path_hit_count: '中和完整组复用次数',
+  cache_priority_cut_reindex_fast_path_hit_count: '中和重索引复用次数',
+  cache_priority_theoretical_match_fast_reject_count: '中和理论低分剪枝数',
+  induction_cut_cache_hit_count: '感应共同切割缓存命中数',
+  induction_cut_cache_zero_copy_hit_count: '感应共同切割零拷贝命中数',
+  induction_cut_cache_store_count: '感应共同切割缓存写入数',
+  induction_cut_cache_deepcopy_count: '感应共同切割缓存深拷贝数',
+  induction_cut_normalize_cache_zero_copy_hit_count: '感应序列组规范化缓存零拷贝命中数',
+  induction_cut_normalize_reusable_hit_count: '感应规范化直接复用次数',
+  induction_cut_normalize_reusable_group_count: '感应规范化直接复用组数',
+  induction_cut_signature_fast_path_hit_count: '感应签名直读次数',
+  induction_cut_empty_group_fast_path_hit_count: '感应空残差组快构造次数',
+  induction_cut_full_group_fast_path_hit_count: '感应完整组复用次数',
+  induction_cut_reindex_fast_path_hit_count: '感应重索引复用次数',
+  induction_cut_full_inclusion_fast_path_hit_count: '感应完整包含切割快路径命中数',
+  induction_cut_single_group_fast_path_hit_count: '感应单共现组切割快路径命中数',
+  induction_cut_ordered_subsequence_fast_path_hit_count: '感应有序子序列切割快路径命中数',
+  stimulus_shadow_raw_residual_candidate_count: '影子残差候选数',
+  stimulus_shadow_raw_residual_candidate_pruned_count: '影子残差候选剪枝数',
+  stimulus_shadow_raw_residual_skipped_count: '影子残差精评分跳过数',
+  stimulus_shadow_raw_residual_common_part_count: '影子残差共同切割次数',
+  stimulus_owner_local_residual_list_cache_hit_count: 'owner 局部残差列表缓存命中数',
+  stimulus_owner_local_residual_index_build_count: 'owner 局部残差索引构建数',
+  stimulus_owner_local_residual_index_cache_hit_count: 'owner 局部残差索引缓存命中数',
+  stimulus_owner_local_residual_raw_signature_hit_count: '原始残差签名直命中数',
+  stimulus_owner_local_residual_common_signature_hit_count: '共有结构签名直命中数',
+  stimulus_owner_local_residual_fuzzy_equivalent_call_count: '残差等价检查次数',
+  stimulus_owner_local_residual_fuzzy_equivalent_cache_hit_count: '残差等价缓存命中数',
+  stimulus_owner_local_residual_fuzzy_equivalent_signature_hit_count: '残差等价签名命中数',
+  stimulus_owner_local_residual_fuzzy_equivalent_fast_reject_count: '残差等价快速拒绝数',
+  stimulus_owner_local_residual_common_overlap_fast_reject_count: '残差共有重叠快速拒绝数',
+  stimulus_owner_local_residual_fuzzy_unit_bucket_pruned_count: '残差等价 unit 分桶剪枝数',
+  stimulus_owner_local_residual_fuzzy_equivalent_cut_count: '残差等价共同切割次数',
+  stimulus_anchor_owner_residual_presence_cache_hit_count: '锚点 owner 残差存在性缓存命中数',
+  stimulus_anchor_owner_residual_presence_scan_count: '锚点 owner 残差存在性扫描数',
+  induction_total_delta_er: '感应赋能 ER 统计增量',
+  iesm_emotion_update_DA: '先天规则触发的多巴胺增减量',
+  iesm_emotion_update_ADR: '先天规则触发的肾上腺素增减量',
+  iesm_emotion_update_OXY: '先天规则触发的催产素增减量',
+  iesm_emotion_update_SER: '先天规则触发的血清素增减量',
+  iesm_emotion_update_END: '先天规则触发的内啡肽增减量',
+  iesm_emotion_update_COR: '先天规则触发的皮质醇增减量',
+  iesm_emotion_update_NOV: '先天规则触发的新奇通道增减量',
+  iesm_emotion_update_FOC: '先天规则触发的聚焦通道增减量',
+  emotion_hdb_base_weight_er_gain_scale: 'NT 对现实学习增益的调制系数',
+  emotion_hdb_base_weight_ev_wear_scale: 'NT 对虚循环磨损的调制系数',
+  emotion_hdb_ev_propagation_threshold_scale: 'NT 对 EV 传播阈值的调制系数',
+  emotion_hdb_ev_propagation_ratio_scale: 'NT 对 EV 传播比例的调制系数',
+  emotion_hdb_er_induction_ratio_scale: 'NT 对 ER 诱发 EV 比例的调制系数',
+  timing_induction_and_memory_ms: '归纳与记忆耗时',
+  induction_source_local_target_hint_diagnostics_skipped: '感应源局部候选诊断跳过标记',
+  induction_structure_db_update_request_count: '归纳结构库更新请求次数',
+  induction_structure_db_update_applied_count: '归纳结构库实际提交次数',
+  induction_structure_db_update_deduped_count: '归纳结构库去重提交次数',
+  timing_induction_source_snapshot_ms: '归纳源选择耗时',
+  timing_induction_hdb_propagation_ms: 'HDB 感应传播耗时',
+  timing_induction_projection_prepare_ms: '感应生长投影准备耗时',
+  timing_induction_source_consumption_ms: '源 EV 扣减耗时',
+  timing_induction_target_apply_ms: '感应目标入池耗时',
+  timing_memory_seed_collect_ms: '记忆种子收集耗时',
+  timing_memory_activation_apply_ms: '记忆激活应用耗时',
+  timing_memory_runtime_projection_ms: '记忆运行态投影耗时',
+  timing_memory_activation_snapshot_ms: '记忆快照耗时',
+  timing_memory_feedback_apply_ms: '记忆反馈耗时',
+  timing_maintenance_before_summary_ms: '维护前摘要耗时',
+  timing_maintenance_pool_maintenance_ms: '状态池维护本体耗时',
+  timing_maintenance_after_summary_ms: '维护后摘要耗时',
+  timing_maintenance_history_events_ms: '维护事件收集耗时',
+  timing_cognitive_stitching_ms: '认知拼接耗时',
+  timing_attention_ms: '注意力耗时',
+  timing_iesm_ms: 'IESM 耗时',
+  timing_action_recall_side_effect_ms: '行动召回副作用耗时',
+  timing_reward_action_runtime_sync_ms: '奖惩行动节点同步耗时',
+  timing_runner_cycle_wall_ms: 'runner 单 tick 墙钟耗时',
+  timing_runner_cycle_overhead_ms: 'runner 外围/等待耗时',
+  timing_runner_metrics_extract_ms: '指标抽取耗时',
+};
+
+const preciseMetricMeanings: Record<string, string> = {
+  nt_DA: '记录多巴胺通道的实时浓度。值升高通常表示系统更偏向奖励、趋近、行动意愿和“愿意继续做”的状态；值回落则说明这种正向驱动在减弱。',
+  nt_ADR: '记录肾上腺素通道的实时浓度。值升高通常表示系统唤醒度、应急性和注意资源上调，更容易把能量集中到眼前最紧迫的对象；值回落则更接近平静基线。',
+  nt_OXY: '记录催产素通道的实时浓度。值升高通常表示系统更偏向亲和、信任、关系维持和稳定联结；值较低时，这种社交/关系向的偏置会更弱。',
+  nt_SER: '记录血清素通道的实时浓度。值升高通常表示系统更稳定、更平衡、更不容易被局部波动牵走；值偏低时，全局稳态和满足感偏置会减弱。',
+  nt_END: '记录内啡肽通道的实时浓度。值升高通常表示系统更偏向舒缓、恢复、缓冲痛苦或高压冲击；值较低时，恢复与止损能力更弱。',
+  nt_COR: '记录皮质醇通道的实时浓度。值升高通常表示系统更警觉、更受压力驱动，并倾向收窄注意范围；若长期高位，往往意味着持续紧张或高压监控状态。',
+  nt_NOV: '记录新奇通道的实时浓度。值升高通常表示系统更偏向陌生、变化和探索性的对象，更容易把注意力给到新输入或新结构。',
+  nt_FOC: '记录聚焦通道的实时浓度。值升高通常表示系统更偏向目标锁定、注意收束和持续追踪同一条线索；值较低时更容易发散。',
+  attention_cam_item_cap: '本轮注意力最多允许保留多少个 CAM 对象；它决定注意力候选池的容量上界。',
+  attention_mod_min_cam_items: '在 NT 与运行调制之后，本轮注意力至少会保留多少个对象，避免注意力过度收缩。',
+  attention_mod_focus_boost_weight: '聚焦指令对排序分数的放大权重，数值越高，当前被聚焦的对象越容易吃到注意力资源。',
+  attention_mod_min_total_energy: '对象进入注意力候选区所需的最低总能量门槛，过低会把弱噪声放进来，过高会让内源刺激断流。',
+  attention_mod_attention_energy_budget: '经过 NT、行动模式等调制后，本轮系统希望分配给注意力滤波的预算请求值。',
+  attention_energy_budget: '本轮最终实际采用的注意力能量预算；滤波后净增的能量应受它约束。',
+  attention_energy_budget_base: '注意力能量预算的默认基线，目前设计口径应稳定在 8 附近，再由 NT/行动做边界内调制。',
+  attention_energy_budget_min: '注意力预算允许下探到的最低值，用于限制极端低唤醒状态下的资源衰减。',
+  attention_energy_budget_max: '注意力预算允许上升到的最高值，用于限制高唤醒或聚焦状态下的能量放大不会失控。',
+  attention_energy_filter_applied: '标记本轮是否真的执行了注意力滤波与预算落地，而不是只做了候选选择。',
+  attention_net_delta_energy: '注意力滤波前后，CAM 总能量的净增量；它应与注意力预算链路保持一致。',
+  attention_mod_priority_weight_total_energy: '注意力排序时，总能量对分数的影响强度。越高越偏向能量高的对象。',
+  attention_mod_priority_weight_cp_abs: '注意力排序时，认知压绝对值对分数的影响强度。越高越偏向高张力对象。',
+  attention_mod_priority_weight_salience: '注意力排序时，显著性对分数的影响强度。越高越偏向突发、醒目的对象。',
+  attention_mod_priority_weight_fatigue: '注意力排序时，疲劳惩罚对分数的影响强度。越高越能压制短时间反复占顶的对象。',
+  attention_mod_priority_weight_recency_gain: '注意力排序时，近因新鲜度对分数的影响强度。越高越偏向刚刚活跃过的对象。',
+  attention_sa_count_pref_peak: '注意力偏好最强的目标 SA 数。当前设计以 4 个 SA 左右最容易获得额外注意资源。',
+  attention_sa_count_pref_no_reward_below_or_equal: '当对象 SA 数小于等于这个值时，不再获得 4-SA 记忆偏好奖励。',
+  attention_sa_count_pref_no_reward_above_or_equal: '当对象 SA 数大于等于这个值时，不再获得 4-SA 记忆偏好奖励。',
+  attention_sa_count_pref_bonus_cap: '4-SA 长度偏好能提供的最大奖励幅度。',
+  attention_sa_count_pref_penalty_cap: '对象离 4-SA 偏好区太远时，注意力长度偏好能施加的最大惩罚幅度。',
+  attention_sa_count_pref_min_scale: '即使长度不理想，排序分数也至少保留到这个缩放比例，避免被硬门控。',
+  attention_sa_count_pref_selected_bonus_total: '本轮最终入选的注意力对象，总共吃到了多少 4-SA 长度偏好奖励。',
+  attention_sa_count_pref_selected_scale_mean: '本轮最终入选对象，在 4-SA 长度偏好下的平均缩放系数。越接近 1，说明整体长度更合适。',
+  attention_sa_count_pref_selected_token_count_mean: '本轮最终入选对象的平均 SA 数，用于直观看注意力偏向了短对象、四字对象还是超长对象。',
+  pool_er_atomic_feature_sa_top5_count: 'ER 原始 Top5 里被判定为原子特征 SA 的数量。它可能只是外源字符证据仍有真实 ER，不等价于旧 CS 残差半成品失败。',
+  pool_ev_atomic_feature_sa_top5_count: 'EV 原始 Top5 里被判定为原子特征 SA 的数量。若在 growth + CS off 下长期偏高，才更需要怀疑旧 residual 投影或未合并的预测碎片仍在占顶。',
+  pool_er_structure_top5_count: '排除原子特征 SA 后，ER 结构 Top5 的可见数量。用于看当前真实证据是否已经能被完整结构身份承接。',
+  pool_ev_structure_top5_count: '排除原子特征 SA 后，EV 结构 Top5 的可见数量。用于看感应生长、记忆投影和内源刺激是否把预测能量落在完整结构峰上。',
+  induction_projection_mode_growth: '标记本轮感应投影是否使用新版生长方案。值为 1 表示默认 A+B 生长路径正在生效；值为 0 通常表示切回旧 residual 对照路径。',
+  induction_projection_raw_target_count: 'HDB induction 原始产生的目标数量。它仍来自源对象局部数据库里的残差结构/残差记忆候选，是生长投影前的材料规模。',
+  induction_projection_projected_target_count: '经过 Observatory 生长投影后真正要落入状态池的目标数量。若明显小于原始目标数，要结合低能剪枝、缺源、缺残差和 runtime-only 计数判断原因。',
+  induction_growth_target_count: '本轮成功形成 HDB-backed A+B 完整结构目标的数量。它是新版默认图景的核心验收字段：A 命中后应直接长出更完整的结构，而不是只产生带上下文的残差半成品。',
+  induction_growth_identity_hit_count: 'A+B 完整结构已经存在并被精确身份解析命中的次数。数值越高，说明相同完整内容能稳定汇聚到同一个结构身份。',
+  induction_growth_identity_created_count: 'A+B 完整结构不存在、且达到创建条件后现场创建 HDB-backed ST 的次数。初期训练或新语料中可升高，但长期过高可能意味着身份解析缓存或查存链仍不稳定。',
+  induction_growth_identity_local_cache_hit_count: '同一个 tick 内，已经解析过的 A+B 完整身份再次被候选复用的次数。它越高，说明多个来源在同一轮汇聚到相同完整结构，同时也表示生长投影避免了重复精确查找/创建。',
+  induction_growth_identity_shared_cache_hit_count: '跨 tick 复用已经解析过的 A+B context-free 完整身份的次数。它不改变身份规则，只表示 recurring 生长对象跳过了重复 exact lookup，是 projection_prepare 的主要性能快路径之一。',
+  induction_growth_identity_shared_cache_stale_count: '跨 tick 身份缓存指向的结构已不存在或失效的次数。正常应接近 0；升高时说明清库、修复或外部变更后有陈旧缓存被自动丢弃。',
+  induction_growth_identity_create_exact_lookup_skipped_count: '生长投影已经先做过精确身份探测并确认未命中后，创建辅助函数跳过第二次 exact lookup 的次数。它是性能优化指标，不改变 A+B 完整身份语义。',
+  induction_growth_persistence_batch_enabled: '生长投影现场创建 HDB-backed A+B 结构时，是否使用 HDB 延迟持久化批处理。为 1 时内存身份和索引立即生效，但结构/db JSON 写入合并到批处理 flush，用于降低 projection_prepare 慢尾；为 0 时是保守即时落盘路径。',
+  induction_growth_target_apply_ref_fast_merge_enabled: '感应目标入池是否允许 exact ref 命中快合并。为 1 时，已在状态池中的 A+B ST 会直接走能量引擎合并 ER/EV，跳过重复候选 state_item 构建；身份语义不变。',
+  induction_growth_target_apply_fast_ref_hit_merge_count: '本轮感应目标入池时，exact ref 快合并命中的次数。它越高，说明 recurring A+B 目标在 StatePool 层复用成功，有助于降低 target_apply 耗时。',
+  induction_growth_target_apply_insert_log_enabled: '感应目标运行态插入是否逐条写 StatePool brief/detail 日志。长跑默认关闭以减少文件日志慢尾；开启适合短程取证。',
+  induction_growth_target_apply_insert_log_suppressed_count: '本轮因关闭逐条日志而跳过文件日志的感应目标数。它是性能保护指标，不表示目标被跳过。',
+  induction_growth_identity_lookup_disabled_count: '因配置关闭完整身份解析而没有查找/创建 A+B 身份的次数。默认应为 0；非 0 表示当前是审计/回滚模式，不能用它判断完整身份收敛质量。',
+  induction_growth_runtime_only_count: '无法解析或不允许创建真实 HDB 结构时，仅作为运行态暂存的生长候选数。这能保护纯虚/低置信预测不太早进入长期库；若长期很高，说明许多预测没有被正式认知。',
+  induction_growth_memory_candidate_count: '原始感应候选中属于记忆终端的数量。当前实现把这类终端交给记忆激活/运行态记忆路径处理，而不是强行当结构继续生长。',
+  induction_growth_memory_terminal_passthrough_count: '记忆终端候选被旁路给记忆路径的数量。通常应接近 memory_candidate_count；若差异很大，要检查记忆残差材料是否缺失。',
+  induction_growth_pruned_low_energy_count: '因预计落池能量低于投影/状态池阈值而被剪掉的生长候选数。它是防止分形图景无限膨胀的正常保护；过高则可能让联想链过短。',
+  induction_growth_failed_count: '生长投影失败次数，通常来自无法构造完整 profile、身份解析异常或创建被禁止。非 0 需要结合缺源/缺残差字段进一步定位。',
+  induction_growth_skipped_missing_source_count: '找不到来源 A 的结构 profile 时跳过的候选数。默认应很低；若升高，说明 HDB debug candidate 的 source id 或运行态源映射有断点。',
+  induction_growth_skipped_missing_residual_count: '找不到残差 B 的 profile 时跳过的候选数。默认应很低；若升高，说明 residual target id、embedded target_profile 或记忆材料缺失。',
+  induction_growth_deduped_count: '同一 tick 中多个候选生长到同一个完整 A+B 身份后被合并的次数。它不表示信息丢失，而是说明相同完整结构的能量正在前端/状态池口径中汇聚。',
+  induction_growth_total_delta_er: '生长后完整结构统计到的来源 ER 份额总量。它来自 A 的真实能量侧，用于显示“这个想法里哪部分是现实证据支撑”，不是把残差预测 B 改写成 ER。',
+  induction_growth_total_delta_ev: '生长后完整结构统计到的残差 EV 份额总量。它来自 B 的预测/记忆扩散能量，是新版感应生长真正往外长出的虚能量总量。',
+  induction_growth_source_component_er_total: '生长对象组件审计中的 source-side ER 总量。它是对 `induction_growth_total_delta_er` 的明确口径外显，用于确认 ER 只来自来源 A 的真实证据侧。',
+  induction_growth_residual_component_ev_total: '生长对象组件审计中的 residual-side EV 总量。它是对 `induction_growth_total_delta_ev` 的明确口径外显，用于确认残差 B 保持预测/想象能量，而不是被误写成 ER。',
+  induction_source_memory_terminal_prefilter_skipped_count: '感应源选择阶段跳过的 em 运行态记忆对象数。记忆是扩散结果/终端回响，可进入状态池和注意力，但默认不作为打开结构数据库继续生长的 source。',
+  residual_tail_memory_projection_applied: '刺激级查存一体后，未完全吸收的刺激尾巴是否直接按本轮 episodic memory id 合并到运行态记忆对象。新版默认主链下它替代 rt_residual_* 残余包。',
+  residual_tail_memory_projection_handled: '刺激级查存一体后，尾巴路径是否已经由本轮 episodic memory id 接管。即使尾巴能量低于入池阈值、没有 visible em 增量，也不应再回退成碎片 SA 或旧 rt_residual_* 残余包。',
+  residual_tail_memory_projection_total_energy: '本轮刺激尾巴并入记忆对象的 ER+EV 总量。它来自未吸收尾巴的 SA 能量，不是重新查询/晋升产生的新结构能量。',
+  residual_tail_memory_projection_token_count: '未完全吸收刺激尾巴的 token 数。若长期很高，说明刺激级吸收不足或数据集持续输入新内容；若为 0，说明本轮尾巴已被吸收或低于阈值。',
+  residual_tail_memory_projection_full_memory_token_count: '本轮完整 episodic memory 的 token 数，用来和尾巴长度对比，判断尾巴只是未吸收片段还是接近整包回响。',
+  residual_tail_memory_projection_tail_component_er_share: '尾巴记忆投影中按 SA 组件统计的 ER 份额。它应等于尾巴中真实刺激剩余的 ER，不代表预测内容被写成 ER。',
+  residual_tail_memory_projection_tail_component_ev_share: '尾巴记忆投影中按 SA 组件统计的 EV 份额。它用于审计内源/预测尾巴是否保留为 EV。',
+  runtime_residual_promotion_exact_rebind_count: '旧运行态残余包晋升时，完整签名已命中 context-free HDB 结构并直接重绑定的次数。新版默认应接近 0；非零时先检查是否开启旧 fallback/对照。',
+  runtime_residual_promotion_full_identity_count: '旧运行态残余包晋升时，按残余包自己的完整 context-free 特征命中或创建 HDB-backed ST 的次数。新版主链已改用 memory_id 尾巴投影，此项保留为 legacy 诊断。',
+  runtime_residual_promotion_hdb_fallback_count: '旧残余包重绑定和完整身份晋升都未命中、被禁用或失败后，回退到旧完整刺激级查存一体晋升的次数。新版默认应接近 0。',
+  runtime_residual_immediate_promotion_promoted_count: '旧高能残余包插入状态池后，同 tick 立刻完成晋升或重绑定的次数。新版默认关闭，非零通常表示 legacy 开关被显式打开。',
+  runtime_residual_immediate_promotion_hdb_fallback_count: '旧即时晋升过程中仍需要回退到刺激级查存一体的次数。新版默认应接近 0。',
+  stimulus_local_child_candidate_count: '刺激级查存一体中，从 owner-local 结构数据库读取到的局部子候选总数。它越高，说明某些 owner DB 已经较厚，可能拖慢单 tick。',
+  stimulus_local_child_candidate_pruned_count: '因 `stimulus_local_child_candidate_max_per_owner` 护栏被跳过的低优先级局部子候选数。正常可以非零；若质量下降，优先调高该上限或设为 0 回滚。',
+  stimulus_best_match_candidate_count: '进入刺激级精评分阶段前的候选数量。它是 `maximum_common_part` 和 V2 匹配代价的直接上游。',
+  stimulus_best_match_pruned_count: '精评分前因 `stimulus_best_match_candidate_max_per_owner` 护栏剪掉的低优先级候选数。该护栏按局部权重/近因/疲劳排序后生效。',
+  stimulus_best_match_strict_overlap_fast_reject_count: '刺激级精评分前，用严格 unit 签名重叠上界证明候选不可能达到最小共同覆盖而跳过共同切割的次数。属性、数值、时间和模糊 ST profile 不走这个拒绝口径。',
+  stimulus_cut_common_part_total_count: '本轮刺激级普通候选与影子残差候选实际执行共同切割的总次数。它通常比候选数更贴近真实 CPU 代价。',
+  stimulus_best_match_common_part_count: '刺激级普通候选实际执行 `maximum_common_part` 的次数。它是刺激级耗时最重要的代价指标之一。',
+  stimulus_cut_exact_fast_path_hit_count: '共同切割发现两侧完整签名完全相同后直接返回的次数。它是纯性能快路径，不改变匹配语义。',
+  stimulus_cut_full_inclusion_fast_path_hit_count: '共同切割发现一侧结构是另一侧稳定按序完整子序列后直接返回的次数，例如 A+B 被 A+B+C 完整包含。它跳过 DP，但不放宽匹配。',
+  stimulus_cut_single_group_fast_path_hit_count: '共同切割两侧都只有一个共现组时，直接进入组级匹配并跳过外层组 DP 的次数。它仍保留数字软匹配、结构模糊匹配和 CSA bundle 门控。',
+  stimulus_cut_ordered_subsequence_fast_path_hit_count: '有序字符串/SA 组中，一侧 unit 签名是另一侧稳定完整子序列时跳过 LCS 的次数。重复签名等歧义场景会回落旧 LCS。',
+  stimulus_cut_cache_hit_count: 'CutEngine 复用完整 `maximum_common_part` 结果的次数。命中越多，说明重复结构/刺激组合被缓存吸收，实际 DP 次数减少。',
+  stimulus_cut_cache_zero_copy_hit_count: '共同切割缓存命中后直接返回缓存结果的次数。默认走零拷贝性能路径；如打开深拷贝回滚开关，该值会下降。',
+  stimulus_cut_cache_store_count: '本轮写入共同切割缓存的次数，用于判断缓存是否被重复工作填充，而不是只有冷启动写入。',
+  stimulus_cut_cache_deepcopy_count: '共同切割缓存执行防御性深拷贝的次数。默认应接近 0；非零通常表示已启用保守回滚开关。',
+  stimulus_cut_normalize_cache_hit_count: 'CutEngine 复用序列组规范化结果的次数。数值越高，说明重复 profile/结构比较被缓存吸收了一部分。',
+  stimulus_cut_normalize_cache_zero_copy_hit_count: 'CutEngine 在 normalize_sequence_groups 缓存命中后直接返回缓存组列表的次数。默认应为 0；只有打开 aggressive 零拷贝开关时才会升高。',
+  stimulus_cut_normalize_reusable_hit_count: 'CutEngine 发现输入已经是 normalized group 并直接复用的次数。它绕过 `_normalize_sequence_group`，不改变匹配语义。',
+  stimulus_cut_normalize_reusable_group_count: '被 normalized group 直接复用路径覆盖的组数。可用于判断结构/刺激 profile 是否已经形成可复用形态。',
+  stimulus_cut_signature_fast_path_hit_count: '序列签名直接从 normalized group 读取的次数，表示无需再次 normalize 即可得到完整结构签名。',
+  stimulus_cut_empty_group_fast_path_hit_count: '从 normalized 模板快速构造空 common/residual group 的次数，用于减少全匹配或全包含路径里的空组 normalize。',
+  stimulus_cut_full_group_fast_path_hit_count: '从 normalized 模板直接复用完整 common/residual group 的次数。它只跳过 group 重建与 normalize，不改变 common-part 选择。',
+  stimulus_cut_reindex_fast_path_hit_count: '对已经 normalized 且 order_index 相同的 group 执行轻量重索引复用的次数，主要减少 residual/common group 组装开销。',
+  cache_priority_cut_cache_hit_count: '优先中和阶段复用完整 common-part 缓存结果的次数。它只发生在新刺激进入状态池前的中和匹配，不改变 SA 粒度能量结算；命中越高，说明重复中和比较被吸收。',
+  cache_priority_cut_cache_zero_copy_hit_count: '优先中和阶段缓存命中后直接返回读-only common-part 结果的次数。默认应与 cache hit 接近，用于减少深拷贝慢尾。',
+  cache_priority_cut_cache_store_count: '优先中和阶段写入 common-part 缓存的次数。若 store 很高但 hit 长期接近 0，说明当前数据不重复，缓存可能只增加 key 构建开销。',
+  cache_priority_cut_cache_deepcopy_count: '优先中和阶段对 cached common-part 执行深拷贝的次数。默认应为 0；非零通常表示打开了保守回滚开关 priority_neutralization_common_part_cache_deepcopy_enabled。',
+  cache_priority_cut_normalize_cache_zero_copy_hit_count: '优先中和阶段 normalize cache 命中后直接返回缓存组列表的次数。默认应为 0；只有显式启用 normalize_sequence_groups_cache_zero_copy_enabled 才会出现。',
+  cache_priority_cut_exact_fast_path_hit_count: '优先中和阶段发现结构与刺激片段完全相同时直接跳过 DP 的次数。',
+  cache_priority_cut_full_inclusion_fast_path_hit_count: '优先中和阶段发现一侧完整包含另一侧稳定有序序列时跳过 DP 的次数。',
+  cache_priority_cut_single_group_fast_path_hit_count: '优先中和阶段双方都只有一个共现组时跳过外层组 DP 的次数。',
+  cache_priority_cut_ordered_subsequence_fast_path_hit_count: '优先中和阶段有序组内一侧是另一侧无歧义完整子序列时跳过 LCS 的次数。',
+  cache_priority_cut_normalize_cache_hit_count: '优先中和阶段复用序列组规范化结果的次数。它越高，越说明重复状态池结构或刺激组被规范化缓存吸收。',
+  cache_priority_cut_normalize_reusable_hit_count: '优先中和阶段输入已是 normalized group 并直接复用的次数。它减少中和阶段重复 normalize，不改变能量结算。',
+  cache_priority_cut_normalize_reusable_group_count: '优先中和阶段被 normalized group 复用覆盖的组数。',
+  cache_priority_cut_signature_fast_path_hit_count: '优先中和阶段直接读取 normalized group 签名的次数。',
+  cache_priority_cut_empty_group_fast_path_hit_count: '优先中和阶段快速构造空 common/residual group 的次数。',
+  cache_priority_cut_full_group_fast_path_hit_count: '优先中和阶段从 normalized 模板直接复用完整 group 的次数。它只减少组装/normalize 成本，不改变 SA 粒度中和。',
+  cache_priority_cut_reindex_fast_path_hit_count: '优先中和阶段 normalized group 轻量重索引复用次数。',
+  cache_priority_theoretical_match_fast_reject_count: '优先中和阶段在共同切割前，用 token 重叠推算理论最高软匹配分仍低于阈值而提前跳过的候选数。它只跳过不可能通过的候选，不改变 SA 粒度结算。',
+  stimulus_shadow_raw_residual_candidate_count: 'owner-local raw residual memory 影子候选数量。这条路径主要用于观测/受控晋升，不应让长尾残差拖慢主 tick。',
+  stimulus_shadow_raw_residual_candidate_pruned_count: '影子残差候选因 `stimulus_shadow_raw_residual_candidate_max_per_owner` 护栏被剪掉的数量。若需要全量审计，可把上限设为 0。',
+  stimulus_shadow_raw_residual_skipped_count: '在残差记忆 promotion 关闭、且启用 `stimulus_residual_memory_shadow_skip_when_promotion_disabled_enabled` 时，跳过影子残差精评分的候选数。默认非零是性能模式的预期现象；要做全量 shadow 审计可关闭该开关。',
+  stimulus_shadow_raw_residual_common_part_count: '影子残差候选实际执行共同切割的次数，用于观察时间 wildcard/残差记忆影子评分的性能代价。默认性能模式下它可能接近 0。',
+  stimulus_owner_local_residual_list_cache_hit_count: '刺激级 owner-local residual normalization 复用同 owner DB 残差列表的次数。命中越高，说明递归归一化不再重复扫描 diff_table。',
+  stimulus_owner_local_residual_index_build_count: '本轮为 owner-local raw/common residual 构建签名与 unit-count 索引的次数。',
+  stimulus_owner_local_residual_index_cache_hit_count: '同一轮内复用 owner-local residual 索引的次数。它只缓存列表引用对应的索引，不缓存能量、疲劳或权重。',
+  stimulus_owner_local_residual_raw_signature_hit_count: '待归一化残差完整签名直接命中已有 raw residual 条目的次数，命中时无需模糊等价扫描。',
+  stimulus_owner_local_residual_common_signature_hit_count: '待归一化残差完整签名直接命中已有 residual common structure 的次数，命中时只强化共有结构条目。',
+  stimulus_owner_local_residual_fuzzy_equivalent_call_count: 'owner-local residual normalization 中执行 profile 等价判断的次数。它越高，越可能拖慢刺激级主链。',
+  stimulus_owner_local_residual_fuzzy_equivalent_cache_hit_count: '同一轮内复用 profile 等价布尔结果的次数。缓存 key 使用完整 signature/unit/group fallback，不缓存运行时权重。',
+  stimulus_owner_local_residual_fuzzy_equivalent_signature_hit_count: '两个 profile 完整签名相同而直接判等价的次数。',
+  stimulus_owner_local_residual_fuzzy_equivalent_fast_reject_count: 'unit 数或严格 unit 签名集合已证明不可能完整等价，因此跳过共同切割的次数。',
+  stimulus_owner_local_residual_common_overlap_fast_reject_count: 'owner-local residual common/raw overlap 寻找父共有结构或原始残差重叠时，严格 unit 签名上界已证明不可能达到最小共同覆盖，因此跳过 maximum_common_part 的次数。属性、数值、时间和模糊 ST profile 不走这个拒绝口径。',
+  stimulus_owner_local_residual_fuzzy_unit_bucket_pruned_count: '按 unit_count 分桶后，在进入 fuzzy 等价扫描前被排除的候选数。它是纯性能剪枝：等价本来就要求两侧 unit 数相同。',
+  stimulus_owner_local_residual_fuzzy_equivalent_cut_count: '等价判断最终仍需调用 maximum_common_part 证明完全覆盖的次数；这个值高时通常就是 owner-local normalization 的 CPU 热点。',
+  stimulus_anchor_owner_residual_presence_cache_hit_count: '锚点选择时复用“这个 owner DB 是否已有 residual/common entry”的本轮缓存次数。它只缓存存在性，不缓存能量、疲劳或当前轮竞争分。',
+  stimulus_anchor_owner_residual_presence_scan_count: '锚点选择时仍需扫描 owner DB diff_table 判断是否有 residual/common entry 的次数。若它很高，说明锚点评分仍在 owner DB 存在性检查上花费 CPU。',
+  induction_total_delta_er: '感应阶段的 ER 统计增量。目前主要等同于生长投影记录的 source-side ER 份额，用来和 EV 总量并排审计现实证据与预测扩散的比例。',
+  iesm_emotion_update_DA: '先天规则脚本在本轮对多巴胺通道施加的增减量。多巴胺通常更偏向奖励、趋近和行动意愿。',
+  iesm_emotion_update_ADR: '先天规则脚本在本轮对肾上腺素通道施加的增减量。肾上腺素通常会提升唤醒与注意资源。',
+  iesm_emotion_update_OXY: '先天规则脚本在本轮对催产素通道施加的增减量。催产素更偏向亲和、信任与关系稳定。',
+  iesm_emotion_update_SER: '先天规则脚本在本轮对血清素通道施加的增减量。血清素更偏向稳定、满足与全局平衡。',
+  iesm_emotion_update_END: '先天规则脚本在本轮对内啡肽通道施加的增减量。内啡肽更偏向舒缓、缓冲与恢复。',
+  iesm_emotion_update_COR: '先天规则脚本在本轮对皮质醇通道施加的增减量。皮质醇更偏向警觉、压力与收缩注意。',
+  iesm_emotion_update_NOV: '先天规则脚本在本轮对新奇通道施加的增减量。它会提升对新鲜、陌生信息的偏置。',
+  iesm_emotion_update_FOC: '先天规则脚本在本轮对聚焦通道施加的增减量。它会提升注意力收束和目标锁定。',
+  emotion_hdb_base_weight_er_gain_scale: '情绪递质对 HDB 中现实学习增益的缩放系数。越高，新的现实证据越容易沉积到长期结构。',
+  emotion_hdb_base_weight_ev_wear_scale: '情绪递质对 HDB 中虚循环磨损的缩放系数。越高，纯预期性的自转更容易被磨损抑制。',
+  emotion_hdb_ev_propagation_threshold_scale: '情绪递质对 EV 传播剪枝阈值的调制。它影响虚能量探索能走多深、多广。',
+  emotion_hdb_ev_propagation_ratio_scale: '情绪递质对 EV 传播比例的调制。越高，当前预测/联想链更容易扩散。',
+  emotion_hdb_er_induction_ratio_scale: '情绪递质对 ER 诱发 EV 的比例调制。它影响现实证据把多少能量转成预期传播。',
+  timing_induction_and_memory_ms: '归纳与记忆阶段总耗时，通常包括感应赋能、归纳结构、记忆激活与反馈等，是当前最值得盯的主热点之一。',
+  induction_source_local_target_hint_diagnostics_skipped: '标记本轮是否跳过了“每个感应源是否有本地残差候选”的诊断性扫描。值为 1 通常不是错误，而是当前全池参与传播口径下，hint 只用于前端解释、不参与行为决策，因此系统主动省掉这类局部数据库探查以降低归纳源快照耗时。',
+  induction_structure_db_update_request_count: 'HDB 感应传播中，本轮源循环请求提交结构数据库的次数。它反映局部结构库被多少源或前沿节点触达，数值高时通常意味着重复触达较多。',
+  induction_structure_db_update_applied_count: '本轮实际执行 update_db 的结构数据库次数。优化后，同一个结构 DB 在同一轮内只会提交一次，从而减少上下文索引刷新、revision 增长和持久化排队。',
+  induction_structure_db_update_deduped_count: '本轮被合并掉的重复结构数据库提交次数。该值越高，说明去重越有效；它不表示能量传播被跳过，只表示重复的最终提交被合并。',
+  timing_induction_source_snapshot_ms: '构建感应赋能源快照的耗时，包含从状态池挑出本轮可传播对象、生成轻量摘要和必要的本地目标 hint 诊断。若它抬高，通常是状态池活跃对象过多或诊断性 hint 扫描太重。',
+  timing_induction_hdb_propagation_ms: 'HDB 感应传播本体耗时，包含打开源对象局部数据库、聚合残差目标、执行分层能量图景传播和生成感应目标。若它抬高，通常说明参与源多、局部 diff_table 较厚或残差结构候选展开较多。',
+  timing_induction_projection_prepare_ms: '把 HDB 原始残差候选转换成 A+B 完整生长目标的耗时，包含 source/residual profile 缓存读取、完整 profile 组合、精确身份解析、必要的新结构创建和同身份去重。若它升高，优先检查 growth_identity_created_count、runtime_only_count 与目标数量。',
+  timing_induction_source_consumption_ms: '把已传播的源 EV 扣减回状态池的耗时。正常应很低；若抬高，说明本轮源扣减事件很多或状态池定向更新路径偏慢。',
+  timing_induction_target_apply_ms: '把感应传播产生的结构/残差目标投影并落入状态池的耗时。若它抬高，通常要检查批量入池是否启用、目标数量是否过多，以及状态池赋能疲劳/合并路径是否重复计算。',
+  timing_memory_seed_collect_ms: '从新写入残差记忆等位置收集记忆激活种子的耗时。正常应较低；升高时通常表示本轮新残差/记忆写入很多。',
+  timing_memory_activation_apply_ms: '应用记忆激活目标的耗时。在当前 runtime-em 主链下，它主要是把记忆目标整理成运行态可投影对象；专门记忆池开启时则包含 MAP 池更新。',
+  timing_memory_runtime_projection_ms: '把残差记忆对象投影回状态池的耗时。若它抬高，通常说明被激活记忆数量多、结构化投影内容长，或投影疲劳/去重命中不足。',
+  timing_memory_activation_snapshot_ms: '生成记忆激活快照或 runtime memory 快照的耗时，主要影响前端观察和后续时间感受器输入，不应成为主热点。',
+  timing_memory_feedback_apply_ms: '记忆反馈链路耗时。当前默认 runtime-em 主链下通常接近 0；如果专门记忆池或整包反馈开启，它会反映反馈包构建与入池成本。',
+  timing_maintenance_before_summary_ms: '维护前轻量统计耗时，用于记录状态池维护前的规模、能量和高认知压概况。若它抬高，通常是统计摘要本身在扫大量对象。',
+  timing_maintenance_pool_maintenance_ms: '状态池维护本体耗时，包含能量衰减、绑定属性衰减、运行态疲劳/近因刷新、低能剪枝和必要中和。它是维护阶段真正的行为成本。',
+  timing_maintenance_after_summary_ms: '维护后轻量统计耗时，用于记录维护后状态池规模变化。若维护本体不高但这里高，说明主要慢在观测摘要。',
+  timing_maintenance_history_events_ms: '收集维护期间历史事件的耗时。若它抬高，通常说明本轮维护生成事件很多或历史窗口扫描偏重。',
+  timing_cognitive_stitching_ms: '认知拼接阶段总耗时，反映上下文匹配、候选竞争、拼接动作与相关缓存是否高效。',
+  timing_attention_ms: '注意力阶段总耗时，反映 CAM 选择、滤波、预算分配和内源刺激构建的成本。',
+  timing_iesm_ms: '先天规则模块耗时，反映规则选择、条件判断、动作执行和情绪更新的成本。',
+  timing_action_recall_side_effect_ms: '行动触发召回请求后的附带处理耗时，包含召回目标应用、反馈或 runtime 投影等副作用。正常无召回时应接近 0。',
+  timing_reward_action_runtime_sync_ms: '奖惩信号和行动节点同步回状态池的耗时。若它抬高，通常说明行动节点很多、drive 更新频繁，或同步上限设置过宽。',
+  timing_runner_cycle_wall_ms: '实验 runner 从准备调用 run_cycle 到拿到本 tick 报告的墙钟耗时，包含等待主循环锁的时间。若它明显高于 run_cycle 逻辑耗时，通常说明前端实时观测、闲时整理、审查任务或其他后台任务正在抢占同一把锁。',
+  timing_runner_cycle_overhead_ms: 'runner 单 tick 墙钟耗时减去 run_cycle 内部逻辑耗时后的差值。它用于专门观察认知逻辑之外的等待和包裹开销，是排查“图表看着不慢但实际跑得久”的关键指标。',
+  timing_runner_metrics_extract_ms: '从 run_cycle 报告中抽取扁平 metrics 行的耗时。正常应很低；如果升高，说明报告体过大、前端图表字段过多或指标抽取逻辑需要继续瘦身。',
+};
+
+const prefixDisplayNames: Array<[string, string]> = [
+  ['time_sensor_', '时间感受器'],
+  ['timing_', '耗时'],
+  ['attention_', '注意力'],
+  ['induction_', '感应赋能'],
+  ['pool_', '状态池'],
+  ['hdb_', 'HDB'],
+  ['cfs_', '认知感受'],
+  ['iesm_', '先天规则'],
+  ['cs_', '认知拼接'],
+  ['sensor_', '感受器'],
+  ['action_', '行动'],
+  ['emotion_', '情绪调制'],
+  ['reward_', '奖励信号'],
+  ['punish_', '惩罚信号'],
+  ['teacher_', '教师监督'],
+  ['stimulus_', '刺激级查存'],
+  ['structure_', '结构级查存'],
+  ['internal_', '内源刺激'],
+  ['external_', '外源输入'],
+  ['input_', '输入'],
+  ['energy_balance_', '旧式能量平衡诊断'],
+  ['complexity_', '复杂度'],
+  ['core_', '核心结构'],
+  ['cache_', '缓存中和'],
+  ['cam_', 'CAM'],
+  ['nt_', '情绪递质'],
+];
+
+const tokenLabelMap: Record<string, string> = {
+  abs: '绝对值',
+  active: '活跃',
+  action: '行动',
+  adr: '肾上腺素 ADR',
+  adaptive: '自适应',
+  alias: '别名',
+  after: '后',
+  alignment: '对齐',
+  anchor: '锚点',
+  attention: '注意力',
+  atomic: '原子',
+  applied: '已施加',
+  apply: '施加',
+  attempted: '尝试',
+  attribute: '属性',
+  audit: '审计',
+  available: '可用',
+  base: '基线',
+  before: '前',
+  binding: '绑定',
+  bonus: '奖励',
+  budget: '预算',
+  bundle: '打包组',
+  bucket: '桶',
+  cache: '缓存',
+  cam: 'CAM',
+  candidates: '候选集合',
+  candidate: '候选',
+  cap: '上限',
+  capacity: '容量',
+  carrier: '载体',
+  char: '字符',
+  cfs: '认知感受 CFS',
+  csa: '属性刺激元 CSA',
+  call: '调用',
+  common: '共有',
+  component: '组件',
+  complexity: '复杂度',
+  concat: '拼接',
+  content: '内容',
+  concentration: '集中度',
+  config: '配置',
+  consolidate: '收敛整理',
+  consumed: '已消耗',
+  competitive: '竞争态',
+  contract: '契约',
+  context: '上下文',
+  contextual: '上下文化',
+  cor: '皮质醇 COR',
+  count: '数量',
+  counts: '计数',
+  correct: '正确',
+  correctness: '正确感',
+  cover: '覆盖',
+  cp: '认知压',
+  created: '创建',
+  current: '当前',
+  da: '多巴胺 DA',
+  db: '数据库',
+  decay: '衰减',
+  deferred: '延后',
+  delayed: '延迟',
+  delta: '变化量',
+  depth: '深度',
+  detail: '明细',
+  diff: '残差条目',
+  directive: '指令',
+  direct: '直接',
+  disabled: '禁用',
+  dissonance: '违和感',
+  diverge: '发散',
+  drive: '驱动力',
+  echo: '残响',
+  effective: '实际生效',
+  eligible: '达标候选',
+  emitted: '发出',
+  emotion: '情绪',
+  enabled: '开关',
+  end: '内啡肽 END',
+  energy: '能量',
+  entropy: '熵',
+  entry: '条目',
+  episode: '情节',
+  episodic: '情节记忆',
+  er: '实能量',
+  ev: '虚能量',
+  event: '事件',
+  executed: '执行成功',
+  expectation: '期待感',
+  explicit: '显式',
+  exact: '精确',
+  existing: '既有',
+  external: '外源',
+  extended: '扩展',
+  fallback: '回退',
+  family: '家族',
+  fatigue: '疲劳',
+  factor: '因子',
+  feedback: '反馈',
+  feature: '特征',
+  blend: '混合',
+  final: '最终',
+  filter: '滤波',
+  flat: '扁平',
+  foc: '聚焦 FOC',
+  focus: '聚焦',
+  floor: '下限',
+  boost: '提升',
+  fragment: '片段',
+  frontier: '前沿',
+  from: '来自',
+  gain: '增益',
+  g: '控制增益 G',
+  generated: '生成',
+  graph: '图',
+  grasp: '把握感',
+  gross: '总量',
+  group: '结构组',
+  hdb: 'HDB',
+  hit: '命中',
+  high: '高',
+  hint: '提示',
+  ids: 'ID 集',
+  implicit: '隐式',
+  in: '入向',
+  induction: '归纳诱发',
+  input: '输入',
+  intensity: '强度',
+  innate: '先天',
+  internal: '内源',
+  index: '索引',
+  inclusion: '包含度',
+  item: '对象',
+  key: '键',
+  label: '标签',
+  layer: '层',
+  learning: '学习',
+  len: '长度',
+  legacy: '旧式',
+  last: '末次',
+  landed: '已落地',
+  live: '运行态',
+  local: '局部',
+  logic: '逻辑',
+  lookup: '查找',
+  maintenance: '维护',
+  map: 'MAP',
+  margin: '裕量',
+  match: '匹配',
+  matched: '已匹配',
+  materialized: '实体化',
+  max: '最大值',
+  mean: '平均值',
+  median: '中位数',
+  memory: '记忆',
+  merged: '合并',
+  min: '最小值',
+  miss: '未命中',
+  missing: '缺失',
+  mod: '调制',
+  mode: '模式',
+  modulated: '已调制',
+  modulation: '调制',
+  minus: '减去',
+  multi: '多',
+  narrative: '叙事',
+  net: '净值',
+  neutralization: '中和',
+  node: '节点',
+  nodes: '节点数',
+  nonzero: '非零',
+  nov: '新奇 NOV',
+  nt: '情绪递质',
+  numeric: '数值',
+  object: '对象',
+  only: '仅',
+  order: '顺序',
+  origin: '来源',
+  overlay: '覆写层',
+  outcome: '结果',
+  out: '输出',
+  oxy: '催产素 OXY',
+  partial: '部分',
+  path: '路径',
+  peak: '峰值',
+  penalty: '惩罚',
+  pending: '待处理',
+  per: '每',
+  packet: '刺激包',
+  plain: '纯文本',
+  pointer: '指针',
+  pool: '状态池',
+  post: '后置',
+  pressure: '压力感',
+  preview: '预览',
+  primary: '主',
+  priority: '优先级',
+  profile: '画像',
+  propagation: '传播',
+  propagated: '已传播',
+  projection: '投影',
+  pruned: '剪枝',
+  punish: '惩罚',
+  pun: '惩罚 PUN',
+  queue: '队列',
+  query: '查询',
+  question: '问句',
+  ratio: '比例',
+  raw: '原始',
+  ready: '就绪',
+  recall: '回忆',
+  recency: '近因新鲜度',
+  recent: '近期',
+  reinduction: '再诱发',
+  recovery: '恢复',
+  ref: '引用',
+  reinforced: '强化',
+  registered: '已注册',
+  reassurance: '安抚感',
+  relief: '缓解感',
+  repeat: '重复',
+  repetition: '重复感',
+  requested: '请求',
+  residual: '残差',
+  resolution: '分辨率',
+  resource: '资源',
+  result: '结果',
+  reward: '奖励',
+  rescued: '挽救',
+  routed: '路由到',
+  round: '轮次',
+  rounds: '轮数',
+  root: '根',
+  rule: '规则',
+  rwd: '奖励 RWD',
+  runtime: '运行态',
+  sa: 'SA',
+  salience: '显著性',
+  sample: '采样',
+  scale: '缩放',
+  scored: '已计分',
+  scheduled: '已调度',
+  score: '分数',
+  selected: '入选',
+  selector: '选择器',
+  semantic: '语义',
+  sensor: '感受器',
+  ser: '血清素 SER',
+  shadow: '影子',
+  should: '应当',
+  single: '单一',
+  skip: '跳过',
+  signal: '信号',
+  signature: '签名',
+  simplicity: '简感',
+  size: '规模',
+  skipped: '跳过',
+  smooth: '平滑',
+  soft: '软匹配',
+  source: '源侧',
+  special: '特殊',
+  state: '状态',
+  same: '相同',
+  script: '脚本',
+  seed: '种子',
+  st: '结构 ST',
+  stimulus: '刺激',
+  stub: '桩动作',
+  store: '存储',
+  structure: '结构',
+  success: '成功',
+  surprise: '惊感',
+  support: '支撑',
+  suppressed: '被抑制',
+  summary: '汇总',
+  suppression: '抑制',
+  synthetic: '合成',
+  strength: '强度',
+  targeted: '已定向',
+  targets: '目标集合',
+  target: '目标',
+  tail: '尾部',
+  teacher: '教师',
+  text: '文本',
+  terminal: '终端',
+  threshold: '阈值',
+  tick: 'tick',
+  time: '时间',
+  table: '表',
+  token: '刺激元',
+  top: 'Top',
+  task: '任务',
+  to: '到',
+  total: '总量',
+  trace: '追踪',
+  trigger: '触发',
+  triggered: '已触发',
+  unverified: '未验证',
+  unit: '单元',
+  updated: '更新时间',
+  update: '更新',
+  value: '数值',
+  verified: '已验证',
+  v2: 'V2',
+  visible: '可见',
+  wear: '磨损',
+  weather: '天气',
+  weight: '权重',
+  with: '带',
+  width: '宽度',
+  wildcard: '通配',
+  window: '窗口',
+  like: '类',
+  level: '层级',
+  frames: '帧数',
+  ms: '毫秒',
+  new: '新增',
+  used: '已使用',
+  zero: '零',
+};
+
+function titleCaseFallbackToken(token: string): string {
+  if (!token) return '';
+  if (/^[A-Z0-9]+$/.test(token)) return token;
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+function renderMetricToken(token: string): string {
+  const lower = token.toLowerCase();
+  return tokenLabelMap[lower] ?? titleCaseFallbackToken(token);
+}
+
+function humanizeMetricKey(key: string): string {
+  const raw = String(key || '').trim();
+  if (!raw) return '未命名指标';
+  if (preciseMetricLabels[raw]) return preciseMetricLabels[raw];
+  const lower = raw.toLowerCase();
+  for (const [prefix, label] of prefixDisplayNames) {
+    if (!lower.startsWith(prefix)) continue;
+    const suffix = raw.slice(prefix.length);
+    if (!suffix) return label;
+    const rendered = suffix
+      .split('_')
+      .filter(Boolean)
+      .map((part) => renderMetricToken(part))
+      .join(' ')
+      .trim();
+    return rendered ? `${label}·${rendered}` : label;
+  }
+  const rendered = raw
+    .split('_')
+    .filter(Boolean)
+    .map((part) => renderMetricToken(part))
+    .join(' ')
+    .trim();
+  return rendered || raw;
+}
+
+export function metricDisplayName(key: string): string {
+  const labeled = metricLabels[key];
+  if (labeled && labeled !== key) return labeled;
+  return humanizeMetricKey(key);
+}
+
+function isCountLikeToken(token: string): boolean {
+  return ['count', 'counts', 'cap', 'capacity', 'size', 'len', 'depth', 'width', 'rounds', 'table'].includes(token);
+}
+
+function isRatioLikeToken(token: string): boolean {
+  return ['ratio', 'scale', 'mean', 'score', 'margin', 'bonus', 'penalty', 'weight', 'concentration'].includes(token);
+}
+
+function metricSubject(prefix: string, parts: string[]): string {
+  const family = parts[0] ?? '';
+  if (prefix === 'nt') return '情绪递质通道';
+  if (prefix === 'timing') return '模块耗时';
+  if (prefix === 'attention') return '注意力模块';
+  if (prefix === 'pool') return '状态池';
+  if (prefix === 'cfs') return family ? `认知感受中的“${renderMetricToken(family)}”` : '认知感受模块';
+  if (prefix === 'cs') return 'CS 回滚/认知拼接模块';
+  if (prefix === 'stimulus') return '刺激级查存一体';
+  if (prefix === 'structure') return '结构级查存一体';
+  if (prefix === 'internal') return '内源刺激链路';
+  if (prefix === 'induction') return '感应赋能链路';
+  if (prefix === 'action') return '行动链路';
+  if (prefix === 'teacher') return '教师监督链路';
+  if (prefix === 'time_sensor') return '时间感受器';
+  if (prefix === 'hdb') return 'HDB 长期存储';
+  if (prefix === 'memory_feedback') return '记忆反馈链路';
+  if (prefix === 'map') return 'MAP/残差兼容链路';
+  if (prefix === 'reward') return '奖励信号';
+  if (prefix === 'punish') return '惩罚信号';
+  if (prefix === 'emotion') return '情绪递质对系统参数的调制链路';
+  if (prefix === 'iesm') return '先天规则模块';
+  if (prefix === 'sensor') return '外源感受器';
+  if (prefix === 'energy_balance') return '旧式能量平衡闭环';
+  if (prefix === 'internal_resolution') return '内源分辨率约束';
+  if (prefix === 'internal_cam') return 'CAM 到内源投影链路';
+  if (prefix === 'cache') return '缓存中和';
+  if (prefix === 'cam') return 'CAM';
+  return humanizeMetricKey(prefix);
+}
+
+function metricValueNature(parts: string[]): string {
+  for (const token of parts) {
+    const lower = token.toLowerCase();
+    if (lower === 'ms') return '它的单位是毫秒，用于直接看该步骤的时间成本。';
+    if (isCountLikeToken(lower)) return '它是数量型指标，适合看规模、候选数、成功次数或被裁掉的次数。';
+    if (lower === 'total') return '它主要表示总量，适合判断这一轮整体有多少能量、预算或事件被累计到该链路。';
+    if (lower === 'max') return '它表示峰值或最大值，适合观察短时最强刺激、最大压力或最极端的单轮现象。';
+    if (lower === 'min') return '它表示下界或最小值，适合观察保护阈值、保底容量或最弱状态。';
+    if (lower === 'latest') return '它更贴近当前时刻的即时状态。';
+    if (isRatioLikeToken(lower)) return '它是比率/平均/缩放类指标，适合判断方向性、效率和相对偏置，而不是绝对规模。';
+  }
+  return '它更适合结合同图其它曲线一起看相对变化，而不是孤立解读单个数值。';
+}
+
+function metricEvidenceFocus(prefix: string, parts: string[]): string {
+  const joined = parts.map((p) => p.toLowerCase());
+  if (prefix === 'nt') return '重点看它是否与注意力预算、行动阈值、HDB 调制和认知感受峰值同步变化。';
+  if (prefix === 'timing') return '重点看它是否在高候选量、高状态池规模或缓存失效时抬高，并和其它耗时项形成明显主热点。';
+  if (prefix === 'attention') return '重点看它是否与 CAM 候选数、注意力能量预算、抑制量、净增量和 NT 调制同步变化。';
+  if (prefix === 'pool') return '重点看它是否跟外源输入、半衰期衰减、感应赋能、注意力滤波和维护剪枝共同变化。';
+  if (prefix === 'cfs') return '重点看它是短时峰值高，还是运行态长期维持高位，并结合疲劳和奖惩规则判断是否占顶过久。';
+  if (prefix === 'cs') return '仅在显式开启 residual/CS 对照时重点看它是在“有候选但得分不够”、还是“真正发生了拼接动作”，并结合上下文匹配和疲劳判断。默认 growth 主链下全 0 通常是正常背景。';
+  if (prefix === 'stimulus' || prefix === 'structure') return '重点看它是在“候选很多但通过率低”，还是“通过率高但匹配分和时间/数值因子偏弱”。';
+  if (prefix === 'internal' || prefix === 'internal_resolution' || prefix === 'internal_cam') return '重点看它是否受分辨率预算卡住，以及奖励/惩罚/时间类属性是否被成功带进内源刺激。';
+  if (prefix === 'induction') return '重点看它是在根对象预算、前沿扩散、残差路由还是终端记忆命中处放大或被剪枝。';
+  if (prefix === 'action') return '重点看它处在 attempted、scheduled、executed、局部调制还是驱动力阈值这一层。';
+  if (prefix === 'teacher') return '重点看它是在教师信号进入状态池、上下文绑定、别名匹配还是奖励/惩罚覆写这一层生效。';
+  if (prefix === 'time_sensor') return '重点看它是在时间桶更新、延迟任务注册/执行，还是结构投影绑定这一层活跃。';
+  if (prefix === 'hdb') return '重点看它是存储规模、上下文化深度、缓存命中还是指针退化这一层发生变化。';
+  if (prefix === 'memory_feedback' || prefix === 'map') return '重点看它是整包反馈更强，还是结构直投更强，以及这些反馈最终有没有真正落回状态池。';
+  if (prefix === 'emotion' || prefix === 'iesm') return '重点看它是规则直接改了通道浓度，还是情绪通道进一步反向改了注意力、HDB 或行动参数。';
+  return '重点结合同一图表内的相邻指标一起看它在整条链路中的位置。';
+}
+
+function metricExtraDetail(prefix: string, parts: string[]): string {
+  const flags = new Set(parts.map((part) => part.toLowerCase()));
+  const details: string[] = [];
+  if (flags.has('candidate')) details.push('它更偏上游，表示进入比较或筛选前的候选规模，不等于最终命中、执行或落地结果。');
+  if (flags.has('eligible')) details.push('这里的“达标候选”表示已经跨过当前阈值门槛，但还不一定真的被最终采用。');
+  if (flags.has('selected')) details.push('这里的“入选”表示已经经过预算、排序或阈值竞争，属于真正被系统拿来使用的部分。');
+  if (flags.has('live')) details.push('这里的“运行态”强调它统计的是当前仍挂在状态池里的活跃痕迹，而不是历史累计总次数。');
+  if (flags.has('attribute')) details.push('它通常更偏属性条目层，而不是完整对象数；适合区分“有多少绑定属性”与“有多少对象带这种属性”。');
+  if (flags.has('item') && flags.has('count')) details.push('这里统计的是对象个数，不直接等于这些对象内部 SA 的能量总量。');
+  if (flags.has('family')) details.push('出现 family 时，通常表示它把同类子分支合并成一个家族口径，适合看总趋势。');
+  if (flags.has('verified') || flags.has('unverified')) details.push('它可以帮助区分“已经被后续证据确认的分支”和“仍只是预期/压力的未确认分支”。');
+  if ((flags.has('reward') || flags.has('rwd')) || (flags.has('punish') || flags.has('pun'))) {
+    details.push('它和奖励/惩罚塑形有关，适合结合行动阈值、局部 drive 调制与教师反馈一起看学习方向。');
+  }
+  if (flags.has('teacher')) details.push('它直接反映外置教师监督是否真正进入系统，而不是只停留在数据集标签层。');
+  if (flags.has('weather') && flags.has('stub')) details.push('它专门针对天气工具动作链路，用来区分“想到天气”与“真的执行天气动作”之间的差别。');
+  if (flags.has('local')) details.push('出现 local 时，说明它更偏局部结构、局部目标或局部映射，而不是全局平均效果。');
+  if (flags.has('lookup')) details.push('它用于观察命中查找链是否顺利，适合区分缓存命中、文本回退命中和真实缺失。');
+  if (flags.has('fallback')) details.push('出现 fallback 时，说明系统走了回退路径，通常表示主路径没命中或需要兼容旧口径。');
+  if (flags.has('cache')) details.push('它涉及缓存命中或缓存负载，适合和同阶段耗时一起判断是否存在重复计算。');
+  if (flags.has('pointer') || flags.has('signature')) details.push('它涉及 HDB 内部索引/指针链路，适合判断长期存储是在走主索引还是频繁退化到回退路径。');
+  if (flags.has('contextual') || (flags.has('context') && flags.has('support'))) details.push('它更关心上下文链是否真的参与理解，而不是只有表面内容相似。');
+  if (flags.has('multi') && flags.has('context')) details.push('它适合观察相同内容是否以多个上下文并行存在，而不是被过早折叠成一个对象。');
+  if (flags.has('same') && flags.has('content')) details.push('这里的 same-content 口径更偏观测“相同内容的多上下文并存”，不是要求后端把这些对象合并。');
+  if (flags.has('numeric')) details.push('它专门关注数值刺激元分支，适合判断数值接近度、比例折扣和软匹配是否真的参与打分。');
+  if (flags.has('time') && flags.has('like')) details.push('它和时间感受/时间类数值因子有关，适合检查时间差匹配是否真的影响了竞争结果。');
+  if (flags.has('wildcard')) details.push('出现 wildcard 时，说明这里启用了“时间感受可通配”的兼容路径，而不是严格逐字或逐 SA 门控。');
+  if (flags.has('soft') && flags.has('partial')) details.push('它对应软部分匹配分支，用来检查没有精确命中时系统是否还能找到近似可用的对象。');
+  if (flags.has('order') && flags.has('alignment')) details.push('它更偏顺序/时序一致性，高值通常意味着匹配结果更自然、更可读。');
+  if (flags.has('energy') && flags.has('profile')) details.push('它更偏能量图景一致性，而不是单纯字面相似；适合判断记忆/结构是否在能量分布上也像同一件事。');
+  if (flags.has('blend') && flags.has('gain')) details.push('它表示多种匹配信号在最终评分前被综合放大的程度，适合检查是否有某类加成过强。');
+  if (flags.has('threshold') && flags.has('margin')) details.push('它直接告诉你“候选离阈值还有多远”，很适合用来分辨是没候选，还是差一点点才没过线。');
+  if (flags.has('budget')) details.push('预算类指标更适合和 applied / net delta / skipped 一起看，单独看预算值并不能代表资源真的落地。');
+  if (flags.has('applied')) details.push('出现 applied 时，说明这里已经不是“可用资源”而是“真正落地到本轮”的部分。');
+  if (flags.has('suppressed')) details.push('它反映被抑制掉的部分，有助于判断注意力滤波是在“增强为主”还是“压制为主”。');
+  if (flags.has('net') && flags.has('delta')) details.push('净增量会把抑制项一起算进去，因此比单看 gain 更能反映系统最终被注入了多少额外能量。');
+  if (flags.has('projection')) details.push('它涉及结构直投或运行态投影，适合判断系统是在整包回放，还是沿结构链定向投给某些对象。');
+  if (flags.has('packet')) details.push('出现 packet 时，说明它偏整包回放/整包刺激，不等于结构级的定向投影。');
+  if (flags.has('residual') || flags.has('diff')) details.push('它和残差对象链路有关，适合判断系统是在沿残差继续展开，还是残差已经被结构化吸收。');
+  if (flags.has('materialized') || flags.has('existing') || flags.has('routed')) details.push('它适合用来分辨残差条目最终是命中了已有结构、被实体化成新结构，还是被路由去了别的结构层。');
+  if (flags.has('frontier') || flags.has('root') || flags.has('layer')) details.push('它属于能量图谱分层传播视角，适合判断扩散是卡在根层、前沿层，还是层宽/层深突然膨胀。');
+  if (flags.has('registered') || flags.has('executed') || flags.has('pruned') || flags.has('updated') || flags.has('task')) {
+    details.push('这类词通常对应延迟任务生命周期，适合区分任务被创建了、更新了、真的执行了，还是因为容量/过期被裁掉。');
+  }
+  if (flags.has('episodic')) details.push('它统计的是长期情节记忆规模，不是短期状态池或单轮刺激链路。');
+  if (flags.has('echo')) details.push('它和输入残响/回声池有关，适合判断空 tick 仍有多少历史尾音在继续影响当前认知。');
+  if (flags.has('csa')) details.push('它对应属性刺激元打包口径，可用来检查属性是否真的作为结构一部分进入匹配链。');
+  if (flags.has('label')) details.push('它更接近训练集标签或前端辅助标记，不应直接当作系统内部因果机制本身。');
+  if (flags.has('ms')) details.push('若它明显抬高，通常意味着该模块在当前 tick 出现了候选爆炸、缓存失效或重复计算。');
+  if (prefix === 'nt') details.push('这类指标最好和注意力预算、行动阈值、HDB 调制线一起对照，而不是孤立看浓度高低。');
+  return details.join('');
+}
+
+function metricOperationPhrase(parts: string[]): string {
+  if (!parts.length) return '用于描述该链路当前的运行状态。';
+  const last = parts[parts.length - 1].toLowerCase();
+  const prev = parts.length > 1 ? parts[parts.length - 2].toLowerCase() : '';
+  const rendered = parts.map((part) => renderMetricToken(part)).join(' ');
+  if (last === 'count' || last === 'counts') return `用于记录“${rendered}”这一类事件或对象在本轮出现了多少次。`;
+  if (last === 'mean') return `用于记录“${rendered}”这一项在本轮样本中的平均水平。`;
+  if (last === 'max') return `用于记录“${rendered}”在本轮达到的最高水平。`;
+  if (last === 'min') return `用于记录“${rendered}”在当前配置下的最低保留或最小值。`;
+  if (last === 'ratio') return `用于记录“${rendered}”这类关系量的比例变化。`;
+  if (last === 'scale') return `用于记录“${rendered}”对原始值施加了多大缩放。`;
+  if (last === 'score') return `用于记录“${rendered}”在匹配、排序或竞争中的得分表现。`;
+  if (last === 'energy') return `用于记录“${rendered}”这一项对应的能量水平。`;
+  if (last === 'ms') return `用于记录“${rendered}”这一步骤消耗了多少毫秒。`;
+  if (last === 'cap' || last === 'capacity') return `用于记录“${rendered}”当前允许的上限。`;
+  if (last === 'budget') return `用于记录“${rendered}”可动用的预算量。`;
+  if (last === 'applied') return `用于记录“${rendered}”是否真的已经落地执行。`;
+  if (last === 'selected') return `用于记录“${rendered}”最终被选中的规模。`;
+  if (last === 'eligible') return `用于记录“${rendered}”达到阈值、具备资格的部分有多少。`;
+  if (last === 'enabled') return `用于记录“${rendered}”这个开关当前是否处于启用态。`;
+  if (prev === 'live') return `用于记录“${rendered}”在状态池运行态中当前仍然维持着多少存在。`;
+  return `用于记录“${rendered}”这一运行环节的当前状态。`;
+}
+
+function parseMetricPrefixAndParts(raw: string): { prefix: string; parts: string[] } {
+  const lower = raw.toLowerCase();
+  const specialPrefixes = [
+    'time_sensor_',
+    'memory_feedback_',
+    'internal_resolution_',
+    'internal_cam_',
+    'expectation_contract_',
+  ];
+  for (const prefix of specialPrefixes) {
+    if (lower.startsWith(prefix)) {
+      return { prefix: prefix.slice(0, -1), parts: raw.slice(prefix.length).split('_').filter(Boolean) };
+    }
+  }
+  const [prefix, ...parts] = raw.split('_').filter(Boolean);
+  return { prefix, parts };
+}
+
+function buildStructuredMetricMeaning(raw: string): string {
+  const { prefix, parts } = parseMetricPrefixAndParts(raw);
+  if (!prefix) return '';
+  const subject = metricSubject(prefix, parts);
+  const display = metricDisplayName(raw);
+  const operation = metricOperationPhrase(parts);
+  const nature = metricValueNature(parts);
+  const focus = metricEvidenceFocus(prefix, parts);
+  const detail = metricExtraDetail(prefix, parts);
+  return `${display}属于${subject}指标，${operation}${nature}${focus}${detail}`;
+}
+
+export function metricMeaning(key: string): string {
+  const raw = String(key || '').trim();
+  const lower = raw.toLowerCase();
+  if (!lower) return '这个指标没有名称，通常表示当前运行没有提供对应数据。';
+  if (preciseMetricMeanings[raw]) return preciseMetricMeanings[raw];
+  return buildStructuredMetricMeaning(raw);
+}
+
+export function chartInfluenceHints(config: ChartConfig): string[] {
+  const keyText = config.keys.join(' ');
+  const lower = keyText.toLowerCase();
+  const hints: string[] = [];
+  if (lower.includes('timing_')) hints.push('受模块算法复杂度、候选数量、缓存命中率、运行态对象规模影响。');
+  if (lower.includes('attention_')) hints.push('受注意力基线预算、NT 情绪递质、聚焦/发散模式、CAM 候选规模影响。');
+  if (lower.includes('attention_sa_count_pref')) hints.push('4-SA 长度偏好会让 4 个左右 SA 的对象更容易获得注意资源，过短或过长对象只做软惩罚，不做硬门控。');
+  if (lower.includes('induction_')) hints.push('受状态池能量、残差数据库规模、EV 传播阈值、ER 诱发比例和剪枝阈值影响。');
+  if (lower.includes('pool_')) hints.push('受外源输入、注意力滤波、感应赋能、半衰期衰减和维护剪枝影响。');
+  if (lower.includes('cs_')) hints.push('CS 指标只在显式开启 residual/CS 对照时作为主证据；默认 growth 主链下，它们通常是回滚诊断背景。');
+  if (lower.includes('cfs_')) hints.push('受认知压变化、奖惩信号、先天规则阈值和认知感受疲劳影响。');
+  if (lower.includes('nt_') || lower.includes('iesm_emotion_update_')) hints.push('NT 通道受认知感受、奖惩信号和 IESM 情绪更新规则影响，并反过来调制注意力、行动和 HDB。');
+  if (lower.includes('time_sensor_')) hints.push('受 tick/wall 时间基准、时间桶匹配、延迟任务容量和任务去重策略影响。');
+  if (lower.includes('hdb_') || lower.includes('emotion_hdb_')) hints.push('受查存一体、结构创建、残差移动、缓存、soft limit、idle consolidate 与 repair 影响。');
+  if (!hints.length) hints.push('主要受当前数据集、运行配置、状态池能量水平和自适应调参器影响。');
+  return hints;
+}

@@ -1,0 +1,23 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HDB Episodic Memory",
+  "type": "object",
+  "required": ["id", "object_type", "event_summary", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^em_[0-9]+$"},
+    "object_type": {"const": "em"},
+    "sub_type": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "event_summary": {"type": "string"},
+    "structure_refs": {"type": "array", "items": {"type": "string"}},
+    "group_refs": {"type": "array", "items": {"type": "string"}},
+    "timestamp_range": {"type": ["object", "null"]},
+    "created_at": {"type": "integer"},
+    "updated_at": {"type": "integer"},
+    "trace_id": {"type": "string"},
+    "tick_id": {"type": "string"},
+    "source": {"type": "object"},
+    "status": {"type": "string"},
+    "meta": {"type": "object"}
+  }
+}

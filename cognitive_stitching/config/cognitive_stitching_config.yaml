@@ -1,0 +1,290 @@
+﻿# Cognitive Stitching (CS) runtime config
+# Conservative local rollout:
+# - pair create
+# - event extend
+# - event-to-event bridge merge
+
+enabled: false
+
+# V2 mode scaffold:
+# - legacy_event: current stable path
+# - context_match_v2: context-tail cover + generic structure concat main path
+# - hybrid_compare: keep legacy execution, but expose V2-ready mode semantics in reports
+stitching_mode: context_match_v2
+
+cs_v2_audit_only: false
+
+context_concat_v2_enabled: true
+
+context_concat_min_context_ratio: 0.22
+
+context_concat_allow_partial_without_path_support: true
+
+context_concat_soft_scan_enabled: true
+
+context_concat_soft_scan_when_exact_candidates_missing_only: true
+
+context_concat_soft_scan_privileged_only: true
+
+context_concat_soft_scan_max_sources_per_tick: 32
+
+context_concat_soft_scan_max_targets_per_source: 48
+
+context_concat_project_non_st_support_sources_enabled: true
+
+context_concat_profile_support_lookup_enabled: true
+
+context_concat_max_targets_per_seed: 0
+
+context_concat_compete_per_source_only: false
+
+context_concat_exclusive_items_per_tick: true
+
+context_concat_direct_owner_bonus: 1.0
+
+context_concat_path_bonus: 0.72
+
+context_concat_partial_path_bonus: 0.52
+
+context_concat_match_count_weight: 0.12
+
+context_concat_match_count_half_point: 2.4
+
+context_concat_match_count_soft_power: 0.78
+
+context_concat_match_count_linear_mix: 0.28
+
+context_concat_attribute_bonus_weight: 0.08
+
+context_concat_attribute_bonus_cap: 2.0
+
+context_concat_attribute_anchor_bonus: 0.18
+
+context_concat_attribute_numeric_abs_tolerance: 0.2
+
+context_concat_attribute_numeric_rel_tolerance: 0.35
+
+context_concat_attribute_numeric_min_similarity: 0.4
+
+context_concat_result_confidence: 0.82
+
+cs_v2_min_match_score: 0.18
+
+cs_v2_context_cover_weight: 0.32
+
+cs_v2_order_weight: 0.22
+
+cs_v2_tail_match_weight: 0.28
+
+cs_v2_context_db_weight: 0.1
+
+cs_v2_energy_profile_weight: 0.08
+
+cs_v2_match_count_weight: 0.1
+
+cs_v2_attribute_bonus_weight: 0.06
+
+cs_v2_same_pair_fatigue_enabled: true
+
+# V2 评分柔化
+# 让多个“中等但不差”的子项不会被连续硬乘压得过低，同时保留 raw 分数作审计/回滚。
+cs_v2_component_soft_power: 0.72
+
+cs_v2_component_soft_linear_mix: 0.32
+
+cs_v2_base_raw_mix: 0.35
+
+cs_v2_fatigue_soft_power: 0.78
+
+cs_v2_fatigue_soft_linear_mix: 0.4
+
+# Snapshot / seed selection
+snapshot_top_k: 0
+
+max_seed_items: 0
+
+max_outgoing_edges_per_seed: 8
+
+max_events_per_tick: 0
+
+# Conservative contextual stitching
+max_context_k: 2
+
+max_event_head_match_components: 3
+
+max_event_component_count: 8
+
+enable_event_extend: true
+
+enable_event_merge: true
+
+# Event degeneration
+# When enabled, weak components may leave an event and the remaining stable part
+# is re-bound as a new event candidate instead of keeping a falsely rigid event shell.
+enable_event_degeneration: true
+
+# Max number of event degeneration actions handled per tick.
+event_degeneration_max_events_per_tick: 2
+
+# Minimum remaining component count after degeneration.
+event_degeneration_min_components: 2
+
+# Components below this share threshold become degeneration candidates.
+event_degeneration_share_threshold: 0.06
+
+# Components below this absolute event-energy threshold become degeneration candidates.
+event_degeneration_min_component_energy: 0.04
+
+# Event grasp (bound to ES objects in CAM)
+enable_event_grasp: true
+
+event_grasp_min_total_energy: 0.25
+
+event_grasp_max_events_per_tick: 6
+
+event_grasp_energy_weight: 1.2
+
+event_grasp_balance_weight: 1.3
+
+event_grasp_margin_weight: 0.8
+
+event_grasp_bias: -0.3
+
+event_grasp_sigmoid_temperature: 1.0
+
+event_grasp_attribute_name: event_grasp
+
+event_grasp_post_action_threshold_scale: 0.75
+
+# Whether freshly created / reinforced post-CS events are allowed to join
+# same-tick event_grasp evaluation. Keep switchable for rollback / A/B.
+event_grasp_include_post_cs_action_events: true
+
+# ESDB overlay (parents+delta) and idle consolidation (runtime-only)
+enable_esdb_overlay: true
+
+event_context_open_mode: hybrid
+
+esdb_overlay_parent_beta: 0.35
+
+esdb_overlay_top_k: 16
+
+esdb_overlay_cache_ttl_ms: 2500
+
+esdb_materialize_top_n: 96
+
+# ESDB delta: runtime-only outgoing edge cache for ES (kept small & conservative)
+enable_esdb_delta: true
+
+esdb_delta_import_top_k_per_tail: 6
+
+esdb_delta_max_entries: 96
+
+esdb_delta_distance_decay: 0.75
+
+esdb_delta_merge_beta: 0.25
+
+esdb_delta_min_weight: 0.0001
+
+# Persist ES into HDB during idle consolidation.
+# Event structures are treated as healthy long-term structures, so persistence is on by default.
+enable_persist_events_to_hdb: true
+
+# Allow HDB-backed CS event structures to re-enter StatePool for observation and further competition.
+# This does NOT reopen the old shell-event insertion path.
+insert_persisted_event_runtime_items_into_state_pool: true
+
+# Keep legacy shell-like event runtime items out of StatePool by default.
+insert_event_runtime_items_into_state_pool: false
+
+persist_events_max_diff_entries: 96
+
+# Idle consolidation budgets / guards
+idle_consolidate_max_events: 256
+
+idle_consolidate_clear_all_caches: true
+
+idle_consolidate_cache_est_bytes_per_row: 220
+
+# Entry thresholds
+min_seed_total_energy: 0.03
+
+min_candidate_score: 0.08
+
+min_event_total_energy: 0.01
+
+# Energy draw / absorption
+base_absorb_ratio: 0.12
+
+pair_absorb_ratio_cap: 0.22
+
+# Exact context concat uses a high ratio, but actual energy transfer is capped
+# by the lower-energy side of the source/target pair.
+context_concat_exact_absorb_ratio: 0.94
+context_concat_exact_absorb_cap: 0.98
+context_concat_use_lower_energy_cap: true
+context_concat_exact_min_score: 0.86
+
+context_concat_exact_ignore_object_fatigue: true
+
+extend_absorb_scale: 0.92
+
+merge_absorb_scale: 0.84
+
+# Same-path fatigue
+same_pair_fatigue_decay: 0.72
+
+same_pair_fatigue_step: 0.35
+
+same_pair_fatigue_cap: 1.6
+
+same_pair_fatigue_floor_scale: 0.25
+
+# Object-level attribution fatigue.
+# Any object that participates in cognitive stitching gets a temporary score
+# penalty when it tries to join another stitch. This is a soft guard against
+# short-term over-attribution/repeated self-extension, not a content filter.
+object_stitch_fatigue_enabled: true
+
+object_stitch_fatigue_decay: 0.9
+
+object_stitch_fatigue_step: 0.85
+
+object_stitch_fatigue_cap: 2.2
+
+object_stitch_fatigue_floor_scale: 0.28
+
+object_stitch_fatigue_apply_to_result: true
+
+# Candidate scoring
+edge_ratio_weight: 0.42
+
+energy_balance_weight: 0.23
+
+match_strength_weight: 0.2
+
+runtime_weight_weight: 0.15
+
+context_support_weight: 0.18
+
+bridge_span_weight: 0.08
+
+anchor_distance_penalty: 0.18
+
+# Weak match scaling
+containment_match_scale: 0.78
+
+weak_overlap_match_scale: 0.42
+
+weak_overlap_min_ratio: 0.5
+
+event_prefix_match_scale: 1.0
+
+event_prefix_weak_scale: 0.36
+
+# Runtime event node identity / display
+event_id_prefix: cs_event
+
+display_joiner: ' -> '
+
+narrative_top_k: 6

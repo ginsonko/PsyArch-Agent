@@ -1,0 +1,46 @@
+PsyArch Agent Prototype License
+
+Copyright (c) 2026 ginsonko
+
+This repository is released as an experimental research and demonstration
+prototype for the PsyArch Agent / Artificial PsyArch project family.
+
+Permission is granted, free of charge, to download, clone, run, study, modify,
+and use this software for personal learning, academic research, non-commercial
+experimentation, and internal evaluation, subject to the conditions below.
+
+Conditions:
+
+1. You must preserve this license notice and the original project attribution in
+   substantial copies or forks.
+
+2. You may not use this software, modified versions, the AP/PsyArch architecture,
+   project name, documentation, or derived implementations for commercial
+   products, paid services, enterprise deployment, training services, resale,
+   hosted bot services, or other commercial purposes without prior written
+   permission from the copyright holder.
+
+3. You may not redistribute packaged releases, mirrors, or substantially modified
+   versions in a way that hides the original source, removes attribution, or
+   implies official endorsement.
+
+4. You are responsible for your own API keys, model costs, social-platform
+   accounts, adapter configuration, generated content, and any messages sent by
+   the software. The project authors are not responsible for account risk,
+   platform restrictions, model provider charges, or user-generated outputs.
+
+5. Runtime data such as chat logs, QQ identifiers, API keys, model endpoints,
+   generated images, stickers, and local memory files may contain private
+   information. Do not publish such data unless you have reviewed and sanitized
+   it yourself.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For commercial authorization or collaboration, please contact the author through
+GitHub or the project feedback group listed in README.md.
+
