@@ -2632,6 +2632,36 @@ def test_napcat_reply_auto_segments_by_custom_delimiter(tmp_path, monkeypatch):
     assert [row["reply_id"] for row in outbox] == ["reply_seg#1", "reply_seg#2", "reply_seg#3"]
 
 
+def test_napcat_reply_with_image_collapses_custom_delimiter(tmp_path, monkeypatch):
+    monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: tmp_path / "agent_adapter_events.jsonl")
+    monkeypatch.setattr("observatory.agent_runtime._outbox_path", lambda: tmp_path / "agent_outbox.jsonl")
+    image_path = tmp_path / "generated.png"
+    image_path.write_bytes(b"png")
+    runtime = _runtime_for_flow([], soft=1, hard=1)
+    runtime.config.qq_napcat_enabled = True
+    runtime.config.qq_napcat_dry_run = True
+    runtime.config.qq_napcat_min_send_interval_ms = 0
+    runtime.config.reply_auto_segment_enabled = True
+    runtime.config.reply_auto_segment_delimiter = "|"
+
+    result = runtime.send_adapter_reply(
+        {"adapter": "napcat_qq", "message_type": "private", "user_id": "200020002", "conversation_id": "private:200020002"},
+        "喏|之前朋友随便拍的|凑合看吧 hhh",
+        reply_id="reply_img",
+        attachments=[{"kind": "image", "file": str(image_path), "name": "generated.png"}],
+        action_type="send_image",
+    )
+
+    assert result["ok"] is True
+    assert result.get("segmented") is not True
+    message = result["body_preview"]["message"]
+    text_segments = [row for row in message if row.get("type") == "text"]
+    assert text_segments
+    assert "|" not in text_segments[0]["data"]["text"]
+    assert text_segments[0]["data"]["text"] == "喏 之前朋友随便拍的 凑合看吧 hhh"
+    assert any(row.get("type") == "image" and row.get("data", {}).get("file") == str(image_path.resolve()) for row in message)
+
+
 def test_reply_auto_segment_uses_punctuation_but_not_comma():
     runtime = _runtime_for_flow([], soft=1, hard=1)
     runtime.config.reply_auto_segment_enabled = True

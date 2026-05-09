@@ -10877,6 +10877,19 @@ class AgentRuntime:
         merged.append("".join(pieces[max_segments - 1 :]).strip())
         return [part for part in merged if part]
 
+    def _collapse_reply_delimiter_for_single_send(self, text: str) -> str:
+        text = _clean_reply_text(text, max_chars=3000)
+        if not text or not bool(self.config.reply_auto_segment_enabled):
+            return text
+        custom = str(self.config.reply_auto_segment_delimiter or "").strip()
+        if not custom or custom not in text:
+            return text
+        parts = [_clean_reply_text(part, max_chars=1000) for part in text.split(custom)]
+        collapsed = " ".join(part for part in parts if part).strip()
+        if not collapsed:
+            collapsed = text.replace(custom, " ").strip()
+        return _clean_reply_text(collapsed, max_chars=3000)
+
     def _reply_segment_interval_ms(self, segment_text: str, *, index: int) -> int:
         if index <= 0:
             return 0
@@ -10915,7 +10928,11 @@ class AgentRuntime:
             and not segments
             and not attachments
         )
-        parts = self._split_reply_text_for_send(text) if can_segment else [text]
+        if can_segment:
+            parts = self._split_reply_text_for_send(text)
+        else:
+            text = self._collapse_reply_delimiter_for_single_send(text)
+            parts = [text]
         if len(parts) <= 1:
             return self._send_napcat_reply(
                 event,
