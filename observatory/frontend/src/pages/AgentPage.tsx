@@ -191,6 +191,11 @@ type AgentConfig = AnyRecord & {
   _type?: string;
   llm_enabled?: boolean;
   base_url?: string;
+  api_request_format?: string;
+  api_endpoint_mode?: string;
+  chat_endpoint_path?: string;
+  anthropic_endpoint_path?: string;
+  image_generation_endpoint_path?: string;
   api_key?: string;
   api_key_masked?: string;
   model?: string;
@@ -279,6 +284,11 @@ type AgentConfig = AnyRecord & {
   sticker_prompt_recent_limit?: number;
   sticker_prompt_top_limit?: number;
   sticker_prompt_random_limit?: number;
+  diary_enabled?: boolean;
+  diary_entry_limit?: number;
+  diary_gc_oldest_count?: number;
+  diary_entry_max_chars?: number;
+  diary_read_total_max_chars?: number;
   mcp_enabled?: boolean;
   skill_enabled?: boolean;
   tool_allowlist?: string[];
@@ -299,6 +309,11 @@ const emptyConfig: AgentConfig = {
   _type: 'newapi_channel_conn',
   llm_enabled: true,
   base_url: 'https://api.openai.com',
+  api_request_format: 'auto',
+  api_endpoint_mode: 'auto_append',
+  chat_endpoint_path: '/v1/chat/completions',
+  anthropic_endpoint_path: '/v1/messages',
+  image_generation_endpoint_path: '/v1/images/generations',
   api_key: '',
   model: 'gpt-4.1-mini',
   vision_model: 'gpt-4.1-mini',
@@ -382,9 +397,14 @@ const emptyConfig: AgentConfig = {
   sticker_prompt_recent_limit: 5,
   sticker_prompt_top_limit: 5,
   sticker_prompt_random_limit: 10,
+  diary_enabled: true,
+  diary_entry_limit: 100,
+  diary_gc_oldest_count: 50,
+  diary_entry_max_chars: 20000,
+  diary_read_total_max_chars: 60000,
   mcp_enabled: false,
   skill_enabled: true,
-  tool_allowlist: ['time', 'weather', 'memory_note', 'web_search', 'image_understanding', 'image_generation', 'ap_tick_report', 'ap_recall', 'ap_attention_focus', 'ap_attention_diverge', 'napcat_recall_message'],
+  tool_allowlist: ['time', 'weather', 'memory_note', 'write_diary', 'read_diary', 'web_search', 'image_understanding', 'image_generation', 'ap_tick_report', 'ap_recall', 'ap_attention_focus', 'ap_attention_diverge', 'napcat_recall_message'],
   event_log_limit: 300,
   persona_name: '小澪',
   persona_text: '',
@@ -415,6 +435,16 @@ const replySegmentIntervalModes = [
   { value: 'adaptive', label: '按内容自动' },
   { value: 'fixed', label: '固定间隔' },
 ];
+
+const PROMPT_BUDGET_WARN_TOKENS = 100000;
+const PROMPT_BUDGET_FAIL_TOKENS = 200000;
+
+function promptBudgetColor(tokens: number) {
+  if (tokens >= PROMPT_BUDGET_FAIL_TOKENS) return 'red';
+  if (tokens >= PROMPT_BUDGET_WARN_TOKENS) return 'yellow';
+  if (tokens > 0) return 'teal';
+  return 'gray';
+}
 
 function legacyTriggerModes(mode: unknown): string[] {
   const value = String(mode || 'private_all').trim();
@@ -551,6 +581,17 @@ const promptVariants = [
   { value: 'warm', label: '温柔陪伴' },
   { value: 'concise', label: '短促克制' },
   { value: 'analytical', label: '调试解释' },
+];
+
+const apiRequestFormats = [
+  { value: 'auto', label: '自动判断' },
+  { value: 'openai_compatible', label: 'OpenAI 兼容' },
+  { value: 'anthropic_native', label: 'Claude 原生' },
+];
+
+const apiEndpointModes = [
+  { value: 'auto_append', label: '自动补全端点' },
+  { value: 'base_is_endpoint', label: 'Base URL 已是完整端点' },
 ];
 
 const AGENT_UI_PREFS_KEY = 'pa_agent_ui_prefs_v1';
@@ -825,6 +866,48 @@ function isRenderableImageSrc(value: unknown): boolean {
     || src.startsWith('http://')
     || src.startsWith('https://'),
   );
+}
+
+function splitMessageForDisplay(text: unknown, delimiter: unknown): string[] {
+  const raw = String(text || '');
+  const marker = String(delimiter || '').trim();
+  if (!marker || !raw.includes(marker)) return raw.trim() ? [raw] : [];
+  return raw
+    .split(marker)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function expandReplySegmentsForDisplay(rows: AnyRecord[], config: AgentConfig): AnyRecord[] {
+  if (!config.reply_auto_segment_enabled) return rows;
+  const delimiter = String(config.reply_auto_segment_delimiter || '').trim();
+  if (!delimiter) return rows;
+  const expanded: AnyRecord[] = [];
+  rows.forEach((item) => {
+    const role = String(item.role || '');
+    if (role !== 'assistant' && role !== 'bot') {
+      expanded.push(item);
+      return;
+    }
+    const parts = splitMessageForDisplay(item.text, delimiter);
+    if (parts.length <= 1) {
+      expanded.push(item);
+      return;
+    }
+    parts.forEach((part, index) => {
+      expanded.push({
+        ...item,
+        id: `${String(item.id || `${role}_${item.created_at_ms || 0}`)}:seg:${index}`,
+        text: part,
+        original_text: item.text,
+        segment_index: index,
+        segment_count: parts.length,
+        created_at_ms: asNumber(item.created_at_ms, 0) + index,
+        attachments: index === parts.length - 1 ? item.attachments : [],
+      });
+    });
+  });
+  return expanded;
 }
 
 function AttachmentDraftPanel({
@@ -2129,6 +2212,27 @@ function ConfigEditor({
             onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'auto_reply', event.currentTarget.checked)}
           />
           <TextInput label="Base URL" value={String(draft.base_url || '')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'base_url', event.currentTarget.value)} />
+          <Select
+            label="接口格式"
+            description="OpenAI 兼容适合大多数反代和聚合站；Claude 原生会使用 Anthropic messages 格式。"
+            value={String(draft.api_request_format || 'auto')}
+            data={apiRequestFormats}
+            onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'api_request_format', value || 'auto')}
+          />
+          <Select
+            label="端点拼接"
+            description="反代如果已经给了完整入口，就选“Base URL 已是完整端点”，避免重复追加 /v1/chat/completions。"
+            value={String(draft.api_endpoint_mode || 'auto_append')}
+            data={apiEndpointModes}
+            onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'api_endpoint_mode', value || 'auto_append')}
+          />
+          {String(draft.api_endpoint_mode || 'auto_append') !== 'base_is_endpoint' ? (
+            <>
+              <TextInput label="聊天端点路径" value={String(draft.chat_endpoint_path || '/v1/chat/completions')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'chat_endpoint_path', event.currentTarget.value)} />
+              <TextInput label="Claude 原生端点路径" value={String(draft.anthropic_endpoint_path || '/v1/messages')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'anthropic_endpoint_path', event.currentTarget.value)} />
+              <TextInput label="绘图端点路径" value={String(draft.image_generation_endpoint_path || '/v1/images/generations')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'image_generation_endpoint_path', event.currentTarget.value)} />
+            </>
+          ) : null}
           <PasswordInput
             label={draft.api_key_masked ? `API Key (${draft.api_key_masked})` : 'API Key'}
             value={String(draft.api_key || '')}
@@ -2157,6 +2261,11 @@ function ConfigEditor({
             onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'image_generation_api_key', event.currentTarget.value)}
             placeholder="留空复用主 API Key / 保存时保留已有密钥"
           />
+          <Switch label="启用日记本工具" checked={draft.diary_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'diary_enabled', event.currentTarget.checked)} />
+          <NumberInput label="日记总数上限" value={Number(draft.diary_entry_limit ?? 100)} min={10} max={1000} step={10} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_entry_limit', Number(v) || 100)} />
+          <NumberInput label="日记清理旧条目窗口" description="超过上限时，只在最旧的这批日记里删除重要性最低的一条。" value={Number(draft.diary_gc_oldest_count ?? 50)} min={1} max={1000} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_gc_oldest_count', Number(v) || 50)} />
+          <NumberInput label="单条日记最大字符" value={Number(draft.diary_entry_max_chars ?? 20000)} min={1000} max={120000} step={1000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_entry_max_chars', Number(v) || 20000)} />
+          <NumberInput label="查日记返回总字符" value={Number(draft.diary_read_total_max_chars ?? 60000)} min={2000} max={240000} step={2000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_read_total_max_chars', Number(v) || 60000)} />
           <CsvTextInput label="工具白名单" value={draft.tool_allowlist} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'tool_allowlist', value)} />
           <Select label="Prompt 风格" value={String(draft.prompt_variant || 'balanced')} data={promptVariants} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'prompt_variant', value || 'balanced')} />
           <Switch label="thought 质量评分" checked={draft.thought_quality_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'thought_quality_enabled', event.currentTarget.checked)} />
@@ -2599,7 +2708,7 @@ function PromptContractPanel({
       label: '完整 Prompt',
       value: `${formatCount(estimatedTokens)} tokens`,
       detail: `${formatCount(promptChars)} chars，含人设、近期对话和 compact AP 包`,
-      tone: estimatedTokens > 9000 ? 'warn' : 'safe',
+      tone: estimatedTokens >= PROMPT_BUDGET_WARN_TOKENS ? 'warn' : 'safe',
     },
     {
       id: 'compression',
@@ -3728,7 +3837,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
   useEffect(() => {
     if (!autoRefresh) return undefined;
-    const timer = window.setInterval(() => refresh(true).catch(() => undefined), Math.max(650, Number(refreshMs) || 1200));
+    const timer = window.setInterval(() => refresh(true).catch(() => undefined), Math.max(350, Number(refreshMs) || 1200));
     return () => window.clearInterval(timer);
   }, [autoRefresh, refreshMs, agentTab, adapterLogView, llmApiLogView]);
 
@@ -3799,14 +3908,23 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
             const rows = prev.filter((item) => String(item.job_id || '') !== activeId);
             return [job, ...rows].slice(0, 24);
           });
-          if (job.ap_packet && Object.keys(job.ap_packet).length) {
-            setStatus((prev) => ({
-              ...(prev || {}),
-              ap_packet: job.ap_packet,
-              session: (prev || {}).session || {},
-              config: (prev || {}).config || serverConfig,
-            }));
-          }
+          setStatus((prev) => {
+            const next = { ...(prev || {}) } as AnyRecord;
+            if (job.ap_packet && Object.keys(job.ap_packet).length) {
+              next.ap_packet = job.ap_packet;
+            }
+            next.messages = mergeLiveRecords(asArray<AnyRecord>(next.messages), [
+              ...jobUserMessages(job),
+              ...jobReplyMessages(job),
+            ], 'message').sort((a, b) => asNumber(a.created_at_ms, 0) - asNumber(b.created_at_ms, 0));
+            next.thoughts = mergeLiveRecords(asArray<AnyRecord>(next.thoughts), [
+              ...asArray<AnyRecord>(job.thoughts),
+              job.thought as AnyRecord,
+            ].filter((item): item is AnyRecord => Boolean(item && typeof item === 'object' && String(item.text || '').trim())), 'thought');
+            next.session = next.session || {};
+            next.config = next.config || serverConfig;
+            return next;
+          });
           const bg = await api.agentBackgroundStatus().catch(() => null);
           if (bg) setBackground(bg);
           if (isTerminalAgentJob(job)) {
@@ -3819,22 +3937,28 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       } catch {
         return;
       }
-    }, 220);
+    }, 180);
     return () => window.clearInterval(timer);
   }, [activeJob?.job_id, activeJob?.status, agentTab]);
 
   async function saveConfig() {
     await withBusy('config', async () => {
       const saved = await api.saveAgentConfig(draft);
-      setServerConfig((saved || {}) as AgentConfig);
-      setDraft((prev) => ({ ...prev, ...saved, api_key: '' }));
+      const nextConfig = { ...emptyConfig, ...(saved || {}), api_key: '' } as AgentConfig;
+      setServerConfig(nextConfig);
+      setDraft((prev) => ({ ...prev, ...nextConfig }));
       setSendPreTicks(Number((saved as AgentConfig)?.pre_thought_ticks ?? draft.pre_thought_ticks ?? emptyConfig.pre_thought_ticks ?? 5));
       setSendWaitTicks(Boolean((saved as AgentConfig)?.run_ap_while_waiting_llm ?? draft.run_ap_while_waiting_llm));
       setSendPostTicks(Number((saved as AgentConfig)?.post_thought_ticks ?? draft.post_thought_ticks ?? emptyConfig.post_thought_ticks ?? 2));
       draftDirtyRef.current = false;
       draftInitializedRef.current = true;
       setDraftDirty(false);
-      await refresh(true);
+      const fresh = await api.agentConfig().catch(() => null);
+      if (fresh) {
+        const refreshedConfig = { ...emptyConfig, ...fresh, api_key: '' } as AgentConfig;
+        setServerConfig(refreshedConfig);
+        setDraft(refreshedConfig);
+      }
     });
   }
 
@@ -5141,7 +5265,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       label: 'Prompt 预算',
       value: `${formatCount(promptBudget.estimated_tokens)} tokens`,
       detail: `LLM AP ${formatCount(promptBudget.ap_packet_chars)} chars / 诊断 ${formatCount(promptBudget.status_packet_chars)} chars`,
-      color: asNumber(promptBudget.estimated_tokens, 0) > 9000 ? 'red' : asNumber(promptBudget.estimated_tokens, 0) > 0 ? 'teal' : 'gray',
+      color: promptBudgetColor(asNumber(promptBudget.estimated_tokens, 0)),
       source: promptContract || readiness || modelReadiness,
     },
     {
@@ -5166,9 +5290,17 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     const role = String(item.role || '');
     return role === 'user' || role === 'assistant' || role === 'bot';
   });
-  const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
+  const displayVisibleMessages = useMemo(
+    () => expandReplySegmentsForDisplay(visibleMessages, serverConfig || draft),
+    [visibleMessages, serverConfig, draft],
+  );
+  const displayMessages = useMemo(
+    () => expandReplySegmentsForDisplay(messages, serverConfig || draft),
+    [messages, serverConfig, draft],
+  );
+  const lastVisibleMessage = displayVisibleMessages[displayVisibleMessages.length - 1] || null;
   const latestVisibleMessageKey = lastVisibleMessage
-    ? `${visibleMessages.length}:${String(lastVisibleMessage.id || lastVisibleMessage.created_at_ms || '')}:${String(lastVisibleMessage.text || '').length}`
+    ? `${displayVisibleMessages.length}:${String(lastVisibleMessage.id || lastVisibleMessage.created_at_ms || '')}:${String(lastVisibleMessage.text || '').length}`
     : '0';
   useEffect(() => {
     if (agentTab !== 'home' || !chatAutoFollowRef.current) return undefined;
@@ -5186,12 +5318,16 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const backgroundProgress = (backgroundResult.internal_think_progress || {}) as AnyRecord;
   const backgroundStageLabel = String(backgroundResult.stage_label || background?.last_stage_label || '').trim();
   const backgroundStage = String(backgroundResult.stage || background?.last_stage || '').trim();
+  const backgroundStageAgeMs = Math.max(0, Date.now() - asNumber(background?.last_step_at_ms || backgroundResult.updated_at_ms || 0, Date.now()));
+  const backgroundStageIsFresh = Boolean(background?.running) || backgroundStageAgeMs <= 3000;
+  const visibleBackgroundStageLabel = backgroundStageIsFresh ? backgroundStageLabel : '';
+  const visibleBackgroundStage = backgroundStageIsFresh ? backgroundStage : '';
   const backgroundDecision = String(backgroundProgress.decision || backgroundResult.decision || '').trim();
   const backgroundThoughtText = String(backgroundProgress.current_thought_text || backgroundResult.current_thought_text || '').trim();
   const backgroundWhy = String(backgroundProgress.why || backgroundResult.why || backgroundResult.reason || '').trim();
   const currentStage = activeJob?.stage_label
-    || (background?.running || backgroundStageLabel
-      ? backgroundStageLabel || '后台主观能动性运行中'
+    || (background?.running || visibleBackgroundStageLabel
+      ? visibleBackgroundStageLabel || '后台主观能动性运行中'
       : sending
         ? '消息已提交'
         : runtimeLooksEmpty
@@ -5247,7 +5383,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     {
       label: '当前阶段',
       value: currentStage,
-      note: activeJob?.status === 'queued' ? '消息已入队，等待 AP 主锁和前序任务。' : activeJob?.stage ? `内部阶段：${activeJob.stage}` : backgroundStage ? `后台阶段：${backgroundStage}` : '当前没有运行中的回合。',
+      note: activeJob?.status === 'queued' ? '消息已入队，等待前序任务。' : activeJob?.stage ? `内部阶段：${activeJob.stage}` : visibleBackgroundStage ? `后台阶段：${visibleBackgroundStage}` : '当前没有运行中的回合。',
     },
     {
       label: '当前决策',
@@ -5445,7 +5581,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                       </Text>
                     </div>
                     <Group gap={6}>
-                      <Badge variant="light">{formatCount(visibleMessages.length)} 条</Badge>
+                      <Badge variant="light">{formatCount(displayVisibleMessages.length)} 条</Badge>
                       <Tooltip label="清空主页对话和近期想法，不清 AP 运行态。">
                         <ActionIcon variant="light" color="red" loading={historyBusy} onClick={() => void clear(false)} aria-label="清空对话">
                           <IconTrash size={17} />
@@ -5462,7 +5598,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                     <Stack gap="xs">
                       {initialDataLoading ? (
                         <div className="empty-box">数据读取中，正在连接 PA 后端和 AP 运行态...</div>
-                      ) : visibleMessages.length ? visibleMessages.map((item) => (
+                      ) : displayVisibleMessages.length ? displayVisibleMessages.map((item) => (
                         <MessageBubble
                           key={String(item.id || `${item.role}-${item.created_at_ms}`)}
                           item={item}
@@ -7358,7 +7494,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 {debtMessageCount ? (
                   <Badge variant="light" color="yellow">{formatCount(debtMessageCount)} 历史债务</Badge>
                 ) : null}
-                <Badge variant="light">{formatCount(messages.length)} messages</Badge>
+                <Badge variant="light">{formatCount(displayMessages.length)} messages</Badge>
               </Group>
             </Group>
             <Group justify="space-between" gap="xs" mb="xs">
@@ -7374,7 +7510,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
             </Group>
             <ScrollArea.Autosize mah={420} className="agent-message-scroll">
               <Stack gap="xs">
-                {messages.length ? messages.map((item) => (
+                {displayMessages.length ? displayMessages.map((item) => (
                   <MessageBubble
                     key={String(item.id || `${item.role}-${item.created_at_ms}`)}
                     item={item}
@@ -8207,7 +8343,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                     <div className="agent-quality-dashboard">
                       <Group justify="space-between" gap={6}>
                         <Text size="xs" fw={800}>Prompt 预算</Text>
-                        <Badge variant="light" color={asNumber(promptPreview.budgets?.prompt_chars, 0) > 18000 ? 'red' : 'teal'}>
+                        <Badge variant="light" color={promptBudgetColor(asNumber(promptPreview.budgets?.estimated_tokens, 0))}>
                           {formatCount(promptPreview.budgets?.estimated_tokens)} tokens
                         </Badge>
                       </Group>

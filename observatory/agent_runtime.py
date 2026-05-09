@@ -113,6 +113,17 @@ def _prompt_section_rows_with_total(prefix: str, sections: list[tuple[str, str]]
     return rows, total_chars, total_tokens
 
 
+def _prompt_budget_status(prompt_chars: int = 0, estimated_tokens: int = 0) -> str:
+    tokens = max(0, int(estimated_tokens or 0))
+    if tokens <= 0 and prompt_chars:
+        tokens = int(math.ceil(max(0, int(prompt_chars or 0)) / 1.8))
+    if tokens >= _PROMPT_BUDGET_FAIL_TOKENS:
+        return "fail"
+    if tokens >= _PROMPT_BUDGET_WARN_TOKENS:
+        return "warn"
+    return "pass"
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -133,6 +144,10 @@ def _napcat_repo_path() -> Path:
 
 def _state_path() -> Path:
     return _outputs_dir() / "agent_state.json"
+
+
+def _diary_path() -> Path:
+    return _outputs_dir() / "agent_diary.json"
 
 
 def _events_path() -> Path:
@@ -367,6 +382,8 @@ _MAX_JSONL_ARCHIVES = 3
 _MAX_JSON_ROW_CHARS = 24_000
 _MAX_STATE_BYTES = 12 * 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
+_PROMPT_BUDGET_WARN_TOKENS = 100_000
+_PROMPT_BUDGET_FAIL_TOKENS = 200_000
 _DATA_URL_RE = re.compile(r"data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s_-]{256,})")
 
 
@@ -651,6 +668,19 @@ def _clean_text(value: Any, *, max_chars: int = 4000) -> str:
     text = re.sub(r"\?{5,}", " ", text)
     text = re.sub(r"？{5,}", " ", text)
     text = re.sub(r"\s+", " ", text.replace("\u0000", " ")).strip()
+    if len(text) > max_chars:
+        return text[: max(0, max_chars - 12)].rstrip() + "...[cut]"
+    return text
+
+
+def _clean_multiline_text(value: Any, *, max_chars: int = 4000) -> str:
+    text = str(value or "")
+    text = text.replace("\ufffd", " ").replace("\u0000", " ")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\?{5,}", " ", text)
+    text = re.sub(r"？{5,}", " ", text)
+    text = "\n".join(re.sub(r"[ \t\f\v]+", " ", line).strip() for line in text.split("\n"))
+    text = re.sub(r"\n{4,}", "\n\n\n", text).strip()
     if len(text) > max_chars:
         return text[: max(0, max_chars - 12)].rstrip() + "...[cut]"
     return text
@@ -1510,6 +1540,18 @@ def _canonical_tool_name(name: Any) -> str:
         "delete_message": "napcat_recall_message",
         "撤回": "napcat_recall_message",
         "撤回消息": "napcat_recall_message",
+        "write_diary": "write_diary",
+        "diary_write": "write_diary",
+        "journal_write": "write_diary",
+        "记日记": "write_diary",
+        "写日记": "write_diary",
+        "记录日记": "write_diary",
+        "read_diary": "read_diary",
+        "diary_read": "read_diary",
+        "journal_read": "read_diary",
+        "查日记": "read_diary",
+        "读日记": "read_diary",
+        "查看日记": "read_diary",
         "image_generate": "image_generation",
         "draw_image": "image_generation",
         "generate_image": "image_generation",
@@ -1547,6 +1589,47 @@ def _display_of(row: dict[str, Any]) -> str:
 
 def _summarize_tool_output(output: Any, *, max_chars: int = 600) -> str:
     if isinstance(output, dict):
+        if output.get("mode") in {"read_diary", "write_diary"} or output.get("entry") or output.get("entries"):
+            parts: list[str] = []
+            for key in ("summary", "message", "mode"):
+                value = output.get(key)
+                if value not in (None, "", [], {}):
+                    parts.append(f"{key}={value}")
+            entries = _as_list(output.get("entries"))
+            if entries:
+                compact_entries = []
+                for entry in entries[:6]:
+                    item = _as_dict(entry)
+                    compact_entries.append(
+                        {
+                            "id": item.get("id") or "",
+                            "title": item.get("title") or "",
+                            "importance": item.get("importance"),
+                            "updated_at": item.get("updated_at") or item.get("updated_at_ms") or "",
+                            "preview": _short(item.get("preview") or item.get("content") or "", 180),
+                        }
+                    )
+                parts.append("entries=" + json.dumps(compact_entries, ensure_ascii=False))
+            entry = _as_dict(output.get("entry"))
+            if entry:
+                parts.append(
+                    "entry="
+                    + json.dumps(
+                        {
+                            "id": entry.get("id") or "",
+                            "title": entry.get("title") or "",
+                            "importance": entry.get("importance"),
+                            "updated_at": entry.get("updated_at") or entry.get("updated_at_ms") or "",
+                            "preview": _short(entry.get("preview") or entry.get("content") or "", 220),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            removed = _as_list(output.get("removed_entries"))
+            if removed:
+                parts.append(f"removed={len(removed)}")
+            if parts:
+                return _naturalize_runtime_text("；".join(parts), max_chars=max_chars)
         if output.get("mode") == "image_generation" or output.get("attachment") or output.get("send_recommendation"):
             parts: list[str] = []
             for key in ("summary", "path", "file", "send_recommendation", "next"):
@@ -1632,6 +1715,8 @@ def _safe_tool_feedback_text(result: dict[str, Any], *, max_chars: int = 420) ->
     label = {
         "time": "时间工具",
             "memory_note": "记忆便签工具",
+            "write_diary": "写日记工具",
+            "read_diary": "查日记工具",
             "web_search": "搜索工具",
             "image_understanding": "视觉理解工具",
             "mcp_ping": "MCP 状态工具",
@@ -2112,6 +2197,16 @@ def _listify_strings(value: Any, fallback: list[str]) -> list[str]:
     return list(fallback)
 
 
+def _optional_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[,，、\n]", value) if part.strip()]
+    if value in (None, "", [], {}):
+        return []
+    return [str(value).strip()] if str(value).strip() else []
+
+
 def _contains_any_alias(text: Any, aliases: Any) -> bool:
     lowered = str(text or "").lower()
     if not lowered:
@@ -2402,6 +2497,11 @@ class AgentConfig:
     _type: str = "newapi_channel_conn"
     llm_enabled: bool = True
     base_url: str = "https://api.openai.com"
+    api_request_format: str = "auto"
+    api_endpoint_mode: str = "auto_append"
+    chat_endpoint_path: str = "/v1/chat/completions"
+    anthropic_endpoint_path: str = "/v1/messages"
+    image_generation_endpoint_path: str = "/v1/images/generations"
     api_key: str = ""
     model: str = "gpt-4.1-mini"
     vision_model: str = "gpt-4.1-mini"
@@ -2482,9 +2582,14 @@ class AgentConfig:
     image_generation_model: str = "gpt-image-1"
     image_generation_api_key: str = ""
     image_generation_review_enabled: bool = True
+    diary_enabled: bool = True
+    diary_entry_limit: int = 100
+    diary_gc_oldest_count: int = 50
+    diary_entry_max_chars: int = 20000
+    diary_read_total_max_chars: int = 60000
     mcp_enabled: bool = False
     skill_enabled: bool = True
-    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
+    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
     model_pool: list[dict[str, Any]] = field(default_factory=list)
     persona_name: str = _DEFAULT_PERSONA_NAME
     persona_text: str = _DEFAULT_PERSONA_TEXT
@@ -2545,6 +2650,22 @@ class AgentConfig:
         base.timeout_sec = max(5, min(600, _as_int(base.timeout_sec, 120)))
         base.max_completion_tokens = max(256, min(12000, _as_int(base.max_completion_tokens, 1600)))
         base.temperature = max(0.0, min(2.0, _as_float(base.temperature, 0.72)))
+        base.base_url = _clean_text(base.base_url or "https://api.openai.com", max_chars=800) or "https://api.openai.com"
+        request_format = str(base.api_request_format or "auto").strip().lower()
+        if request_format in {"openai", "openai_compatible", "compatible", "compat"}:
+            base.api_request_format = "openai_compatible"
+        elif request_format in {"anthropic", "anthropic_native", "claude_native", "claude"}:
+            base.api_request_format = "anthropic_native"
+        else:
+            base.api_request_format = "auto"
+        endpoint_mode = str(base.api_endpoint_mode or "auto_append").strip().lower()
+        if endpoint_mode in {"full", "full_url", "base_is_endpoint", "no_append", "as_is", "none"}:
+            base.api_endpoint_mode = "base_is_endpoint"
+        else:
+            base.api_endpoint_mode = "auto_append"
+        base.chat_endpoint_path = _clean_text(base.chat_endpoint_path or "/v1/chat/completions", max_chars=240) or "/v1/chat/completions"
+        base.anthropic_endpoint_path = _clean_text(base.anthropic_endpoint_path or "/v1/messages", max_chars=240) or "/v1/messages"
+        base.image_generation_endpoint_path = _clean_text(base.image_generation_endpoint_path or "/v1/images/generations", max_chars=240) or "/v1/images/generations"
         base.object_cloud_limit = max(12, min(200, _as_int(base.object_cloud_limit, 60)))
         base.history_limit = max(20, min(500, _as_int(base.history_limit, 80)))
         base.event_log_limit = max(20, min(2000, _as_int(base.event_log_limit, 300)))
@@ -2630,8 +2751,13 @@ class AgentConfig:
         base.multimodal_api_key = _clean_text(base.multimodal_api_key, max_chars=4000)
         base.image_generation_api_key = _clean_text(base.image_generation_api_key, max_chars=4000)
         base.image_generation_review_enabled = bool(base.image_generation_review_enabled)
-        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
-        for builtin_tool in ("image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
+        base.diary_enabled = bool(base.diary_enabled)
+        base.diary_entry_limit = max(10, min(1000, _as_int(base.diary_entry_limit, 100)))
+        base.diary_gc_oldest_count = max(1, min(base.diary_entry_limit, _as_int(base.diary_gc_oldest_count, 50)))
+        base.diary_entry_max_chars = max(1000, min(120000, _as_int(base.diary_entry_max_chars, 20000)))
+        base.diary_read_total_max_chars = max(2000, min(240000, _as_int(base.diary_read_total_max_chars, 60000)))
+        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
+        for builtin_tool in ("write_diary", "read_diary", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
             if builtin_tool not in base.tool_allowlist:
                 base.tool_allowlist.append(builtin_tool)
         if not isinstance(base.model_pool, list):
@@ -2701,15 +2827,55 @@ class LLMGateway:
         )
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
+    def _endpoint_path(self, kind: str) -> str:
+        kind_key = str(kind or "chat").strip().lower()
+        if kind_key in {"anthropic", "messages", "claude"}:
+            endpoint = str(getattr(self.config, "anthropic_endpoint_path", "") or "/v1/messages")
+        elif kind_key in {"image", "image_generation", "images"}:
+            endpoint = str(getattr(self.config, "image_generation_endpoint_path", "") or "/v1/images/generations")
+        else:
+            endpoint = str(getattr(self.config, "chat_endpoint_path", "") or "/v1/chat/completions")
+        endpoint = endpoint.strip()
+        if not endpoint:
+            return "/v1/chat/completions"
+        if endpoint.startswith(("http://", "https://")):
+            return endpoint
+        return endpoint if endpoint.startswith("/") else f"/{endpoint}"
+
     def _public_endpoint(self, endpoint: str) -> str:
         return self._request_url(endpoint)
 
     def _request_url(self, endpoint: str) -> str:
-        base = str(self.config.base_url or "https://api.openai.com").rstrip("/")
-        endpoint = str(endpoint or "")
-        if endpoint.startswith("/v1/") and base.endswith("/v1"):
+        base = str(self.config.base_url or "https://api.openai.com").strip().rstrip("/")
+        endpoint = str(endpoint or "").strip()
+        if endpoint.startswith(("http://", "https://")):
+            return endpoint.rstrip("/")
+        if not endpoint:
+            return base
+        if str(getattr(self.config, "api_endpoint_mode", "auto_append") or "auto_append").strip().lower() == "base_is_endpoint":
+            return base
+        endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        base_lower = base.lower()
+        endpoint_lower = endpoint.lower()
+        endpoint_tail = endpoint_lower.rsplit("/", 1)[-1]
+        if base_lower.endswith(endpoint_lower):
+            return base
+        if endpoint_lower.startswith("/v1/") and base_lower.endswith("/v1"):
             return base + endpoint[len("/v1") :]
+        if endpoint_tail and base_lower.endswith(f"/{endpoint_tail}"):
+            return base
         return base + endpoint
+
+    def _api_format_for_model(self, model: str) -> str:
+        configured = str(getattr(self.config, "api_request_format", "auto") or "auto").strip().lower()
+        if configured in {"openai_compatible", "anthropic_native"}:
+            return configured
+        if self._is_claude_model(model) and self._is_direct_anthropic_endpoint():
+            return "anthropic_native"
+        return "openai_compatible"
+
+    def _uses_anthropic_native(self, model: str) -> bool:
+        return self._api_format_for_model(model) == "anthropic_native"
 
     def _request_meta(
         self,
@@ -3066,8 +3232,8 @@ class LLMGateway:
         if not self.config.llm_enabled or not self.config.api_key or not self.config.model:
             return {}, {"ok": False, "mode": "fallback", "reason": "llm_not_configured"}
         selected_model = str(self.config.model or "").strip()
-        direct_anthropic = self._is_claude_model(selected_model) and self._is_direct_anthropic_endpoint()
-        endpoint = "/v1/messages" if direct_anthropic else "/v1/chat/completions"
+        direct_anthropic = self._uses_anthropic_native(selected_model)
+        endpoint = self._endpoint_path("anthropic" if direct_anthropic else "chat")
         result, status = self._invoke_with_retries(
             cooldown_key=self._cooldown_key(model=selected_model, api_key=self.config.api_key, purpose="chat", endpoint=endpoint),
             purpose="chat",
@@ -3104,8 +3270,8 @@ class LLMGateway:
             return "", {"ok": False, "mode": "fallback", "reason": "llm_not_configured"}
         if not selected_model:
             return "", {"ok": False, "mode": "fallback", "reason": "model_not_configured"}
-        direct_anthropic = self._is_claude_model(selected_model) and self._is_direct_anthropic_endpoint()
-        endpoint = "/v1/messages" if direct_anthropic else "/v1/chat/completions"
+        direct_anthropic = self._uses_anthropic_native(selected_model)
+        endpoint = self._endpoint_path("anthropic" if direct_anthropic else "chat")
         provider_messages = self._normalize_messages_for_model(messages, model=selected_model, anthropic_format=direct_anthropic)
         result, status = self._invoke_with_retries(
             cooldown_key=self._cooldown_key(model=selected_model, api_key=api_key, purpose=purpose, endpoint=endpoint),
@@ -3149,7 +3315,7 @@ class LLMGateway:
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        url = self._request_url("/v1/chat/completions")
+        url = self._request_url(self._endpoint_path("chat"))
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -3202,7 +3368,7 @@ class LLMGateway:
         system_text, provider_messages = self._anthropic_system_and_messages(messages)
         if not provider_messages:
             provider_messages = [{"role": "user", "content": "请继续。"}]
-        url = self._request_url("/v1/messages")
+        url = self._request_url(self._endpoint_path("anthropic"))
         payload: dict[str, Any] = {
             "model": model,
             "messages": provider_messages,
@@ -3250,8 +3416,9 @@ class LLMGateway:
             return {}, {"ok": False, "mode": "fallback", "reason": "llm_not_configured"}
         if not selected_model:
             return {}, {"ok": False, "mode": "fallback", "reason": "image_generation_model_not_configured"}
-        url = self._request_url("/v1/images/generations")
-        cooldown_key = self._cooldown_key(model=selected_model, api_key=api_key, purpose="image_generation", endpoint="/v1/images/generations")
+        endpoint = self._endpoint_path("image_generation")
+        url = self._request_url(endpoint)
+        cooldown_key = self._cooldown_key(model=selected_model, api_key=api_key, purpose="image_generation", endpoint=endpoint)
         payload = {"model": selected_model, "prompt": prompt, "size": size, "response_format": "b64_json"}
 
         def call_image_generation() -> dict[str, Any]:
@@ -3271,7 +3438,7 @@ class LLMGateway:
             cooldown_key=cooldown_key,
             purpose="image_generation",
             model=selected_model,
-            endpoint="/v1/images/generations",
+            endpoint=endpoint,
             message_count=1,
             prompt_chars=len(str(prompt or "")),
             prompt_hash=self._prompt_hash({"prompt": prompt, "size": size, "model": selected_model}),
@@ -3285,7 +3452,7 @@ class LLMGateway:
         return {}, {**status, "reason": reason, "model": selected_model}
 
     def _call_chat_completions(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        url = self._request_url("/v1/chat/completions")
+        url = self._request_url(self._endpoint_path("chat"))
         payload = {
             "model": self.config.model,
             "messages": messages,
@@ -3367,6 +3534,35 @@ class LocalToolRegistry:
                 "enabled": self._allowed("memory_note"),
                 "description": "把一条干净便签写入 PA 事件并回灌 AP，适合测试长期学习入口。",
                 "input_schema": {"text": "要记录的文本", "tags": ["可选标签"]},
+            },
+            {
+                "name": "write_diary",
+                "label": "写日记",
+                "enabled": self._allowed("write_diary"),
+                "description": "把重要约定、用户画像、长期偏好、项目决策等稳定信息写入本地日记本；支持新建、追加、覆盖和删除。",
+                "input_schema": {
+                    "title": "标题。新建时必填；更新时可配合 id 或用于匹配已有标题。",
+                    "content": "内容。可以较长，但应结构清晰，只写值得以后记住的信息。",
+                    "importance": "0-100 重要性评分；约定、身份画像、关键项目决策通常更高。",
+                    "id": "可选，指定已有日记 id。",
+                    "mode": "create | append | overwrite | delete；默认 append，找不到已有条目时自动 create。",
+                    "new_title": "可选，更新已有条目时改标题。",
+                },
+            },
+            {
+                "name": "read_diary",
+                "label": "查日记",
+                "enabled": self._allowed("read_diary"),
+                "description": "读取本地日记本。无参数返回标题列表；传 ids/titles/id/title/query 时返回匹配条目的完整内容。",
+                "input_schema": {
+                    "id": "可选，读取单条 id。",
+                    "ids": ["可选，一次读取多条 id"],
+                    "title": "可选，按标题精确/近似读取。",
+                    "titles": ["可选，一次读取多个标题"],
+                    "query": "可选，按标题和内容搜索。",
+                    "limit": "列表或搜索最多返回多少条。",
+                    "detail": "true 返回完整内容；无参数时默认 false，只列标题。",
+                },
             },
             {
                 "name": "ap_tick_report",
@@ -3463,6 +3659,10 @@ class LocalToolRegistry:
                 output = self._tool_weather(args)
             elif tool_name == "memory_note":
                 output = self._tool_memory_note(args)
+            elif tool_name == "write_diary":
+                output = self.runtime.write_diary(args, source=source)
+            elif tool_name == "read_diary":
+                output = self.runtime.read_diary(args)
             elif tool_name == "ap_tick_report":
                 output = self._tool_ap_tick_report(args)
             elif tool_name == "ap_recall":
@@ -4470,6 +4670,7 @@ class AgentRuntime:
         self._config_mtime_ms = self._read_config_mtime_ms()
         self.state = self._load_state()
         self._state_lock = threading.RLock()
+        self._diary_lock = threading.RLock()
         self._pending_external_inputs: list[dict[str, Any]] = []
         self._pending_teacher_feedback_labels: list[dict[str, Any]] = []
         self._reload_config_before_adapter_send = True
@@ -5876,6 +6077,297 @@ class AgentRuntime:
         self.record_event({"event": "config_profile_deleted", "id": profile_id})
         return {"ok": True, "deleted": profile_id, "profiles": self.config_profiles()["profiles"]}
 
+    def _load_diary_payload(self) -> dict[str, Any]:
+        raw = _safe_read_json(_diary_path(), {"version": 1, "entries": []})
+        if isinstance(raw, list):
+            raw = {"version": 1, "entries": raw}
+        if not isinstance(raw, dict):
+            raw = {"version": 1, "entries": []}
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        now = _now_ms()
+        for idx, item in enumerate(_as_list(raw.get("entries"))):
+            if not isinstance(item, dict):
+                continue
+            title = _clean_text(item.get("title") or "", max_chars=160)
+            content = _clean_multiline_text(item.get("content") or "", max_chars=max(1000, int(self.config.diary_entry_max_chars or 20000)))
+            if not title and not content:
+                continue
+            entry_id = _slug_id(item.get("id") or title or f"diary_{idx + 1}", fallback=f"diary_{idx + 1}")
+            if entry_id in seen:
+                suffix = 2
+                base_id = entry_id
+                while f"{base_id}_{suffix}" in seen:
+                    suffix += 1
+                entry_id = f"{base_id}_{suffix}"
+            seen.add(entry_id)
+            created_at = _as_int(item.get("created_at_ms"), _as_int(item.get("created_at"), now))
+            updated_at = _as_int(item.get("updated_at_ms"), _as_int(item.get("updated_at"), created_at))
+            entries.append(
+                {
+                    "id": entry_id,
+                    "title": title or f"未命名日记 {idx + 1}",
+                    "content": content,
+                    "importance": max(0, min(100, _as_int(item.get("importance"), 50))),
+                    "created_at_ms": created_at,
+                    "updated_at_ms": updated_at,
+                    "revision": max(1, _as_int(item.get("revision"), 1)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                }
+            )
+        entries.sort(key=lambda row: (_as_int(row.get("created_at_ms"), 0), _as_int(row.get("updated_at_ms"), 0)))
+        return {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "entries": entries}
+
+    def _save_diary_entries(self, entries: list[dict[str, Any]]) -> None:
+        safe_entries = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            safe_entries.append(
+                {
+                    "id": _slug_id(item.get("id") or item.get("title") or f"diary_{len(safe_entries) + 1}", fallback=f"diary_{len(safe_entries) + 1}"),
+                    "title": _clean_text(item.get("title") or "", max_chars=160) or f"未命名日记 {len(safe_entries) + 1}",
+                    "content": _clean_multiline_text(item.get("content") or "", max_chars=max(1000, int(self.config.diary_entry_max_chars or 20000))),
+                    "importance": max(0, min(100, _as_int(item.get("importance"), 50))),
+                    "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+                    "updated_at_ms": _as_int(item.get("updated_at_ms"), _now_ms()),
+                    "revision": max(1, _as_int(item.get("revision"), 1)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                }
+            )
+        safe_entries.sort(key=lambda row: (_as_int(row.get("created_at_ms"), 0), _as_int(row.get("updated_at_ms"), 0)))
+        _safe_write_json(_diary_path(), {"version": 1, "updated_at_ms": _now_ms(), "entries": safe_entries})
+
+    def _public_diary_entry(self, entry: dict[str, Any], *, detail: bool = False, remaining_chars: int | None = None) -> dict[str, Any]:
+        item = entry if isinstance(entry, dict) else {}
+        content = str(item.get("content") or "")
+        max_content = len(content) if remaining_chars is None else max(0, int(remaining_chars))
+        public = {
+            "id": str(item.get("id") or ""),
+            "title": _clean_text(item.get("title") or "", max_chars=160),
+            "importance": max(0, min(100, _as_int(item.get("importance"), 50))),
+            "created_at_ms": _as_int(item.get("created_at_ms"), 0),
+            "updated_at_ms": _as_int(item.get("updated_at_ms"), 0),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(max(0, _as_int(item.get("created_at_ms"), 0)) / 1000)) if _as_int(item.get("created_at_ms"), 0) else "",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(max(0, _as_int(item.get("updated_at_ms"), 0)) / 1000)) if _as_int(item.get("updated_at_ms"), 0) else "",
+            "revision": max(1, _as_int(item.get("revision"), 1)),
+            "preview": _clean_text(content, max_chars=220),
+        }
+        if detail:
+            public["content"] = _clean_multiline_text(content, max_chars=max_content)
+            if len(content) > max_content:
+                public["content_truncated"] = True
+                public["content_original_chars"] = len(content)
+        return public
+
+    def _find_diary_entries(self, entries: list[dict[str, Any]], args: dict[str, Any]) -> list[dict[str, Any]]:
+        ids = _optional_string_list(args.get("ids"))
+        single_id = str(args.get("id") or args.get("entry_id") or "").strip()
+        if single_id:
+            ids.append(single_id)
+        titles = [_clean_text(item, max_chars=160) for item in _optional_string_list(args.get("titles"))]
+        single_title = _clean_text(args.get("title") or "", max_chars=160)
+        if single_title:
+            titles.append(single_title)
+        query = _clean_text(args.get("query") or args.get("keyword") or args.get("q") or "", max_chars=200)
+        matches: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        id_set = {item for item in ids if item}
+        title_keys = {_plain_compact_text(item, max_chars=180).lower() for item in titles if item}
+        query_key = _plain_compact_text(query, max_chars=220).lower()
+        for entry in entries:
+            entry_id = str(entry.get("id") or "")
+            title = str(entry.get("title") or "")
+            title_key = _plain_compact_text(title, max_chars=180).lower()
+            content_key = _plain_compact_text(entry.get("content") or "", max_chars=1200).lower()
+            hit = False
+            if id_set and entry_id in id_set:
+                hit = True
+            if title_keys and (
+                title_key in title_keys
+                or any(
+                    key
+                    and title_key
+                    and min(len(key), len(title_key)) >= 8
+                    and (
+                        key in title_key
+                        or title_key in key
+                        or difflib.SequenceMatcher(None, key, title_key).ratio() >= 0.92
+                    )
+                    for key in title_keys
+                )
+            ):
+                hit = True
+            if query_key and (query_key in title_key or query_key in content_key):
+                hit = True
+            if hit and entry_id not in seen:
+                matches.append(entry)
+                seen.add(entry_id)
+        if not ids and not titles and not query:
+            return []
+        matches.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("importance"), 0)), reverse=True)
+        return matches
+
+    def _gc_diary_entries(self, entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        limit = max(10, int(self.config.diary_entry_limit or 100))
+        removed: list[dict[str, Any]] = []
+        rows = list(entries)
+        while len(rows) > limit:
+            oldest_count = max(1, min(len(rows), int(self.config.diary_gc_oldest_count or 50)))
+            oldest = sorted(rows, key=lambda row: (_as_int(row.get("created_at_ms"), 0), _as_int(row.get("updated_at_ms"), 0)))[:oldest_count]
+            victim = sorted(oldest, key=lambda row: (_as_int(row.get("importance"), 50), _as_int(row.get("created_at_ms"), 0), _as_int(row.get("updated_at_ms"), 0)))[0]
+            rows = [row for row in rows if str(row.get("id") or "") != str(victim.get("id") or "")]
+            removed.append(victim)
+        return rows, removed
+
+    def read_diary(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.diary_enabled:
+            return {"ok": False, "mode": "read_diary", "error": "diary_disabled", "summary": "日记本当前未启用。"}
+        with self._diary_lock:
+            payload = self._load_diary_payload()
+            entries = _as_list(payload.get("entries"))
+        has_selector = any(args.get(key) not in (None, "", [], {}) for key in ("id", "entry_id", "ids", "title", "titles", "query", "keyword", "q"))
+        limit = max(1, min(100, _as_int(args.get("limit"), 30)))
+        detail = bool(args.get("detail")) or has_selector
+        if has_selector:
+            matched = self._find_diary_entries([row for row in entries if isinstance(row, dict)], args)[:limit]
+        else:
+            matched = sorted([row for row in entries if isinstance(row, dict)], key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("importance"), 0)), reverse=True)[:limit]
+        remaining = max(1000, int(self.config.diary_read_total_max_chars or 60000))
+        public_entries: list[dict[str, Any]] = []
+        for entry in matched:
+            row = self._public_diary_entry(entry, detail=detail, remaining_chars=remaining)
+            if detail:
+                remaining -= len(str(row.get("content") or ""))
+            public_entries.append(row)
+            if detail and remaining <= 0:
+                break
+        mode = "detail" if detail else "list"
+        return {
+            "ok": True,
+            "mode": "read_diary",
+            "view": mode,
+            "count": len(public_entries),
+            "total": len(entries),
+            "entries": public_entries,
+            "summary": (
+                f"查到 {len(public_entries)} 条日记详情。"
+                if detail
+                else f"当前日记本共有 {len(entries)} 条，返回 {len(public_entries)} 条标题。"
+            ),
+            "path": str(_diary_path()),
+        }
+
+    def write_diary(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.diary_enabled:
+            return {"ok": False, "mode": "write_diary", "error": "diary_disabled", "summary": "日记本当前未启用。"}
+        now = _now_ms()
+        title = _clean_text(args.get("title") or args.get("name") or "", max_chars=160)
+        content = _clean_multiline_text(args.get("content") or args.get("text") or args.get("body") or "", max_chars=max(1000, int(self.config.diary_entry_max_chars or 20000)))
+        importance = max(0, min(100, _as_int(args.get("importance"), _as_int(args.get("score"), 60))))
+        mode = str(args.get("mode") or args.get("operation") or "").strip().lower()
+        mode_aliases = {
+            "add": "append",
+            "update": "append",
+            "追加": "append",
+            "新增": "append",
+            "create": "create",
+            "new": "create",
+            "overwrite": "overwrite",
+            "replace": "overwrite",
+            "覆盖": "overwrite",
+            "删除": "delete",
+            "remove": "delete",
+        }
+        mode = mode_aliases.get(mode, mode)
+        if mode not in {"create", "append", "overwrite", "delete", ""}:
+            mode = "append"
+        with self._diary_lock:
+            payload = self._load_diary_payload()
+            entries = [row for row in _as_list(payload.get("entries")) if isinstance(row, dict)]
+            matches = self._find_diary_entries(entries, args)
+            existing = matches[0] if matches else None
+            removed_entries: list[dict[str, Any]] = []
+            if mode == "delete":
+                if not existing:
+                    return {"ok": False, "mode": "write_diary", "error": "entry_not_found", "summary": "没有找到要删除的日记。"}
+                entries = [row for row in entries if str(row.get("id") or "") != str(existing.get("id") or "")]
+                self._save_diary_entries(entries)
+                public_removed = self._public_diary_entry(existing, detail=False)
+                self.record_event({"event": "diary_deleted", "id": public_removed.get("id"), "title": public_removed.get("title"), "source": source})
+                return {"ok": True, "mode": "write_diary", "operation": "delete", "removed_entries": [public_removed], "summary": f"已删除日记：{public_removed.get('title')}"}
+            if existing and mode != "create":
+                old_content = str(existing.get("content") or "")
+                if not content and not args.get("new_title") and "importance" not in args and "score" not in args:
+                    return {"ok": False, "mode": "write_diary", "error": "empty_update", "summary": "更新日记需要 content、new_title 或 importance。"}
+                if content:
+                    if mode == "overwrite":
+                        existing["content"] = content
+                    else:
+                        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(now / 1000))
+                        separator = "\n\n" if old_content.strip() else ""
+                        existing["content"] = _clean_multiline_text(f"{old_content}{separator}[{stamp}] 新增：\n{content}", max_chars=max(1000, int(self.config.diary_entry_max_chars or 20000)))
+                new_title = _clean_text(args.get("new_title") or "", max_chars=160)
+                if new_title:
+                    existing["title"] = new_title
+                elif title and not str(existing.get("title") or "").strip():
+                    existing["title"] = title
+                existing["importance"] = importance
+                existing["updated_at_ms"] = now
+                existing["revision"] = max(1, _as_int(existing.get("revision"), 1)) + 1
+                existing["source"] = _clean_text(source, max_chars=120)
+                operation = "overwrite" if mode == "overwrite" else "append"
+                entries, removed_entries = self._gc_diary_entries(entries)
+                self._save_diary_entries(entries)
+                public_entry = self._public_diary_entry(existing, detail=False)
+                self.record_event({"event": "diary_written", "operation": operation, "id": public_entry.get("id"), "title": public_entry.get("title"), "importance": importance, "source": source})
+                return {
+                    "ok": True,
+                    "mode": "write_diary",
+                    "operation": operation,
+                    "entry": public_entry,
+                    "removed_entries": [self._public_diary_entry(row, detail=False) for row in removed_entries],
+                    "summary": f"已{('覆盖' if operation == 'overwrite' else '追加')}日记：{public_entry.get('title')}（重要性 {importance}/100）。",
+                }
+            if not title:
+                return {"ok": False, "mode": "write_diary", "error": "missing_title", "summary": "新建日记需要 title。"}
+            if not content:
+                return {"ok": False, "mode": "write_diary", "error": "missing_content", "summary": "新建日记需要 content。"}
+            digest = hashlib.sha1(f"{title}|{now}|{content[:200]}".encode("utf-8", errors="ignore")).hexdigest()[:10]
+            entry_id = _slug_id(args.get("id") or f"diary_{now}_{digest}", fallback=f"diary_{now}_{digest}")
+            used_ids = {str(row.get("id") or "") for row in entries}
+            if entry_id in used_ids:
+                suffix = 2
+                base_id = entry_id
+                while f"{base_id}_{suffix}" in used_ids:
+                    suffix += 1
+                entry_id = f"{base_id}_{suffix}"
+            entry = {
+                "id": entry_id,
+                "title": title,
+                "content": content,
+                "importance": importance,
+                "created_at_ms": now,
+                "updated_at_ms": now,
+                "revision": 1,
+                "source": _clean_text(source, max_chars=120),
+            }
+            entries.append(entry)
+            entries, removed_entries = self._gc_diary_entries(entries)
+            self._save_diary_entries(entries)
+            public_entry = self._public_diary_entry(entry, detail=False)
+            self.record_event({"event": "diary_written", "operation": "create", "id": public_entry.get("id"), "title": public_entry.get("title"), "importance": importance, "source": source})
+            return {
+                "ok": True,
+                "mode": "write_diary",
+                "operation": "create",
+                "entry": public_entry,
+                "removed_entries": [self._public_diary_entry(row, detail=False) for row in removed_entries],
+                "summary": f"已新建日记：{title}（重要性 {importance}/100）。",
+            }
+
     def update_config(self, updates: dict[str, Any]) -> dict[str, Any]:
         self._maybe_reload_config_from_disk()
         current = self.config.to_dict(public=False)
@@ -5885,6 +6377,8 @@ class AgentRuntime:
                 updates = {k: v for k, v in updates.items() if k != secret_key}
         current.update(copy.deepcopy(updates))
         self._apply_config(AgentConfig.from_dict(current), persist=True)
+        self._last_status_compact = {}
+        self._last_compact_packet = {}
         self.record_event({"event": "config_updated", "keys": sorted(updates.keys())})
         return self.get_config_public()
 
@@ -5911,6 +6405,11 @@ class AgentRuntime:
                     "index": idx,
                     "name": str(item.get("name") or item.get("model") or f"model_{idx + 1}"),
                     "base_url": str(item.get("base_url") or self.config.base_url),
+                    "api_request_format": str(item.get("api_request_format") or self.config.api_request_format),
+                    "api_endpoint_mode": str(item.get("api_endpoint_mode") or self.config.api_endpoint_mode),
+                    "chat_endpoint_path": str(item.get("chat_endpoint_path") or self.config.chat_endpoint_path),
+                    "anthropic_endpoint_path": str(item.get("anthropic_endpoint_path") or self.config.anthropic_endpoint_path),
+                    "image_generation_endpoint_path": str(item.get("image_generation_endpoint_path") or self.config.image_generation_endpoint_path),
                     "model": str(item.get("model") or ""),
                     "vision_model": str(item.get("vision_model") or ""),
                     "multimodal_model": str(item.get("multimodal_model") or ""),
@@ -5933,6 +6432,11 @@ class AgentRuntime:
         slot = {
             "name": _clean_text(item.get("name") or item.get("label") or existing.get("name") or item.get("model") or "model_slot", max_chars=80),
             "base_url": _clean_text(item.get("base_url") or existing.get("base_url") or self.config.base_url, max_chars=400),
+            "api_request_format": AgentConfig.from_dict({"api_request_format": item.get("api_request_format") or existing.get("api_request_format") or self.config.api_request_format}).api_request_format,
+            "api_endpoint_mode": AgentConfig.from_dict({"api_endpoint_mode": item.get("api_endpoint_mode") or existing.get("api_endpoint_mode") or self.config.api_endpoint_mode}).api_endpoint_mode,
+            "chat_endpoint_path": _clean_text(item.get("chat_endpoint_path") or existing.get("chat_endpoint_path") or self.config.chat_endpoint_path, max_chars=240),
+            "anthropic_endpoint_path": _clean_text(item.get("anthropic_endpoint_path") or existing.get("anthropic_endpoint_path") or self.config.anthropic_endpoint_path, max_chars=240),
+            "image_generation_endpoint_path": _clean_text(item.get("image_generation_endpoint_path") or existing.get("image_generation_endpoint_path") or self.config.image_generation_endpoint_path, max_chars=240),
             "model": _clean_text(item.get("model") or existing.get("model") or "", max_chars=160),
             "vision_model": _clean_text(item.get("vision_model") or existing.get("vision_model") or "", max_chars=160),
             "multimodal_model": _clean_text(item.get("multimodal_model") or existing.get("multimodal_model") or "", max_chars=160),
@@ -6007,6 +6511,11 @@ class AgentRuntime:
             raise ValueError(f"model slot disabled: {index}")
         updates = {
             "base_url": slot.get("base_url") or self.config.base_url,
+            "api_request_format": slot.get("api_request_format") or self.config.api_request_format,
+            "api_endpoint_mode": slot.get("api_endpoint_mode") or self.config.api_endpoint_mode,
+            "chat_endpoint_path": slot.get("chat_endpoint_path") or self.config.chat_endpoint_path,
+            "anthropic_endpoint_path": slot.get("anthropic_endpoint_path") or self.config.anthropic_endpoint_path,
+            "image_generation_endpoint_path": slot.get("image_generation_endpoint_path") or self.config.image_generation_endpoint_path,
             "model": slot.get("model") or self.config.model,
             "vision_model": slot.get("vision_model") or self.config.vision_model,
             "multimodal_model": slot.get("multimodal_model") or self.config.multimodal_model,
@@ -6133,6 +6642,7 @@ class AgentRuntime:
             "config": _config_path(),
             "state": _state_path(),
             "profiles": _profiles_path(),
+            "diary": _diary_path(),
             "handoff": _handoff_path(),
             "morning_brief": _morning_brief_path(),
             "diagnostic_bundle": _diagnostic_bundle_path(),
@@ -6290,12 +6800,13 @@ class AgentRuntime:
         prompt_messages = self._build_llm_messages(user_text="readiness probe", prompt_packet=packet, thought_index=0)
         prompt_chars = sum(len(str(msg.get("content", ""))) for msg in prompt_messages)
         estimated_tokens = int(prompt_chars / 1.8) if prompt_chars else 0
-        if prompt_chars > 18000:
-            checks.append(item("prompt_budget", "Prompt 预算", "fail", f"预计 {estimated_tokens} tokens，过长。", action="降低 AP packet 或历史摘要长度。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
-        elif prompt_chars > 9000:
-            checks.append(item("prompt_budget", "Prompt 预算", "warn", f"预计 {estimated_tokens} tokens，略高。", action="观察模型输出是否挤压叙事空间。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
+        prompt_budget_status = _prompt_budget_status(prompt_chars, estimated_tokens)
+        if prompt_budget_status == "fail":
+            checks.append(item("prompt_budget", "Prompt 预算", "fail", f"预计 {estimated_tokens} tokens，超过 20w 预算红线。", action="降低 AP packet 或历史摘要长度。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
+        elif prompt_budget_status == "warn":
+            checks.append(item("prompt_budget", "Prompt 预算", "warn", f"预计 {estimated_tokens} tokens，超过 10w 观察线。", action="观察模型输出是否挤压叙事空间。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
         else:
-            checks.append(item("prompt_budget", "Prompt 预算", "pass", f"预计 {estimated_tokens} tokens。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
+            checks.append(item("prompt_budget", "Prompt 预算", "pass", f"预计 {estimated_tokens} tokens。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
 
         if profiles:
             checks.append(item("config_profile", "配置快照", "pass", f"已有 {len(profiles)} 个快照，首个为 {profiles[0].get('name') or profiles[0].get('id')}。"))
@@ -6317,7 +6828,7 @@ class AgentRuntime:
             checks.append(item("adapter", "平台适配器", "pass", f"当前使用 {self.config.platform_adapter or 'local'} 本地适配。"))
 
         tool_names = {str(row.get("name") or "") for row in self.tools.list_tools()}
-        missing_tools = [name for name in ("time", "memory_note", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "image_understanding") if name not in tool_names]
         if missing_tools:
             checks.append(item("tools", "本地工具", "fail", f"缺少关键工具：{', '.join(missing_tools)}。"))
         else:
@@ -7180,12 +7691,13 @@ class AgentRuntime:
         else:
             checks.append(check("retry", "重试策略", "pass", f"retry_count={self.config.retry_count}，timeout={self.config.timeout_sec}s。", meta={"retry_count": self.config.retry_count, "timeout_sec": self.config.timeout_sec}))
 
-        if prompt_chars > 18000:
-            checks.append(check("prompt_budget", "Prompt 预算", "fail", f"预计 {estimated_tokens} tokens，过长。", action="降低 history_limit / object_cloud_limit 或压缩 AP packet。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
-        elif prompt_chars > 9000:
-            checks.append(check("prompt_budget", "Prompt 预算", "warn", f"预计 {estimated_tokens} tokens，略高。", action="真实模型接入后观察 thought 是否被上下文挤压。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
+        prompt_budget_status = _prompt_budget_status(prompt_chars, estimated_tokens)
+        if prompt_budget_status == "fail":
+            checks.append(check("prompt_budget", "Prompt 预算", "fail", f"预计 {estimated_tokens} tokens，超过 20w 预算红线。", action="降低 history_limit / object_cloud_limit 或压缩 AP packet。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
+        elif prompt_budget_status == "warn":
+            checks.append(check("prompt_budget", "Prompt 预算", "warn", f"预计 {estimated_tokens} tokens，超过 10w 观察线。", action="真实模型接入后观察 thought 是否被上下文挤压。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
         else:
-            checks.append(check("prompt_budget", "Prompt 预算", "pass", f"预计 {estimated_tokens} tokens。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens}))
+            checks.append(check("prompt_budget", "Prompt 预算", "pass", f"预计 {estimated_tokens} tokens。", meta={"prompt_chars": prompt_chars, "estimated_tokens": estimated_tokens, "warn_tokens": _PROMPT_BUDGET_WARN_TOKENS, "fail_tokens": _PROMPT_BUDGET_FAIL_TOKENS}))
 
         fail_count = sum(1 for row in checks if row.get("status") == "fail")
         warn_count = sum(1 for row in checks if row.get("status") == "warn")
@@ -7994,7 +8506,7 @@ class AgentRuntime:
 
     def tool_matrix(self) -> dict[str, Any]:
         tools = self.tools.list_tools()
-        mutating_tools = {"memory_note", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
+        mutating_tools = {"memory_note", "write_diary", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
         stub_tools = {"web_search", "image_understanding", "mcp_ping", "skill_run"}
         external_reserved = {"weather", "web_search", "mcp_ping", "skill_run", "image_understanding"}
         rows: list[dict[str, Any]] = []
@@ -8227,7 +8739,7 @@ class AgentRuntime:
             "rows": rows,
             "counts": counts,
             "readiness": readiness,
-            "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
+            "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "write_diary", "read_diary", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
             "allowlist": list(self.config.tool_allowlist),
             "mcp_enabled": mcp_enabled,
             "skill_enabled": skill_enabled,
@@ -8783,8 +9295,10 @@ class AgentRuntime:
         warnings: list[str] = []
         if not self.config.llm_enabled or not self.config.api_key or not self.config.model:
             warnings.append("当前 LLM 未完整配置，真实生成会走 fallback。")
-        if prompt_chars > 18000:
-            warnings.append("Prompt 字符数偏高，建议降低 AP packet 或历史摘要长度。")
+        if _prompt_budget_status(prompt_chars, estimated_tokens) == "fail":
+            warnings.append("Prompt 预计 token 超过 20w 红线，建议降低 AP packet 或历史摘要长度。")
+        elif _prompt_budget_status(prompt_chars, estimated_tokens) == "warn":
+            warnings.append("Prompt 预计 token 超过 10w 观察线，建议留意模型上下文压力。")
         if len(packet_json) > 9000:
             warnings.append("AP compact packet 偏长，可能挤压叙事生成空间。")
         if attachment_mentions > 2:
@@ -10882,7 +11396,7 @@ class AgentRuntime:
 
         prompt = self.prompt_preview({"text": "自检：请基于当前 AP 状态生成一段自然、连续、不过度解释指标的内心想法。", "thought_index": 0})
         budgets = _as_dict(prompt.get("budgets"))
-        prompt_status = "fail" if _as_int(budgets.get("prompt_chars"), 0) > 18000 else ("warn" if _as_int(budgets.get("prompt_chars"), 0) > 9000 else "pass")
+        prompt_status = _prompt_budget_status(_as_int(budgets.get("prompt_chars"), 0), _as_int(budgets.get("estimated_tokens"), 0))
         add("prompt_budget", prompt_status, f"prompt_chars={budgets.get('prompt_chars')} estimated_tokens={budgets.get('estimated_tokens')}", meta=budgets)
 
         fallback = self._fallback_thought(user_text="自检：我今天有点累，但还想继续推进 PA。", packet=packet, thought_index=0)
@@ -10910,7 +11424,7 @@ class AgentRuntime:
 
         tools = self.list_tools()
         tool_names = {str(item.get("name") or "") for item in _as_list(tools.get("tools")) if isinstance(item, dict)}
-        missing_tools = [name for name in ("time", "memory_note", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "image_understanding") if name not in tool_names]
         add("tools", "pass" if not missing_tools else "fail", f"tools={len(tool_names)} missing={','.join(missing_tools) or '-'}", meta={"tools": sorted(tool_names)})
 
         profiles = self.config_profiles()
@@ -17033,6 +17547,11 @@ class AgentRuntime:
                         "image_generation 工具会保存本地图片，并尽量用多模态模型结合当前对话、近期 thought、AP 状态和人设做发送前审核。工具结果会包含 path/file、attachment、review、send_recommendation 和 send_image_action_template。",
                         "图片生成工具本身不会自动发图。下一段 thought 必须读取 review：send_recommendation=send 且上下文合适时，用 actions 的 send_image 发送；regenerate 时优化 prompt 再 tool_call；decide 时根据用户期待、人设和沉浸感自己判断。",
                         "如果用户只是测试多模态绘图功能，不要回复“我发不了真图片”，除非 image_generation 工具失败或没有配置模型。正确流程是先 tool_call image_generation。",
+                        "write_diary：当信息具有长期价值时写入本地日记本，例如约定、承诺、用户画像、长期偏好、关键人际关系、项目决策、重要调试结论、用户明确要求你记住的事。不要记录普通寒暄、一次性情绪、无聊闲聊、重复吐槽或临时噪声。",
+                        "write_diary 参数必须包含清晰 title、content 和 importance(0-100)。标题要稳定，例如“银子的信息”“和银子的约定”“PA 项目发布事项”；内容要结构化写清事实来源和约束。重要性评分越高越不容易在容量满时被清理。",
+                        "read_diary：当用户问“你还记得吗/我们的约定是什么/之前说过什么/某人的信息是什么”，而当前上下文没有可靠依据时使用。典型流程是：第一轮 read_diary 无参数列标题；第二轮按 id/title/query 选 1-3 条 read_diary 取详情；第三轮基于详情 reply。",
+                        "更新已有日记时，优先先 read_diary 查是否已有相关标题和 id。已有 id 时用 write_diary mode=append 追加新情报；mode=overwrite 只在整理、纠错或合并时使用，并且 content 必须尽量保留原有重要信息。",
+                        "如果用户明确纠正某条长期信息，先 read_diary 读出旧内容，再 write_diary overwrite 写入修正后的完整版本；不要只把“旧信息错了”追加在后面导致未来混乱。",
                         "memory_note、web_search、mcp_ping、skill_run 只在用户需求或上下文明确需要时使用。",
                     ]
                 ),
@@ -17108,6 +17627,10 @@ class AgentRuntime:
                         "反例 1：同样场景下，Thought #2 误以为用户又要求更具体，然后再次 reply 一段相似自我介绍。这是错误，因为用户没有提出更具体的新要求。",
                         "正例 2：用户问天气，Thought #1 tool_call weather，工具结果成功，且还没有可见回复。Thought #2 应吸收结果并 reply。",
                         "反例 2：工具结果刚回来却 sleep，导致用户没有得到结果。这是错误。",
+                        "正例 3：用户说“你要记住，我们约定以后每次发布前先本地验收”。Thought 可以 tool_call write_diary，args={\"title\":\"和用户的项目约定\",\"content\":\"约定：以后每次发布前先完成本地验收，再考虑更新仓库。\",\"importance\":92,\"mode\":\"append\"}。工具结果回来后简短 reply 表示记下。",
+                        "正例 4：用户问“你还记得自己和我的约定吗？”当前上下文没有明确依据。Thought #1 tool_call read_diary 无参数；Thought #2 从标题里选“和用户的项目约定”等 ids 再 read_diary；Thought #3 基于日记详情回答。不要凭感觉编约定。",
+                        "正例 5：聊天中得知“银子是晋中人”。如果这是长期用户画像信息，先 read_diary query=\"银子的信息\"；若已有条目，就 write_diary mode=append 指定 id 追加“银子是晋中人”；若没有，就新建标题“银子的信息”，importance 70 左右。普通玩笑和一次性表情互动不用记。",
+                        "反例 3：用户只是说“哈哈”“吃饭了吗”“草”，你也写日记。这是错误，会污染长期记忆。",
                         "正例 3：已回复后用户又插入新问题。下一段 thought 应处理新问题，不要把它当重复。",
                         "正例 4：已回复后发现自己说错事实。可以第二次 reply 纠错，并在 why 说明是纠错或撤回。",
                         "正例 5：用户问“你有真正的内心吗？现在有什么感觉？” Thought #1 reply 已经回答了“如果说我有内心，它像安静灯光，此刻有期待”。Thought #2 没有新输入，应 thought“我已经把当前感觉说出来了，再换一个灯光比喻只会重复，我先停住。” decision=sleep。",
@@ -17736,6 +18259,31 @@ class AgentRuntime:
                     extra.append(f"下一步={_sanitize_llm_visible_text(output_dict.get('next'), max_chars=260)}")
                 if extra:
                     body = _clean_text((body + "；" if body else "") + "；".join(extra), max_chars=1200)
+            if ok and _canonical_tool_name(tool) == "read_diary":
+                output_dict = _as_dict(output)
+                entries = _as_list(output_dict.get("entries"))
+                diary_rows: list[str] = []
+                for entry in entries[:5]:
+                    item = _as_dict(entry)
+                    title = _sanitize_llm_visible_text(item.get("title"), max_chars=120)
+                    entry_id = str(item.get("id") or "")
+                    importance = _as_int(item.get("importance"), 0)
+                    if item.get("content"):
+                        content = _clean_multiline_text(item.get("content"), max_chars=1800)
+                        diary_rows.append(f"id={entry_id} title={title} importance={importance}/100\n{content}")
+                    else:
+                        preview = _sanitize_llm_visible_text(item.get("preview"), max_chars=260)
+                        diary_rows.append(f"id={entry_id} title={title} importance={importance}/100 preview={preview}")
+                if diary_rows:
+                    body = _clean_multiline_text("查日记结果：\n" + "\n\n".join(diary_rows), max_chars=5200)
+            if ok and _canonical_tool_name(tool) == "write_diary":
+                output_dict = _as_dict(output)
+                entry = _as_dict(output_dict.get("entry"))
+                if entry:
+                    body = _clean_text(
+                        f"{output_dict.get('summary') or '写日记完成'}；id={entry.get('id') or ''}；title={entry.get('title') or ''}；importance={entry.get('importance')}",
+                        max_chars=520,
+                    )
             if not body:
                 body = "没有可用结果文本"
             state = "成功" if ok else "失败"

@@ -470,6 +470,54 @@ def test_agent_config_json_reader_accepts_utf8_bom(tmp_path):
     assert loaded["persona_name"] == "小澪"
 
 
+def test_llm_gateway_endpoint_modes_support_reverse_proxy_full_endpoint():
+    full_endpoint_config = AgentConfig.from_dict(
+        {
+            "base_url": "http://127.0.0.1:8080/v0/management",
+            "api_endpoint_mode": "base_is_endpoint",
+            "chat_endpoint_path": "/v1/chat/completions",
+        }
+    )
+    assert LLMGateway(full_endpoint_config)._request_url(full_endpoint_config.chat_endpoint_path) == "http://127.0.0.1:8080/v0/management"
+
+    openai_config = AgentConfig.from_dict({"base_url": "https://api.example.com/v1", "api_endpoint_mode": "auto_append"})
+    assert LLMGateway(openai_config)._request_url(openai_config.chat_endpoint_path) == "https://api.example.com/v1/chat/completions"
+
+    custom_path_config = AgentConfig.from_dict({"base_url": "https://proxy.example.com/api", "chat_endpoint_path": "chat/completions"})
+    assert LLMGateway(custom_path_config)._request_url(custom_path_config.chat_endpoint_path) == "https://proxy.example.com/api/chat/completions"
+
+
+def test_agent_config_save_persists_persona_and_endpoint_options(tmp_path, monkeypatch):
+    config_path = tmp_path / "agent_config.json"
+    event_path = tmp_path / "agent_events.jsonl"
+    state_path = tmp_path / "agent_state.json"
+    monkeypatch.setattr("observatory.agent_runtime._config_path", lambda: config_path)
+    monkeypatch.setattr("observatory.agent_runtime._events_path", lambda: event_path)
+    monkeypatch.setattr("observatory.agent_runtime._state_path", lambda: state_path)
+    runtime = AgentRuntime(_FakeApp())
+
+    saved = runtime.update_config(
+        {
+            "persona_name": "测试人设",
+            "persona_text": "这是一段用户保存的人设，不应该在刷新后回到默认。",
+            "base_url": "http://127.0.0.1:8080/v0/management",
+            "api_request_format": "openai_compatible",
+            "api_endpoint_mode": "base_is_endpoint",
+            "chat_endpoint_path": "/chat/completions",
+        }
+    )
+
+    assert saved["persona_name"] == "测试人设"
+    assert saved["persona_text"] == "这是一段用户保存的人设，不应该在刷新后回到默认。"
+    assert runtime.status_compact_cached()["config"]["persona_text"] == "这是一段用户保存的人设，不应该在刷新后回到默认。"
+    raw = _safe_read_json(config_path, {})
+    assert raw["persona_text"] == "这是一段用户保存的人设，不应该在刷新后回到默认。"
+    reloaded = AgentRuntime(_FakeApp())
+    assert reloaded.get_config_public()["persona_text"] == "这是一段用户保存的人设，不应该在刷新后回到默认。"
+    assert reloaded.config.api_endpoint_mode == "base_is_endpoint"
+    assert LLMGateway(reloaded.config)._request_url(reloaded.config.chat_endpoint_path) == "http://127.0.0.1:8080/v0/management"
+
+
 def test_napcat_wrapped_array_private_event_keeps_user_text_and_whitelist(tmp_path, monkeypatch):
     adapter_log = tmp_path / "agent_adapter_events.jsonl"
     monkeypatch.setattr("observatory.agent_runtime._adapter_log_path", lambda: adapter_log)
