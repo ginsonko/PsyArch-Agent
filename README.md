@@ -101,6 +101,8 @@ NapCat 不会放进本仓库。需要 QQ 适配器时，按下面顺序操作。
 - PA Webhook：`http://127.0.0.1:8765/api/agent/napcat/event`
 - 消息格式：`array`
 
+如果你已经有自己的 NapCat，不想使用一键配置脚本，可以按 [已有 NapCat 的手动配置方法](docs/已有NapCat手动配置.md) 检查网络配置。核心是必须启用三个项目：HTTP 服务器、HTTP 客户端、WebSocket 服务器；其中 HTTP 客户端 URL 必须填 `http://127.0.0.1:8765/api/agent/napcat/event`。
+
 ### 3. 启动 NapCat
 
 先启动 PA，再在 Agent 适配器页面点击“一键打开 NapCat”，或双击：
