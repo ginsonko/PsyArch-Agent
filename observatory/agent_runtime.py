@@ -7770,6 +7770,74 @@ class AgentRuntime:
             )
         return rows
 
+    def _library_review_style_context_text(self) -> str:
+        def fmt_ms(value: Any) -> str:
+            ms = _as_int(value, 0)
+            if ms <= 0:
+                return "--:--:--"
+            try:
+                return time.strftime("%H:%M:%S", time.localtime(ms / 1000.0))
+            except Exception:
+                return "--:--:--"
+
+        persona_name = _clean_text(self.config.persona_name or "", max_chars=120)
+        persona_text = _clean_multiline_text(self.config.persona_text or "", max_chars=3600)
+        recent_messages = []
+        for row in self._recent_messages_for_prompt(limit=10):
+            if not isinstance(row, dict):
+                continue
+            label = _sanitize_llm_visible_text(row.get("adapter_label") or row.get("conversation_id") or "", max_chars=80)
+            text = _sanitize_llm_visible_text(row.get("text"), max_chars=220)
+            if text:
+                recent_messages.append(f"[{fmt_ms(row.get('created_at_ms'))}] {row.get('role') or '-'}{('(' + label + ')') if label else ''}: {text}")
+        recent_thoughts = []
+        for row in [item for item in _as_list(self.state.get("thoughts")) if isinstance(item, dict)][-8:]:
+            thought = _sanitize_llm_visible_text(row.get("text"), max_chars=240)
+            result_bits = []
+            for result in _as_list(row.get("tool_results"))[:2]:
+                if isinstance(result, dict):
+                    result_bits.append(_safe_tool_feedback_text(result, max_chars=180))
+            line = {
+                "time": fmt_ms(row.get("created_at_ms")),
+                "decision": row.get("decision") or "",
+                "thought": thought,
+                "tools": [str(call.get("name") or call.get("tool") or "") for call in _as_list(row.get("tool_calls")) if isinstance(call, dict)][:4],
+                "tool_results": result_bits,
+            }
+            if thought or line["tools"] or result_bits:
+                recent_thoughts.append(line)
+        active_task = _as_dict(self.state.get("active_tool_task"))
+        try:
+            upcoming_tasks = [
+                {
+                    "id": row.get("id"),
+                    "summary": row.get("summary"),
+                    "next_fire_at": row.get("next_fire_at") or row.get("next_fire_at_ms"),
+                    "prompt": _short(row.get("prompt") or "", 160),
+                }
+                for row in _as_list(_as_dict(self.scheduled_tasks_public(detail=False, include_inactive=False)).get("tasks"))[:5]
+                if isinstance(row, dict)
+            ]
+        except Exception as exc:
+            upcoming_tasks = [{"error": f"读取近期定时任务失败：{exc}"}]
+        try:
+            tool_top_context = self._recent_tool_top_context_text()
+        except Exception as exc:
+            tool_top_context = f"近期工具 top 信息读取失败：{exc}"
+        sections = [
+            ("当前人设名称", persona_name or "未设置"),
+            ("当前人设文本", persona_text or "未设置；请保持自然、清晰、不过度报告化。"),
+            ("近期对话", "\n".join(recent_messages) or "暂无"),
+            ("近期 thought / 决策 / 工具结果", json.dumps(recent_thoughts, ensure_ascii=False, indent=2) if recent_thoughts else "暂无"),
+            ("当前活跃工具任务", json.dumps(active_task, ensure_ascii=False, indent=2) if active_task else "暂无"),
+            ("最近将触发的定时任务", json.dumps(upcoming_tasks, ensure_ascii=False, indent=2) if upcoming_tasks else "暂无"),
+            ("近期工具 top 信息", tool_top_context or "暂无"),
+        ]
+        return _clean_multiline_text(
+            "\n\n".join(f"### {title}\n{body}" for title, body in sections),
+            max_chars=18000,
+        )
+
     def _fallback_library_review_text(self, book: dict[str, Any], chunk: dict[str, Any], reports: list[dict[str, Any]], reason: str = "") -> str:
         text = str(chunk.get("text") or "")
         start = _as_int(chunk.get("start"), 0)
@@ -7799,15 +7867,19 @@ class AgentRuntime:
         digest = self._library_report_digest(reports, max_rows=18)
         recent_reviews = self._recent_library_review_context(book, limit=3)
         chunk_count = max(1, len(_as_list(chunk.get("chunks"))))
+        style_context = self._library_review_style_context_text()
         messages = [
             {
                 "role": "system",
                 "content": "\n".join(
                     [
                         "你是 PA 的图书馆段落理解器，只负责把 AP 阅读一个批次文本后的理解转写成人类可读中文。",
-                        "输入会包含：本批次原文、阅读范围、AP 从多次片段输入到最新空 tick 的消化线索、近期已有段落理解。",
+                        "输入会包含：本批次原文、阅读范围、AP 从多次片段输入到最新空 tick 的消化线索、近期已有段落理解、当前人设、近期对话、近期 thought、近期任务和工具 top 信息。",
                         "请输出一段可保存的“段落理解”，不是 JSON，也不是调试日志。",
                         "写作要求：自然、清晰、可被用户阅读；说明这段原文大意、AP 注意到了什么、情绪/认知线索如何辅助理解、可能的疑问或下一步阅读方向。",
+                        "段落理解要像“当前人设真的读过这一批内容后写下的理解笔记”：尽量贴合人设的视角、口吻、关注点和思维方式，可以有适度第一人称感受，但仍要保持内容准确、有信息量。",
+                        "如果近期对话、任务或人设与本书内容无关，只把它们作为语气和思维方式参考，不要生硬牵扯；如果用户最近有明确阅读目的或评价需求，可以顺手照顾这个目的。",
+                        "避免干巴巴的中立报告腔、论文摘要腔或审稿模板腔；也不要过度表演、撒娇、闲聊或把段落理解写成给用户的即时聊天回复。",
                         "不要机械逐项复述 ER/EV/CP、对象 id、字段名或原始 JSON；可以把它们转成“更贴近现实输入/联想增加/有一点压力”等自然语言。",
                         "不要冒充已经读完全书，只评价这一个阅读批次，并承接已有段落理解。",
                     ]
@@ -7824,6 +7896,7 @@ class AgentRuntime:
                             f"本批次原文：\n{text}",
                             "近期已有段落理解：\n" + (json.dumps(recent_reviews, ensure_ascii=False, indent=2) if recent_reviews else "暂无"),
                             "AP 阅读消化线索（已压缩，按时间顺序）：\n" + json.dumps(digest, ensure_ascii=False, indent=2),
+                            "人设、近期上下文与任务线索（用于决定口吻、关注角度和写作方式）：\n" + style_context,
                             "请直接输出本批次段落理解正文，建议 2-6 段，必要时可用短标题，但不要输出 JSON。",
                         ]
                     ),

@@ -160,6 +160,64 @@ def test_library_read_uses_llm_review_text(tmp_path, monkeypatch):
     assert "AP 消化线索" not in read["review"]["summary"]
 
 
+def test_library_review_prompt_includes_persona_and_recent_context(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    runtime.config.persona_name = "测试小澪"
+    runtime.config.persona_text = "说话偏轻松，会把阅读理解写得像自己认真读过后的笔记。"
+    runtime.write_diary({"title": "阅读偏好", "content": "用户喜欢有个人视角的段落理解。", "importance": 80}, source="test")
+    runtime.schedule_task(
+        {
+            "operation": "create",
+            "summary": "提醒继续读书",
+            "prompt": "提醒自己继续读这本书。",
+            "trigger": {"type": "interval", "interval_seconds": 3600},
+        },
+        source="test",
+    )
+    runtime.state["messages"].append(
+        {
+            "role": "user",
+            "text": "这本书我想看你自己的感受，别写成报告。",
+            "created_at_ms": 1000,
+            "conversation_id": "private:1000010001",
+            "adapter_label": "私聊 测试用户",
+        }
+    )
+    runtime.state["thoughts"].append(
+        {
+            "text": "我得把这段读得像自己的笔记，不要太模板。",
+            "decision": "tool_call",
+            "tool_calls": [{"name": "read_book", "args": {}}],
+            "tool_results": [],
+            "created_at_ms": 2000,
+        }
+    )
+    captured = {}
+
+    def fake_generate_text(messages, **kwargs):
+        captured["messages"] = messages
+        assert kwargs.get("purpose") == "library_review"
+        return "我读这段时会先抓住它的情绪方向，再把细节慢慢接起来。", {"ok": True, "mode": "test"}
+
+    runtime.gateway.generate_text = fake_generate_text
+    imported = runtime.import_book({"title": "上下文段落理解测试", "text": "第一句有一点情绪。第二句把关系继续展开。第三句留下疑问。"}, source="test")
+    read = runtime.read_book({"book_id": imported["book"]["id"], "chars": 12, "ticks": 0}, source="test")
+
+    assert read["ok"] is True
+    prompt_text = "\n\n".join(str(item.get("content") or "") for item in captured["messages"])
+    assert "当前人设名称" in prompt_text
+    assert "测试小澪" in prompt_text
+    assert "近期对话" in prompt_text
+    assert "别写成报告" in prompt_text
+    assert "近期 thought / 决策 / 工具结果" in prompt_text
+    assert "像自己的笔记" in prompt_text
+    assert "最近将触发的定时任务" in prompt_text
+    assert "提醒继续读书" in prompt_text
+    assert "最近日记标题" in prompt_text
+    assert "阅读偏好" in prompt_text
+    assert "干巴巴的中立报告腔" in prompt_text
+
+
 def test_runtime_package_export_redacts_config_and_safe_import(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path, monkeypatch)
     runtime.write_diary({"title": "用户信息", "content": "银子是晋中人", "importance": 90}, source="test")
