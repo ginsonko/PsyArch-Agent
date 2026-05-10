@@ -458,35 +458,35 @@ def test_scheduled_task_payload_preserves_napcat_private_target(monkeypatch):
     server = _server_without_init()
     task = {
         "id": "sleep_1",
-        "summary": "提醒银子睡觉",
-        "prompt": "提醒银子该睡觉了",
+        "summary": "提醒测试用户睡觉",
+        "prompt": "提醒测试用户该睡觉了",
         "origin": {
             "source": "napcat_qq",
-            "conversation_id": "private:474764004",
-            "adapter_label": "私聊 银子 (474764004)",
+            "conversation_id": "private:1000010001",
+            "adapter_label": "私聊 测试用户 (1000010001)",
             "reply_target": {
                 "adapter": "napcat_qq",
                 "message_type": "private",
-                "conversation_id": "private:474764004",
-                "user_id": "474764004",
-                "target_label": "私聊 银子 (474764004)",
+                "conversation_id": "private:1000010001",
+                "user_id": "1000010001",
+                "target_label": "私聊 测试用户 (1000010001)",
             },
             "adapter_event": {
                 "adapter": "napcat_qq",
                 "message_type": "private",
-                "conversation_id": "private:474764004",
-                "user_id": "474764004",
-                "target_label": "私聊 银子 (474764004)",
+                "conversation_id": "private:1000010001",
+                "user_id": "1000010001",
+                "target_label": "私聊 测试用户 (1000010001)",
             },
         },
     }
 
     payload = server._scheduled_task_turn_payload(task, now_ms=1_800_000_000_000)
 
-    assert payload["text"] == "[闹钟]: 提醒银子该睡觉了"
+    assert payload["text"] == "[闹钟]: 提醒测试用户该睡觉了"
     assert payload["source"] == "napcat_qq"
-    assert payload["conversation_id"] == "private:474764004"
-    assert payload["reply_target"]["user_id"] == "474764004"
+    assert payload["conversation_id"] == "private:1000010001"
+    assert payload["reply_target"]["user_id"] == "1000010001"
     assert payload["adapter_event"]["adapter"] == "napcat_qq"
     assert payload["_visible_user_message"]["source"] == "napcat_qq"
 

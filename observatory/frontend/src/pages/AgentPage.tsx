@@ -7,6 +7,7 @@
   FileInput,
   Grid,
   Group,
+  Input,
   Modal,
   NumberInput,
   PasswordInput,
@@ -54,6 +55,7 @@ import {
   IconArrowsMaximize,
   IconBook,
   IconClock,
+  IconListDetails,
 } from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { JsonInspector } from '../components/JsonInspector';
@@ -295,6 +297,16 @@ type AgentConfig = AnyRecord & {
   scheduled_tasks_enabled?: boolean;
   scheduled_task_limit?: number;
   scheduled_task_warn_ratio?: number;
+  tool_context_top_limit?: number;
+  library_enabled?: boolean;
+  library_chunk_target_chars?: number;
+  library_after_chunk_ticks?: number;
+  library_review_model?: string;
+  library_review_api_key?: string;
+  library_review_api_key_masked?: string;
+  library_review_tick_interval?: number;
+  library_review_text_chars?: number;
+  library_book_limit?: number;
   mcp_enabled?: boolean;
   skill_enabled?: boolean;
   tool_allowlist?: string[];
@@ -333,7 +345,7 @@ const emptyConfig: AgentConfig = {
   prompt_extra_note: '',
   thought_quality_enabled: true,
   temperature: 0.72,
-  max_completion_tokens: 1600,
+  max_completion_tokens: 5000,
   timeout_sec: 120,
   retry_count: 1,
   pre_thought_ticks: 5,
@@ -411,9 +423,18 @@ const emptyConfig: AgentConfig = {
   scheduled_tasks_enabled: true,
   scheduled_task_limit: 100,
   scheduled_task_warn_ratio: 0.9,
+  tool_context_top_limit: 5,
+  library_enabled: true,
+  library_chunk_target_chars: 30,
+  library_after_chunk_ticks: 6,
+  library_review_model: '',
+  library_review_api_key: '',
+  library_review_tick_interval: 300,
+  library_review_text_chars: 200000,
+  library_book_limit: 200,
   mcp_enabled: false,
   skill_enabled: true,
-  tool_allowlist: ['time', 'weather', 'memory_note', 'write_diary', 'read_diary', 'web_search', 'image_understanding', 'image_generation', 'ap_tick_report', 'ap_recall', 'ap_attention_focus', 'ap_attention_diverge', 'napcat_recall_message'],
+  tool_allowlist: ['time', 'weather', 'memory_note', 'write_diary', 'read_diary', 'schedule_task', 'browse_library', 'read_book', 'import_book', 'web_search', 'image_understanding', 'image_generation', 'ap_tick_report', 'ap_recall', 'ap_attention_focus', 'ap_attention_diverge', 'napcat_recall_message'],
   event_log_limit: 300,
   persona_name: '小澪',
   persona_text: '',
@@ -620,6 +641,8 @@ type AgentUiPrefs = {
   apChartTab?: string;
   adapterLogView?: string;
   llmApiLogView?: string;
+  systemLogView?: string;
+  toolLogView?: string;
 };
 
 const SNAPSHOT_HISTORY_LIMIT = 360;
@@ -2122,6 +2145,240 @@ function LlmApiEventList({
   );
 }
 
+function systemEventLabel(item: AnyRecord): { label: string; color: string } {
+  const event = String(item.event || '');
+  const level = String(item.level || '').toLowerCase();
+  const status = String(item.status || '').toLowerCase();
+  if (level === 'error' || status === 'failed' || event.includes('failed')) return { label: '报错', color: 'red' };
+  if (level === 'warn' || level === 'warning') return { label: '警告', color: 'yellow' };
+  if (status === 'done' || status === 'completed' || event.endsWith('ed')) return { label: '完成', color: 'teal' };
+  if (item.progress !== undefined || status === 'running') return { label: '进度', color: 'blue' };
+  if (level === 'debug') return { label: '详细', color: 'gray' };
+  return { label: '重点', color: 'gray' };
+}
+
+function systemEventTitle(item: AnyRecord): string {
+  const event = String(item.event || 'system_event');
+  const task = String(item.task || '').trim();
+  const stage = String(item.stage || '').trim();
+  return `${task || event}${stage ? ` · ${stage}` : ''}`;
+}
+
+function systemEventDetail(item: AnyRecord): string {
+  const parts = [
+    timeLabel(item.ts),
+    item.task_id ? `任务:${shortText(String(item.task_id), 32)}` : '',
+    item.status ? `状态:${item.status}` : '',
+    item.progress !== undefined ? `进度:${formatPercent(asNumber(item.progress, 0) / 100, 0)}` : '',
+    item.progress_current !== undefined || item.progress_total !== undefined ? `${formatCount(item.progress_current)}/${formatCount(item.progress_total)}` : '',
+  ].filter(Boolean);
+  return parts.join(' | ');
+}
+
+function systemEventPreview(item: AnyRecord): string {
+  const chunks = [
+    item.summary ? String(item.summary) : '',
+    item.detail ? String(item.detail) : '',
+    item.error ? `错误：${item.error}` : '',
+    item.path ? `路径：${item.path}` : '',
+  ].filter(Boolean);
+  return shortText(chunks.join('  '), 240) || '无附加信息';
+}
+
+function SystemEventList({
+  rows,
+  onSelect,
+}: {
+  rows: AnyRecord[];
+  onSelect: (item: AnyRecord) => void;
+}) {
+  return (
+    <Stack gap={8}>
+      {rows.length ? rows.slice().reverse().map((item, index) => {
+        const badge = systemEventLabel(item);
+        const progress = item.progress !== undefined ? Math.max(0, Math.min(100, asNumber(item.progress, 0))) : null;
+        return (
+          <button key={`${item.ts || index}-${item.event || 'system'}-${item.task_id || ''}`} type="button" className="agent-event-row" onClick={() => onSelect(item)}>
+            <span>
+              <strong>{systemEventTitle(item)}</strong>
+              <small>{systemEventDetail(item)}</small>
+              <small>{systemEventPreview(item)}</small>
+              {progress !== null ? <i className="agent-progress-line"><b style={{ width: `${progress}%` }} /></i> : null}
+            </span>
+            <Badge variant="light" color={badge.color}>
+              {badge.label}
+            </Badge>
+          </button>
+        );
+      }) : <div className="empty-box">暂无系统日志。导入/导出运行包、日志维护、后端任务和报错会在这里显示。</div>}
+    </Stack>
+  );
+}
+
+function isToolSystemEvent(item: AnyRecord): boolean {
+  const event = String(item.event || '');
+  const task = String(item.task || '');
+  const category = String(item.category || '').toLowerCase();
+  return (
+    category === 'tool'
+    || event.startsWith('tool_')
+    || event.includes('library')
+    || event.includes('read_book')
+    || ['读书', '导入图书', '生成图书简介', '选择图书文件'].includes(task)
+  );
+}
+
+function filterToolEvents(rows: AnyRecord[], view = 'important'): AnyRecord[] {
+  const key = String(view || 'important').toLowerCase();
+  return rows.filter((item) => {
+    if (!isToolSystemEvent(item)) return false;
+    const level = String(item.level || '').toLowerCase();
+    const event = String(item.event || '');
+    if (key === 'errors') return ['warn', 'warning', 'error', 'fail'].includes(level) || event.endsWith('_failed');
+    if (key === 'detail') return true;
+    return item.progress !== undefined || item.task_id || ['info', 'warn', 'warning', 'error', 'fail'].includes(level);
+  });
+}
+
+function ToolRunLogCard({
+  events,
+  counts,
+  activeTasks,
+  activeToolTask,
+  view,
+  busy,
+  onViewChange,
+  onRefresh,
+  onSelect,
+}: {
+  events: AnyRecord[];
+  counts: AnyRecord;
+  activeTasks: AnyRecord[];
+  activeToolTask?: AnyRecord;
+  view: string;
+  busy: boolean;
+  onViewChange: (value: string) => void;
+  onRefresh: () => void;
+  onSelect: (item: AnyRecord) => void;
+}) {
+  const activeRows = [
+    activeToolTask && String(activeToolTask.task_id || '').trim() && !['completed', 'done', 'failed', 'error', 'cancelled'].includes(String(activeToolTask.status || '').toLowerCase()) ? activeToolTask : null,
+    ...activeTasks,
+  ].filter(Boolean) as AnyRecord[];
+  const dedupedActive = activeRows.filter((item, index, arr) => {
+    const key = String(item.task_id || `${item.task || ''}_${item.stage || ''}_${index}`);
+    return arr.findIndex((other, otherIndex) => String(other.task_id || `${other.task || ''}_${other.stage || ''}_${otherIndex}`) === key) === index;
+  });
+  return (
+    <Card className="chart-card">
+      <Group justify="space-between" align="flex-start" mb="xs">
+        <div>
+          <Group gap={8}>
+            <IconTool size={18} />
+            <Text fw={800}>工具运行日志</Text>
+          </Group>
+          <Text size="xs" c="dimmed">长期运行工具会在这里实时显示阶段、进度和报错；读书会展示 AP 输入、空 tick 和段落理解生成。</Text>
+        </div>
+        <Group gap={6}>
+          <SegmentedControl
+            size="xs"
+            value={view}
+            onChange={onViewChange}
+            data={[
+              { value: 'important', label: '重点' },
+              { value: 'detail', label: '详细' },
+              { value: 'errors', label: '错误' },
+            ]}
+          />
+          <ActionIcon size="sm" variant="subtle" loading={busy} onClick={onRefresh} aria-label="刷新工具运行日志">
+            <IconRefresh size={14} />
+          </ActionIcon>
+        </Group>
+      </Group>
+      {dedupedActive.length ? (
+        <Stack gap={8} mb="sm">
+          {dedupedActive.slice(0, 3).map((task, index) => {
+            const progress = Math.max(0, Math.min(100, asNumber(task.progress, 0)));
+            return (
+              <button key={`${task.task_id || index}`} type="button" className="agent-task-progress-row" onClick={() => onSelect(task)}>
+                <span>
+                  <strong>{shortText(String(task.task || task.event || '运行中'), 48)}</strong>
+                  <small>{systemEventDetail(task)}</small>
+                  <i><b style={{ width: `${progress}%` }} /></i>
+                </span>
+                <Badge size="xs" variant="light" color="blue">{formatPercent(progress / 100, 0)}</Badge>
+              </button>
+            );
+          })}
+        </Stack>
+      ) : null}
+      <Group gap={6} mb="xs" wrap="wrap">
+        <Badge size="xs" variant="light" color="blue">显示 {formatCount(events.length)}</Badge>
+        <Badge size="xs" variant="outline">系统扫描 {formatCount(counts.total_scanned)}</Badge>
+        <Badge size="xs" variant="light" color={dedupedActive.length ? 'blue' : 'gray'}>运行中 {formatCount(dedupedActive.length)}</Badge>
+        <Badge size="xs" variant="light" color={asNumber(counts.error, 0) ? 'red' : 'gray'}>报错 {formatCount(counts.error)}</Badge>
+      </Group>
+      <ScrollArea.Autosize mah={320}>
+        <SystemEventList rows={events} onSelect={onSelect} />
+      </ScrollArea.Autosize>
+    </Card>
+  );
+}
+
+function LibraryReviewReaderCard({
+  review,
+  onInspect,
+}: {
+  review?: AnyRecord | null;
+  onInspect: (item: AnyRecord) => void;
+}) {
+  const item = review || {};
+  const text = String(item.understanding || item.summary || item.preview || '').trim();
+  return (
+    <Card className="chart-card agent-library-review-reader">
+      <Group justify="space-between" align="flex-start" mb="xs">
+        <div>
+          <Group gap={8}>
+            <IconBook size={18} />
+            <Text fw={800}>段落理解</Text>
+          </Group>
+          <Text size="xs" c="dimmed">点击左侧段落理解条目后，这里显示完整可读内容，不再塞进 JSON 调试包。</Text>
+        </div>
+        <Group gap={6}>
+          {item.llm_generated ? <Badge size="xs" variant="light" color="teal">LLM</Badge> : <Badge size="xs" variant="light" color="yellow">兜底</Badge>}
+          <Button size="compact-xs" variant="subtle" disabled={!item.id} onClick={() => onInspect(item)}>JSON</Button>
+        </Group>
+      </Group>
+      {item.id ? (
+        <Stack gap={8}>
+          <Group justify="space-between" gap={8} wrap="nowrap">
+            <Text size="sm" fw={900}>{shortText(String(item.title || item.id || '段落理解'), 54)}</Text>
+            <Badge size="xs" variant="outline">{formatCount(item.range?.start)}-{formatCount(item.range?.end)}</Badge>
+          </Group>
+          <Group gap={6} wrap="wrap">
+            <Badge size="xs" variant="light">tick {formatCount(item.ap_tick_count)}</Badge>
+            {item.model ? <Badge size="xs" variant="light" color="blue">{shortText(String(item.model), 28)}</Badge> : null}
+            {item.book_title ? <Badge size="xs" variant="outline">{shortText(String(item.book_title), 32)}</Badge> : null}
+          </Group>
+          <ScrollArea.Autosize mah={420} className="agent-library-review-reader-scroll">
+            <Text size="sm" className="agent-library-review-reader-text">
+              {text || '这条段落理解还没有正文。'}
+            </Text>
+          </ScrollArea.Autosize>
+          {item.excerpt ? (
+            <details className="agent-library-review-excerpt">
+              <summary>查看本段原文</summary>
+              <p>{String(item.excerpt)}</p>
+            </details>
+          ) : null}
+        </Stack>
+      ) : (
+        <div className="empty-box compact">还没有选中段落理解。先在左侧图书馆选择一本书，再点击某条段落理解。</div>
+      )}
+    </Card>
+  );
+}
+
 function EnergyTrendChart({ snapshots, dark }: { snapshots: AnyRecord[]; dark: boolean }) {
   const rows = snapshots.map((item, index) => ({
     tick: item.tick_counter ?? index,
@@ -2282,14 +2539,28 @@ function ConfigEditor({
           <NumberInput label="日记清理旧条目窗口" description="超过上限时，只在最旧的这批日记里删除重要性最低的一条。" value={Number(draft.diary_gc_oldest_count ?? 50)} min={1} max={1000} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_gc_oldest_count', Number(v) || 50)} />
           <NumberInput label="单条日记最大字符" value={Number(draft.diary_entry_max_chars ?? 20000)} min={1000} max={120000} step={1000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_entry_max_chars', Number(v) || 20000)} />
           <NumberInput label="查日记返回总字符" value={Number(draft.diary_read_total_max_chars ?? 60000)} min={2000} max={240000} step={2000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_read_total_max_chars', Number(v) || 60000)} />
+          <NumberInput label="近期工具 top 条数" description="进入 LLM 上下文的最近日记、定时任务和读书理解快捷线索数量；不足时仍应查完整列表。" value={Number(draft.tool_context_top_limit ?? 5)} min={0} max={30} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'tool_context_top_limit', Number(v) || 0)} />
           <Switch label="启用定时任务工具" checked={draft.scheduled_tasks_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'scheduled_tasks_enabled', event.currentTarget.checked)} />
           <NumberInput label="定时任务总数上限" value={Number(draft.scheduled_task_limit ?? 100)} min={5} max={1000} step={5} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_limit', Number(v) || 100)} />
           <NumberInput label="定时任务上限提醒比例" value={Number(draft.scheduled_task_warn_ratio ?? 0.9)} min={0.1} max={1} step={0.05} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_warn_ratio', Number(v) || 0.9)} />
+          <Switch label="启用图书馆/读书工具" checked={draft.library_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'library_enabled', event.currentTarget.checked)} />
+          <NumberInput label="读书片段目标字数" description="推荐 10~30 字；会尽量按标点贴近目标长度切分。" value={Number(draft.library_chunk_target_chars ?? 30)} min={10} max={800} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'library_chunk_target_chars', Number(v) || 30)} />
+          <NumberInput label="每段后空 tick" description="读书工具会循环执行：读一个短片段、跑这些空 tick、再继续读下一个短片段。" value={Number(draft.library_after_chunk_ticks ?? 6)} min={0} max={80} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'library_after_chunk_ticks', Number(v) || 0)} />
+          <TextInput label="段落理解模型" description="留空时复用主模型；用于读书后生成可读段落理解。" value={String(draft.library_review_model || '')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'library_review_model', event.currentTarget.value)} />
+          <PasswordInput
+            label={draft.library_review_api_key_masked ? `段落理解 API Key (${draft.library_review_api_key_masked})` : '段落理解 API Key'}
+            value={String(draft.library_review_api_key || '')}
+            onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'library_review_api_key', event.currentTarget.value)}
+            placeholder="留空复用主 API Key / 保存时保留已有密钥"
+          />
+          <NumberInput label="段落回顾 tick 间隔" description="累计到这个 AP tick 数后，才把本批次多段阅读生成一条段落理解；默认 300。" value={Number(draft.library_review_tick_interval ?? 300)} min={10} max={10000} step={10} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'library_review_tick_interval', Number(v) || 300)} />
+          <NumberInput label="段落回顾文本预算" value={Number(draft.library_review_text_chars ?? 200000)} min={1000} max={1000000} step={10000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'library_review_text_chars', Number(v) || 200000)} />
+          <NumberInput label="图书馆书本上限" value={Number(draft.library_book_limit ?? 200)} min={1} max={1000} step={10} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'library_book_limit', Number(v) || 200)} />
           <CsvTextInput label="工具白名单" value={draft.tool_allowlist} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'tool_allowlist', value)} />
           <Select label="Prompt 风格" value={String(draft.prompt_variant || 'balanced')} data={promptVariants} onChange={(value) => updateField<AgentConfig>(setDraftEditable, 'prompt_variant', value || 'balanced')} />
           <Switch label="thought 质量评分" checked={draft.thought_quality_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'thought_quality_enabled', event.currentTarget.checked)} />
           <NumberInput label="temperature" value={Number(draft.temperature ?? 0.72)} min={0} max={2} step={0.05} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'temperature', Number(v) || 0)} />
-          <NumberInput label="max tokens" value={Number(draft.max_completion_tokens ?? 1600)} min={256} max={12000} step={128} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'max_completion_tokens', Number(v) || 1600)} />
+          <NumberInput label="max tokens" value={Number(draft.max_completion_tokens ?? 5000)} min={256} max={12000} step={128} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'max_completion_tokens', Number(v) || 5000)} />
           <NumberInput label="重试次数" value={Number(draft.retry_count ?? 1)} min={0} max={5} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'retry_count', Number(v) || 0)} />
         </SimpleGrid>
         <Textarea mt="sm" label="多模态策略" minRows={2} autosize value={String(draft.multimodal_note || '')} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'multimodal_note', event.currentTarget.value)} />
@@ -3343,7 +3614,7 @@ function ModelPoolPanel({
         <TextInput size="xs" label="绘图模型" value={String(slotDraft.image_generation_model || '')} onChange={(event) => setSlotDraft((prev) => ({ ...prev, image_generation_model: event.currentTarget.value }))} />
         <PasswordInput size="xs" label="绘图 API Key" placeholder="留空复用主 slot 密钥 / 保留原密钥" value={String(slotDraft.image_generation_api_key || '')} onChange={(event) => setSlotDraft((prev) => ({ ...prev, image_generation_api_key: event.currentTarget.value }))} />
         <NumberInput size="xs" label="temperature" value={slotDraft.temperature === '' ? '' : Number(slotDraft.temperature ?? draft.temperature ?? 0.72)} min={0} max={2} step={0.05} onChange={(value) => setSlotDraft((prev) => ({ ...prev, temperature: value === '' ? '' : Number(value) || 0 }))} />
-        <NumberInput size="xs" label="max tokens" value={slotDraft.max_completion_tokens === '' ? '' : Number(slotDraft.max_completion_tokens ?? draft.max_completion_tokens ?? 1600)} min={256} max={12000} step={128} onChange={(value) => setSlotDraft((prev) => ({ ...prev, max_completion_tokens: value === '' ? '' : Number(value) || 1600 }))} />
+        <NumberInput size="xs" label="max tokens" value={slotDraft.max_completion_tokens === '' ? '' : Number(slotDraft.max_completion_tokens ?? draft.max_completion_tokens ?? 5000)} min={256} max={12000} step={128} onChange={(value) => setSlotDraft((prev) => ({ ...prev, max_completion_tokens: value === '' ? '' : Number(value) || 5000 }))} />
       </SimpleGrid>
       <Textarea mt={6} size="xs" minRows={2} autosize placeholder="备注：用途、限速、模型特点" value={String(slotDraft.note || '')} onChange={(event) => setSlotDraft((prev) => ({ ...prev, note: event.currentTarget.value }))} />
       <Group justify="space-between" mt="xs">
@@ -3497,6 +3768,12 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [adapterEventCounts, setAdapterEventCounts] = useState<AnyRecord>({});
   const [llmApiEvents, setLlmApiEvents] = useState<AnyRecord[]>([]);
   const [llmApiEventCounts, setLlmApiEventCounts] = useState<AnyRecord>({});
+  const [systemEvents, setSystemEvents] = useState<AnyRecord[]>([]);
+  const [systemEventCounts, setSystemEventCounts] = useState<AnyRecord>({});
+  const [systemActiveTasks, setSystemActiveTasks] = useState<AnyRecord[]>([]);
+  const [toolEvents, setToolEvents] = useState<AnyRecord[]>([]);
+  const [toolEventCounts, setToolEventCounts] = useState<AnyRecord>({});
+  const [toolActiveTasks, setToolActiveTasks] = useState<AnyRecord[]>([]);
   const [outbox, setOutbox] = useState<AnyRecord[]>([]);
   const [abResult, setAbResult] = useState<AnyRecord | null>(null);
   const [scenarioScores, setScenarioScores] = useState<AnyRecord[]>([]);
@@ -3519,6 +3796,21 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [selectedDiaryEntry, setSelectedDiaryEntry] = useState<AnyRecord | null>(null);
   const [diaryDraft, setDiaryDraft] = useState<AnyRecord>({ id: '', title: '', content: '', importance: 70, mode: 'append' });
   const [scheduledTasks, setScheduledTasks] = useState<AnyRecord | null>(null);
+  const [library, setLibrary] = useState<AnyRecord | null>(null);
+  const [selectedBook, setSelectedBook] = useState<AnyRecord | null>(null);
+  const [selectedLibraryReview, setSelectedLibraryReview] = useState<AnyRecord | null>(null);
+  const [bookImportDraft, setBookImportDraft] = useState<AnyRecord>({ path: '', title: '', summary: '', text: '' });
+  const [runtimePackages, setRuntimePackages] = useState<AnyRecord | null>(null);
+  const [runtimePackageDraft, setRuntimePackageDraft] = useState<AnyRecord>({
+    name: 'PA runtime package',
+    note: '',
+    path: '',
+    strategy: 'retreat',
+    include_hdb: true,
+    include_state: true,
+    include_agent_data: true,
+    include_library: true,
+  });
   const [scheduleDraft, setScheduleDraft] = useState<AnyRecord>({
     id: '',
     summary: '',
@@ -3573,6 +3865,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [apChartTab, setApChartTab] = useState(initialUiPrefs.apChartTab ?? 'overview');
   const [adapterLogView, setAdapterLogView] = useState(initialUiPrefs.adapterLogView ?? 'important');
   const [llmApiLogView, setLlmApiLogView] = useState(initialUiPrefs.llmApiLogView ?? 'important');
+  const [systemLogView, setSystemLogView] = useState(initialUiPrefs.systemLogView ?? 'important');
+  const [toolLogView, setToolLogView] = useState(initialUiPrefs.toolLogView ?? 'important');
   const [autoRefresh, setAutoRefresh] = useState(initialUiPrefs.autoRefresh ?? true);
   const [refreshMs, setRefreshMs] = useState<number | ''>(initialUiPrefs.refreshMs ?? 1200);
   const [manualTicks, setManualTicks] = useState<number | ''>(initialUiPrefs.manualTicks ?? 3);
@@ -3670,11 +3964,12 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
               config: (prev || {}).config || serverConfig,
             }));
           }
-          const [bg, adapterPayload, stickerPayload, llmApiPayload] = await Promise.all([
+          const [bg, adapterPayload, stickerPayload, llmApiPayload, systemPayload] = await Promise.all([
             api.agentBackgroundStatus().catch(() => null),
             agentTab === 'adapter' ? api.agentAdapterEvents(120, adapterLogView).catch(() => null) : Promise.resolve(null),
             agentTab === 'adapter' ? api.agentStickers().catch(() => null) : Promise.resolve(null),
             api.agentLlmApiEvents(120, llmApiLogView).catch(() => null),
+            api.agentSystemEvents(120, systemLogView).catch(() => null),
           ]);
           if (bg) setBackground(bg);
           if (adapterPayload) {
@@ -3686,15 +3981,24 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
             setLlmApiEvents(asArray<AnyRecord>(llmApiPayload.events));
             setLlmApiEventCounts((llmApiPayload.counts || {}) as AnyRecord);
           }
+          if (systemPayload) {
+            setSystemEvents(asArray<AnyRecord>(systemPayload.events));
+            setSystemEventCounts((systemPayload.counts || {}) as AnyRecord);
+            setSystemActiveTasks(asArray<AnyRecord>(systemPayload.active_tasks));
+            setToolEvents(filterToolEvents(asArray<AnyRecord>(systemPayload.events), toolLogView));
+            setToolEventCounts((systemPayload.counts || {}) as AnyRecord);
+            setToolActiveTasks(filterToolEvents(asArray<AnyRecord>(systemPayload.active_tasks), 'detail'));
+          }
           onStatusChange?.(`PA ${active?.stage_label || active?.stage || active?.ap_packet?.tick_counter || '运行中'}`);
           return;
         }
-        const [payload, bg, adapterPayload, stickerPayload, llmApiPayload] = await Promise.all([
+        const [payload, bg, adapterPayload, stickerPayload, llmApiPayload, systemPayload] = await Promise.all([
           api.agentStatus().catch(() => null),
           api.agentBackgroundStatus().catch(() => null),
           agentTab === 'adapter' ? api.agentAdapterEvents(120, adapterLogView).catch(() => null) : Promise.resolve(null),
           agentTab === 'adapter' ? api.agentStickers().catch(() => null) : Promise.resolve(null),
           api.agentLlmApiEvents(120, llmApiLogView).catch(() => null),
+          api.agentSystemEvents(120, systemLogView).catch(() => null),
         ]);
         if (payload) {
           setStatus(payload);
@@ -3724,6 +4028,14 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         if (llmApiPayload) {
           setLlmApiEvents(asArray<AnyRecord>(llmApiPayload.events));
           setLlmApiEventCounts((llmApiPayload.counts || {}) as AnyRecord);
+        }
+        if (systemPayload) {
+          setSystemEvents(asArray<AnyRecord>(systemPayload.events));
+          setSystemEventCounts((systemPayload.counts || {}) as AnyRecord);
+          setSystemActiveTasks(asArray<AnyRecord>(systemPayload.active_tasks));
+          setToolEvents(filterToolEvents(asArray<AnyRecord>(systemPayload.events), toolLogView));
+          setToolEventCounts((systemPayload.counts || {}) as AnyRecord);
+          setToolActiveTasks(filterToolEvents(asArray<AnyRecord>(systemPayload.active_tasks), 'detail'));
         }
         if (agentTab === 'charts' && !isRunning) {
           refreshSnapshotHistory().catch(() => undefined);
@@ -3759,7 +4071,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         refreshSnapshotHistory().catch(() => undefined);
       }
       if (!silent) {
-        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
           api.agentDiagnostics().catch(() => null),
           api.agentReadiness().catch(() => null),
           api.agentAcceptance().catch(() => null),
@@ -3769,6 +4081,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
           api.agentEvents(80).catch(() => null),
           api.agentAdapterEvents(120, adapterLogView).catch(() => null),
           api.agentLlmApiEvents(120, llmApiLogView).catch(() => null),
+          api.agentSystemEvents(120, systemLogView).catch(() => null),
           api.agentOutbox(40).catch(() => null),
           api.agentPromptExperiments(20).catch(() => null),
           api.agentPromptScenarios(60).catch(() => null),
@@ -3783,6 +4096,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
           api.agentStickers().catch(() => null),
           api.agentDiary(false).catch(() => null),
           api.agentScheduledTasks(true, false).catch(() => null),
+          api.agentLibrary(false).catch(() => null),
+          api.agentRuntimePackages().catch(() => null),
           api.agentToolMatrix().catch(() => null),
           api.agentProtocolRegistry().catch(() => null),
           api.agentIntegrations().catch(() => null),
@@ -3812,6 +4127,14 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
           setLlmApiEvents(asArray<AnyRecord>(llmApiEventPayload.events));
           setLlmApiEventCounts((llmApiEventPayload.counts || {}) as AnyRecord);
         }
+        if (systemEventPayload) {
+          setSystemEvents(asArray<AnyRecord>(systemEventPayload.events));
+          setSystemEventCounts((systemEventPayload.counts || {}) as AnyRecord);
+          setSystemActiveTasks(asArray<AnyRecord>(systemEventPayload.active_tasks));
+          setToolEvents(filterToolEvents(asArray<AnyRecord>(systemEventPayload.events), toolLogView));
+          setToolEventCounts((systemEventPayload.counts || {}) as AnyRecord);
+          setToolActiveTasks(filterToolEvents(asArray<AnyRecord>(systemEventPayload.active_tasks), 'detail'));
+        }
         if (outboxPayload) setOutbox(asArray<AnyRecord>(outboxPayload.outbox));
         if (experimentPayload) setPromptExperiments(asArray<AnyRecord>(experimentPayload.experiments));
         if (scenarioPayload) {
@@ -3829,6 +4152,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         if (stickerPayload) setStickers(stickerPayload);
         if (diaryPayload) setDiaryBook(diaryPayload);
         if (scheduledPayload) setScheduledTasks(scheduledPayload);
+        if (libraryPayload) setLibrary(libraryPayload);
+        if (runtimePackagePayload) setRuntimePackages(runtimePackagePayload);
         if (toolMatrixPayload) setToolMatrix(toolMatrixPayload);
         if (protocolPayload) setProtocolRegistry(protocolPayload);
         if (integrationPayload) setIntegrations(integrationPayload);
@@ -3875,10 +4200,18 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   }, [llmApiLogView]);
 
   useEffect(() => {
+    refreshSystemEvents(false).catch(() => undefined);
+  }, [systemLogView]);
+
+  useEffect(() => {
+    refreshToolEvents(false).catch(() => undefined);
+  }, [toolLogView]);
+
+  useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => refresh(true).catch(() => undefined), Math.max(350, Number(refreshMs) || 1200));
     return () => window.clearInterval(timer);
-  }, [autoRefresh, refreshMs, agentTab, adapterLogView, llmApiLogView]);
+  }, [autoRefresh, refreshMs, agentTab, adapterLogView, llmApiLogView, systemLogView, toolLogView]);
 
   useEffect(() => {
     writeAgentUiPrefs({
@@ -3896,6 +4229,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       apChartTab,
       adapterLogView,
       llmApiLogView,
+      systemLogView,
+      toolLogView,
     });
   }, [
     input,
@@ -3912,6 +4247,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     apChartTab,
     adapterLogView,
     llmApiLogView,
+    systemLogView,
+    toolLogView,
   ]);
 
   useEffect(() => {
@@ -4003,7 +4340,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
   async function refreshDiagnostics() {
     await withBusy('diag', async () => {
-      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
         api.agentDiagnostics(),
         api.agentReadiness(),
         api.agentAcceptance(),
@@ -4013,6 +4350,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         api.agentEvents(120),
         api.agentAdapterEvents(160, adapterLogView),
         api.agentLlmApiEvents(160, llmApiLogView),
+        api.agentSystemEvents(160, systemLogView),
         api.agentOutbox(80),
         api.agentPromptExperiments(30),
         api.agentPromptScenarios(100),
@@ -4027,6 +4365,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         api.agentStickers(),
         api.agentDiary(false),
         api.agentScheduledTasks(true, false),
+        api.agentLibrary(false),
+        api.agentRuntimePackages(),
         api.agentToolMatrix(),
         api.agentProtocolRegistry(),
         api.agentIntegrations(),
@@ -4052,6 +4392,12 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       setAdapterEventCounts((adapterEventPayload.counts || {}) as AnyRecord);
       setLlmApiEvents(asArray<AnyRecord>(llmApiEventPayload.events));
       setLlmApiEventCounts((llmApiEventPayload.counts || {}) as AnyRecord);
+      setSystemEvents(asArray<AnyRecord>(systemEventPayload.events));
+      setSystemEventCounts((systemEventPayload.counts || {}) as AnyRecord);
+      setSystemActiveTasks(asArray<AnyRecord>(systemEventPayload.active_tasks));
+      setToolEvents(filterToolEvents(asArray<AnyRecord>(systemEventPayload.events), toolLogView));
+      setToolEventCounts((systemEventPayload.counts || {}) as AnyRecord);
+      setToolActiveTasks(filterToolEvents(asArray<AnyRecord>(systemEventPayload.active_tasks), 'detail'));
       setOutbox(asArray<AnyRecord>(outboxPayload.outbox));
       setPromptExperiments(asArray<AnyRecord>(experimentPayload.experiments));
       setScenarioHistory(asArray<AnyRecord>(scenarioPayload.scenarios));
@@ -4067,6 +4413,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       setStickers(stickerPayload);
       setDiaryBook(diaryPayload);
       setScheduledTasks(scheduledPayload);
+      setLibrary(libraryPayload);
+      setRuntimePackages(runtimePackagePayload);
       setToolMatrix(toolMatrixPayload);
       setProtocolRegistry(protocolPayload);
       setIntegrations(integrationPayload);
@@ -4224,6 +4572,30 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     const result = await api.agentLlmApiEvents(160, llmApiLogView);
     setLlmApiEvents(asArray<AnyRecord>(result.events));
     setLlmApiEventCounts((result.counts || {}) as AnyRecord);
+    if (selectResult) setSelected(result);
+    return result;
+  }
+
+  async function refreshSystemEvents(selectResult = false) {
+    const result = await api.agentSystemEvents(160, systemLogView);
+    setSystemEvents(asArray<AnyRecord>(result.events));
+    setSystemEventCounts((result.counts || {}) as AnyRecord);
+    setSystemActiveTasks(asArray<AnyRecord>(result.active_tasks));
+    setToolEvents(filterToolEvents(asArray<AnyRecord>(result.events), toolLogView));
+    setToolEventCounts((result.counts || {}) as AnyRecord);
+    setToolActiveTasks(filterToolEvents(asArray<AnyRecord>(result.active_tasks), 'detail'));
+    if (selectResult) setSelected(result);
+    return result;
+  }
+
+  async function refreshToolEvents(selectResult = false) {
+    const backendView = toolLogView === 'errors' ? 'tool_errors' : toolLogView === 'detail' ? 'tools' : 'tool_important';
+    const result = await api.agentSystemEvents(160, backendView);
+    const events = asArray<AnyRecord>(result.events);
+    const activeTasks = asArray<AnyRecord>(result.active_tasks);
+    setToolEvents(filterToolEvents(events, toolLogView));
+    setToolEventCounts((result.counts || {}) as AnyRecord);
+    setToolActiveTasks(filterToolEvents(activeTasks, 'detail'));
     if (selectResult) setSelected(result);
     return result;
   }
@@ -4820,16 +5192,156 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     });
   }
 
-  async function importKnowledgeNote() {
-    const text = kbText.trim();
-    if (!text) return;
+  async function importBook() {
     await withBusy('tool', async () => {
-      const result = await api.agentRunTool({
-        name: 'memory_note',
-        args: { text, source: 'agent_tools_kb_import', importance: 0.72 },
-        source: 'agent_tools_kb_import',
+      const result = await api.agentImportBook({
+        path: String(bookImportDraft.path || '').trim(),
+        title: String(bookImportDraft.title || '').trim(),
+        summary: String(bookImportDraft.summary || '').trim(),
+        text: String(bookImportDraft.text || kbText || '').trim(),
       });
       setSelected(result);
+      const payload = await api.agentLibrary(false).catch(() => null);
+      if (payload) setLibrary(payload);
+      if (result?.book) setSelectedBook(result.book);
+      await refresh(true);
+    });
+  }
+
+  async function refreshLibrary(selectResult = false) {
+    await withBusy('tool', async () => {
+      const result = await api.agentLibrary(false);
+      setLibrary(result);
+      if (selectResult) setSelected(result);
+    });
+  }
+
+  async function selectLibraryBook(book: AnyRecord) {
+    const id = String(book.id || '').trim();
+    if (!id) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentLibrary(true, id);
+      const detail = asArray<AnyRecord>(result.books)[0] || result.book || book;
+      setSelectedBook(detail);
+      setSelectedLibraryReview(asArray<AnyRecord>(detail.reviews)[0] || null);
+      setSelected(detail);
+    });
+  }
+
+  async function pickLibraryFile() {
+    await withBusy('tool', async () => {
+      const result = await api.agentPickLibraryFile();
+      setSelected(result);
+      if (result?.ok && result?.path) {
+        setBookImportDraft((prev) => ({
+          ...prev,
+          path: String(result.path || ''),
+          title: String(result.title || prev.title || ''),
+        }));
+      }
+      await refreshToolEvents(false).catch(() => undefined);
+    });
+  }
+
+  async function suggestLibrarySummary() {
+    await withBusy('tool', async () => {
+      const result = await api.agentSuggestLibrarySummary({
+        path: String(bookImportDraft.path || '').trim(),
+        title: String(bookImportDraft.title || '').trim(),
+        text: String(bookImportDraft.text || kbText || '').trim(),
+      });
+      setSelected(result);
+      if (result?.summary) {
+        setBookImportDraft((prev) => ({
+          ...prev,
+          title: String(result.title || prev.title || ''),
+          summary: String(result.summary || ''),
+        }));
+      }
+      await refreshToolEvents(false).catch(() => undefined);
+    });
+  }
+
+  async function readLibraryBook(mode = 'read') {
+    const id = String((selectedBook || {}).id || '').trim();
+    if (!id) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentReadBook({ book_id: id, mode, chars: Number(draft.library_chunk_target_chars ?? 30), ticks: Number(draft.library_after_chunk_ticks ?? 6) });
+      setSelected(result);
+      if (result?.book) {
+        const detail = await api.agentLibrary(true, id).catch(() => null);
+        const detailBook = asArray<AnyRecord>(detail?.books)[0] || detail?.book || result.book;
+        setSelectedBook(detailBook);
+        if (result?.review) setSelectedLibraryReview(result.review);
+      }
+      const payload = await api.agentLibrary(false).catch(() => null);
+      if (payload) setLibrary(payload);
+      await refreshToolEvents(false).catch(() => undefined);
+      await refresh(true);
+    });
+  }
+
+  async function selectLibraryReview(review: AnyRecord) {
+    const bookId = String((selectedBook || {}).id || review.book_id || '').trim();
+    const reviewId = String(review.id || '').trim();
+    if (!bookId || !reviewId) {
+      setSelectedLibraryReview(review);
+      return;
+    }
+    await withBusy('tool', async () => {
+      const result = await api.agentReadBook({ book_id: bookId, mode: 'reviews', ids: [reviewId], detail: true });
+      const detail = asArray<AnyRecord>(result?.reviews)[0] || review;
+      setSelectedLibraryReview(detail);
+    });
+  }
+
+  async function deleteLibraryBook(book?: AnyRecord) {
+    const id = String((book || selectedBook || {}).id || '').trim();
+    if (!id) return;
+    const ok = window.confirm(`删除这本书及其图书馆文件？\n${String((book || selectedBook || {}).title || id)}`);
+    if (!ok) return;
+    await withBusy('tool', async () => {
+      const result = await api.agentDeleteBook(id);
+      setSelected(result);
+      setSelectedBook(null);
+      const payload = await api.agentLibrary(false).catch(() => null);
+      if (payload) setLibrary(payload);
+    });
+  }
+
+  async function refreshRuntimePackages(selectResult = false) {
+    await withBusy('maintenance', async () => {
+      const result = await api.agentRuntimePackages();
+      setRuntimePackages(result);
+      if (selectResult) setSelected(result);
+    });
+  }
+
+  async function exportRuntimePackage() {
+    await withBusy('maintenance', async () => {
+      const result = await api.agentExportRuntimePackage(runtimePackageDraft);
+      setSelected(result);
+      const payload = await api.agentRuntimePackages().catch(() => null);
+      if (payload) setRuntimePackages(payload);
+      await refreshSystemEvents(false).catch(() => undefined);
+    });
+  }
+
+  async function importRuntimePackage(pathOverride = '') {
+    const path = String(pathOverride || runtimePackageDraft.path || '').trim();
+    if (!path) return;
+    const ok = window.confirm('导入运行包会先自动备份当前 AP/PA 运行数据，然后按选择的策略合并。遇到覆盖策略可能改写本地长期记忆，确认继续？');
+    if (!ok) return;
+    await withBusy('maintenance', async () => {
+      const result = await api.agentImportRuntimePackage({ ...runtimePackageDraft, path });
+      setSelected(result);
+      const [packagesPayload, libraryPayload] = await Promise.all([
+        api.agentRuntimePackages().catch(() => null),
+        api.agentLibrary(false).catch(() => null),
+      ]);
+      if (packagesPayload) setRuntimePackages(packagesPayload);
+      if (libraryPayload) setLibrary(libraryPayload);
+      await refreshSystemEvents(false).catch(() => undefined);
       await refresh(true);
     });
   }
@@ -5558,7 +6070,16 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const backgroundDecision = String(backgroundProgress.decision || backgroundResult.decision || '').trim();
   const backgroundThoughtText = String(backgroundProgress.current_thought_text || backgroundResult.current_thought_text || '').trim();
   const backgroundWhy = String(backgroundProgress.why || backgroundResult.why || backgroundResult.reason || '').trim();
+  const activeToolTask = (status?.active_tool_task || {}) as AnyRecord;
+  const activeToolTaskLive = Boolean(
+    String(activeToolTask.task_id || '').trim()
+    && !['completed', 'done', 'failed', 'error', 'cancelled'].includes(String(activeToolTask.status || '').toLowerCase()),
+  );
+  const activeToolTaskLabel = activeToolTaskLive
+    ? `${String(activeToolTask.task || '工具')} · ${String(activeToolTask.summary || activeToolTask.stage || '运行中')}`
+    : '';
   const currentStage = activeJob?.stage_label
+    || activeToolTaskLabel
     || (background?.running || visibleBackgroundStageLabel
       ? visibleBackgroundStageLabel || '后台主观能动性运行中'
       : sending
@@ -5606,7 +6127,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   ];
   const toolBlueprints = [
     { id: 'time', label: '时间 MCP/Skill', status: '可运行', detail: '本地时间工具已接入，可回灌 AP 形成时间感。' },
-    { id: 'memory_note', label: '知识片段导入', status: '可运行', detail: '把文本作为 memory_note 写入 PA/AP 消化链路。' },
+    { id: 'library', label: '图书馆/读书', status: '可运行', detail: '导入 txt/docx/pdf 等书籍，按短片段喂给 AP，并保存段落理解。' },
+    { id: 'memory_note', label: '知识片段导入', status: '保留兼容', detail: '旧式 memory_note 仍可手动调用；长文档建议使用图书馆。' },
     { id: 'weather', label: '天气工具', status: '真实可用', detail: '已接入 Open-Meteo forecast/geocoding API，无需 key；执行后会把天气摘要回灌 AP。' },
     { id: 'image_understanding', label: '图片理解', status: '摘要优先', detail: '当前先接收图片/文件摘要，视觉模型配置后替换为真实理解。' },
   ];
@@ -5616,7 +6138,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     {
       label: '当前阶段',
       value: currentStage,
-      note: activeJob?.status === 'queued' ? '消息已入队，等待前序任务。' : activeJob?.stage ? `内部阶段：${activeJob.stage}` : visibleBackgroundStage ? `后台阶段：${visibleBackgroundStage}` : '当前没有运行中的回合。',
+      note: activeJob?.status === 'queued' ? '消息已入队，等待前序任务。' : activeJob?.stage ? `内部阶段：${activeJob.stage}` : activeToolTaskLive ? `工具阶段：${String(activeToolTask.stage || '-')}` : visibleBackgroundStage ? `后台阶段：${visibleBackgroundStage}` : '当前没有运行中的回合。',
     },
     {
       label: '当前决策',
@@ -5625,8 +6147,10 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     },
     {
       label: 'AP tick',
-      value: `${formatCount(activeJob?.ap_tick_count ?? livePacket.tick_counter ?? packet.tick_counter ?? 0)}`,
-      note: '这里会随着用户输入注入、预运行、thought 回灌和工具结果回灌实时增加。',
+      value: activeToolTaskLive && activeToolTask.progress_current !== undefined
+        ? `${formatCount(activeToolTask.progress_current)} / ${formatCount(activeToolTask.progress_total)}`
+        : `${formatCount(activeJob?.ap_tick_count ?? livePacket.tick_counter ?? packet.tick_counter ?? 0)}`,
+      note: activeToolTaskLive ? '读书等长期工具会在这里显示当前 AP tick / 阶段进度。' : '这里会随着用户输入注入、预运行、thought 回灌和工具结果回灌实时增加。',
     },
     {
       label: '想法进度',
@@ -5977,6 +6501,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                   <div className="pa-stage-list">
                     {[
                       { label: '用户输入', value: `${formatCount(status?.session?.message_count)} messages` },
+                      ...(activeToolTaskLive ? [{ label: '工具运行', value: `${String(activeToolTask.task || '工具')} ${formatPercent(asNumber(activeToolTask.progress, 0) / 100, 0)}` }] : []),
                       { label: 'AP 预运行', value: `${draft.pre_thought_ticks ?? 0} ticks` },
                       { label: '连续想法', value: `软 ${draft.max_thoughts_per_turn ?? 1} / 硬 ${draft.max_total_thought_steps_per_turn ?? 0}` },
                       { label: '回复行动', value: draft.auto_reply ? '自动判断' : '仅想法' },
@@ -6330,6 +6855,62 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 <Card className="pa-panel">
                   <CognitiveTimelinePanel timeline={cognitiveTimeline} dark={dark} busy={busy} onRefresh={refreshCognitiveTimeline} onInspect={setSelected} />
                 </Card>
+                <Card className="pa-panel" mt="md">
+                  <Group justify="space-between" align="flex-start" mb="sm">
+                    <div>
+                      <Group gap={8}>
+                        <IconListDetails size={18} />
+                        <Text fw={900}>系统日志</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        展示导入/导出/合并、日志维护、后台任务和系统报错；用于确认任务正在做什么、做到哪里。
+                      </Text>
+                    </div>
+                    <Group gap={6}>
+                      <SegmentedControl
+                        size="xs"
+                        value={systemLogView}
+                        onChange={setSystemLogView}
+                        data={[
+                          { value: 'important', label: '重点' },
+                          { value: 'detail', label: '详细' },
+                          { value: 'errors', label: '报错' },
+                        ]}
+                      />
+                      <ActionIcon size="sm" variant="subtle" loading={isBusy('diag')} onClick={() => void refreshSystemEvents(true)} aria-label="刷新系统日志">
+                        <IconRefresh size={14} />
+                      </ActionIcon>
+                    </Group>
+                  </Group>
+                  {systemActiveTasks.length ? (
+                    <Stack gap={8} mb="sm">
+                      {systemActiveTasks.slice(0, 4).map((task, index) => {
+                        const progress = Math.max(0, Math.min(100, asNumber(task.progress, 0)));
+                        return (
+                          <button key={`${task.task_id || index}`} type="button" className="agent-task-progress-row" onClick={() => setSelected(task)}>
+                            <span>
+                              <strong>{shortText(String(task.task || task.event || '系统任务'), 44)}</strong>
+                              <small>{shortText(String(task.summary || task.stage || ''), 110)}</small>
+                              <i><b style={{ width: `${progress}%` }} /></i>
+                            </span>
+                            <Badge variant="light" color="blue">{formatPercent(progress / 100, 0)}</Badge>
+                          </button>
+                        );
+                      })}
+                    </Stack>
+                  ) : null}
+                  <Group gap={6} mb="xs" wrap="wrap">
+                    <Badge size="xs" variant="light" color="blue">显示 {formatCount(systemEventCounts.returned)}</Badge>
+                    <Badge size="xs" variant="outline">扫描 {formatCount(systemEventCounts.total_scanned)}</Badge>
+                    <Badge size="xs" variant="light" color={asNumber(systemEventCounts.active, 0) ? 'blue' : 'gray'}>运行中 {formatCount(systemEventCounts.active)}</Badge>
+                    <Badge size="xs" variant="light" color={asNumber(systemEventCounts.warn, 0) ? 'yellow' : 'gray'}>警告 {formatCount(systemEventCounts.warn)}</Badge>
+                    <Badge size="xs" variant="light" color={asNumber(systemEventCounts.error, 0) ? 'red' : 'gray'}>报错 {formatCount(systemEventCounts.error)}</Badge>
+                    <Badge size="xs" variant="outline">任务 {formatCount(systemEventCounts.tasks)}</Badge>
+                  </Group>
+                  <ScrollArea.Autosize mah={360}>
+                    <SystemEventList rows={systemEvents} onSelect={setSelected} />
+                  </ScrollArea.Autosize>
+                </Card>
               </section>
               <aside className="pa-side-column">
                 <Card className="pa-panel agent-ap-maintenance-card">
@@ -6372,6 +6953,77 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                     <span>清对话只影响 PA 聊天记录；这里管理的是 AP 本体状态。HDB 清空后，长期学习痕迹会重新开始积累。</span>
                     {maintenanceBusy ? <Badge size="xs" color="yellow" variant="light">处理中</Badge> : null}
                   </div>
+                </Card>
+                <Card className="pa-panel" mt="md">
+                  <Group justify="space-between" align="flex-start" mb="xs">
+                    <div>
+                      <Group gap={8}>
+                        <IconDatabase size={18} />
+                        <Text fw={900}>运行包 / AP 技能包</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        导出会自动脱敏 API Key、URL、webhook 和日志；导入前会自动备份当前运行包。覆盖策略风险最高。
+                      </Text>
+                    </div>
+                    <Group gap={6}>
+                      <Badge variant="light">{formatCount(runtimePackages?.total ?? asArray<AnyRecord>(runtimePackages?.packages).length)} 包</Badge>
+                      <Tooltip label="刷新运行包">
+                        <ActionIcon size="sm" variant="subtle" loading={maintenanceBusy} aria-label="刷新运行包" onClick={() => void refreshRuntimePackages(true)}>
+                          <IconRefresh size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="sm">
+                    <Stack gap="xs">
+                      <TextInput label="导出名称" value={String(runtimePackageDraft.name || '')} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, name: event.currentTarget.value }))} />
+                      <Textarea label="备注" minRows={2} autosize value={String(runtimePackageDraft.note || '')} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, note: event.currentTarget.value }))} />
+                      <SimpleGrid cols={2} spacing={6}>
+                        <Switch size="sm" label="AP 运行态" checked={runtimePackageDraft.include_state !== false} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, include_state: event.currentTarget.checked }))} />
+                        <Switch size="sm" label="HDB" checked={runtimePackageDraft.include_hdb !== false} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, include_hdb: event.currentTarget.checked }))} />
+                        <Switch size="sm" label="日记/任务/表情" checked={runtimePackageDraft.include_agent_data !== false} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, include_agent_data: event.currentTarget.checked }))} />
+                        <Switch size="sm" label="图书馆" checked={runtimePackageDraft.include_library !== false} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, include_library: event.currentTarget.checked }))} />
+                      </SimpleGrid>
+                      <Button variant="light" leftSection={<IconDeviceFloppy size={14} />} loading={maintenanceBusy} onClick={() => void exportRuntimePackage()}>
+                        导出运行包
+                      </Button>
+                    </Stack>
+                    <Stack gap="xs">
+                      <TextInput label="导入 zip 路径" value={String(runtimePackageDraft.path || '')} onChange={(event) => setRuntimePackageDraft((prev) => ({ ...prev, path: event.currentTarget.value }))} />
+                      <Select
+                        label="冲突合并策略"
+                        value={String(runtimePackageDraft.strategy || 'retreat')}
+                        data={[
+                          { value: 'stack', label: '叠加：都保留，相同权重相加' },
+                          { value: 'stack_average', label: '柔和叠加：相同权重取平均' },
+                          { value: 'overwrite', label: '覆盖：同名以导入包为准' },
+                          { value: 'competitive', label: '竞争合并：保留更强/更完整项' },
+                          { value: 'retreat', label: '退避：本地已有内容优先' },
+                        ]}
+                        onChange={(value) => setRuntimePackageDraft((prev) => ({ ...prev, strategy: value || 'retreat' }))}
+                      />
+                      <Text size="xs" c="dimmed">
+                        退避最保守；叠加适合共享技能包；覆盖适合完整迁移，但可能改写本地长期理解；竞争合并会丢弃较弱项。
+                      </Text>
+                      <Button variant="light" color="yellow" leftSection={<IconDatabase size={14} />} loading={maintenanceBusy} onClick={() => void importRuntimePackage()}>
+                        导入并自动备份
+                      </Button>
+                    </Stack>
+                  </SimpleGrid>
+                  <ScrollArea.Autosize mah={220} mt="sm">
+                    <Stack gap="xs">
+                      {asArray<AnyRecord>(runtimePackages?.packages).map((pkg) => (
+                        <button key={String(pkg.path || pkg.name)} type="button" className="agent-tool-row" onClick={() => { setRuntimePackageDraft((prev) => ({ ...prev, path: String(pkg.path || '') })); setSelected(pkg); }}>
+                          <div>
+                            <strong>{shortText(String(pkg.name || pkg.path || '-'), 46)}</strong>
+                            <small>{shortText(String(pkg.manifest?.note || pkg.path || ''), 96)}</small>
+                          </div>
+                          <Badge variant="light">{formatCount(pkg.bytes)} B</Badge>
+                        </button>
+                      ))}
+                      {!asArray<AnyRecord>(runtimePackages?.packages).length ? <div className="empty-box compact">还没有运行包。可以先导出一份当前 AP/PA 运行态作为备份。</div> : null}
+                    </Stack>
+                  </ScrollArea.Autosize>
                 </Card>
                 <Card className="pa-panel" mt="md">
                   <Group justify="space-between" mb="xs">
@@ -6815,9 +7467,9 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                         <IconTool size={18} />
                         <Text fw={900}>MCP / Skills / 知识库</Text>
                       </Group>
-                      <Text size="xs" c="dimmed">
-                        先提供真实可运行的本地工具和协议蓝图；所有外部工具都建议先 dry-run，再允许回灌 AP。
-                      </Text>
+                  <Text size="xs" c="dimmed">
+                    先提供真实可运行的本地工具、图书馆和协议蓝图；外部工具建议先 dry-run，再允许回灌 AP。
+                  </Text>
                     </div>
                     <Group gap={6}>
                       <Badge variant="light" color={draft.mcp_enabled ? 'teal' : 'gray'}>MCP {draft.mcp_enabled ? 'on' : 'off'}</Badge>
@@ -6995,17 +7647,161 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 </Card>
 
                 <Card className="pa-panel" mt="md">
-                  <Group justify="space-between" mb="xs">
-                    <Text fw={900}>知识库导入</Text>
-                    <Badge variant="light">memory_note</Badge>
+                  <Group justify="space-between" align="flex-start" mb="xs">
+                    <div>
+                      <Group gap={8}>
+                        <IconBook size={18} />
+                        <Text fw={900}>图书馆 / 读书</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        导入 txt、docx、pdf 或直接文本后，读书工具会按短片段喂给 AP，跑空 tick，并保存段落理解和书签。
+                      </Text>
+                    </div>
+                    <Group gap={6}>
+                      <Badge variant="light" color={draft.library_enabled === false ? 'gray' : 'teal'}>
+                        {formatCount(library?.total ?? asArray<AnyRecord>(library?.books).length)} 本
+                      </Badge>
+                      <Tooltip label="刷新图书馆">
+                        <ActionIcon size="sm" variant="subtle" loading={toolBusy} aria-label="刷新图书馆" onClick={() => void refreshLibrary(true)}>
+                          <IconRefresh size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   </Group>
-                  <Text size="xs" c="dimmed" mb="xs">
-                    当前原型先把知识库片段作为高信息密度文本写入 AP 语料；后续可替换为文件解析、向量索引或 MCP KB server。
-                  </Text>
-                  <Textarea minRows={5} autosize value={kbText} onChange={(event) => setKbText(event.currentTarget.value)} />
-                  <Button mt="sm" variant="light" leftSection={<IconDatabase size={14} />} loading={isBusy('tool')} onClick={importKnowledgeNote}>
-                    导入为记忆片段
-                  </Button>
+                  <SimpleGrid cols={{ base: 1, lg: 3 }} spacing="sm">
+                    <ScrollArea.Autosize mah={380}>
+                      <Stack gap="xs">
+                        {asArray<AnyRecord>(library?.books).map((book) => (
+                          <button key={String(book.id)} type="button" className="agent-tool-row" onClick={() => void selectLibraryBook(book)}>
+                            <div>
+                              <strong>{shortText(String(book.title || book.id || '-'), 34)}</strong>
+                              <small>{shortText(`${book.progress || '-'} · ${book.summary || ''}`, 78)}</small>
+                            </div>
+                            <Badge variant="light" color={Number(book.review_count || 0) > 0 ? 'teal' : 'gray'}>
+                              {formatCount(book.review_count)} 段
+                            </Badge>
+                          </button>
+                        ))}
+                        {!asArray<AnyRecord>(library?.books).length ? <div className="empty-box compact">当前还没有书。可以导入本地文件路径，也可以直接粘贴文本。</div> : null}
+                      </Stack>
+                    </ScrollArea.Autosize>
+                    <Stack gap="xs">
+                      <Input.Wrapper label="本地文件路径">
+                        <Group gap={6} wrap="nowrap">
+                          <TextInput
+                            placeholder="D:\\books\\novel.docx"
+                            value={String(bookImportDraft.path || '')}
+                            onChange={(event) => setBookImportDraft((prev) => ({ ...prev, path: event.currentTarget.value }))}
+                            style={{ flex: 1 }}
+                          />
+                          <Tooltip label="打开本地文件选择框">
+                            <ActionIcon variant="light" size="lg" loading={toolBusy} onClick={() => void pickLibraryFile()} aria-label="选择图书文件">
+                              <IconFile size={17} />
+                            </ActionIcon>
+                          </Tooltip>
+                        </Group>
+                      </Input.Wrapper>
+                      <TextInput label="书名" value={String(bookImportDraft.title || '')} onChange={(event) => setBookImportDraft((prev) => ({ ...prev, title: event.currentTarget.value }))} />
+                      <Input.Wrapper label="简介">
+                        <Stack gap={6}>
+                          <Textarea minRows={2} autosize value={String(bookImportDraft.summary || '')} onChange={(event) => setBookImportDraft((prev) => ({ ...prev, summary: event.currentTarget.value }))} />
+                          <Button size="compact-sm" variant="subtle" leftSection={<IconSparkles size={14} />} loading={toolBusy} onClick={() => void suggestLibrarySummary()}>
+                            大模型自动生成简介
+                          </Button>
+                        </Stack>
+                      </Input.Wrapper>
+                      <Textarea label="直接导入文本" minRows={5} autosize value={String(bookImportDraft.text || kbText || '')} onChange={(event) => { setBookImportDraft((prev) => ({ ...prev, text: event.currentTarget.value })); setKbText(event.currentTarget.value); }} />
+                      <Button variant="light" leftSection={<IconDatabase size={14} />} loading={toolBusy} onClick={() => void importBook()}>
+                        导入图书馆
+                      </Button>
+                    </Stack>
+                    <Stack gap="xs">
+                      {selectedBook ? (
+                        <>
+                          <Text fw={800}>{shortText(String(selectedBook.title || selectedBook.id), 42)}</Text>
+                          <Text size="xs" c="dimmed">{shortText(String(selectedBook.summary || selectedBook.progress || '暂无简介'), 160)}</Text>
+                          <Group gap="xs">
+                            <Button size="compact-sm" variant="light" leftSection={<IconPlayerPlay size={14} />} loading={toolBusy} onClick={() => void readLibraryBook('read')}>
+                              读下一段
+                            </Button>
+                            <Button size="compact-sm" variant="subtle" loading={toolBusy} onClick={() => void readLibraryBook('reviews')}>
+                              段落理解
+                            </Button>
+                            <Button size="compact-sm" variant="subtle" loading={toolBusy} onClick={() => void readLibraryBook('original')}>
+                              查看原文
+                            </Button>
+                            <Button size="compact-sm" variant="subtle" loading={toolBusy} onClick={() => void readLibraryBook('stop')}>
+                              暂停
+                            </Button>
+                            <Button size="compact-sm" variant="subtle" color="red" leftSection={<IconTrash size={14} />} loading={toolBusy} onClick={() => void deleteLibraryBook()}>
+                              删除
+                            </Button>
+                          </Group>
+                          <SimpleGrid cols={3} spacing={6}>
+                            <button type="button" className="agent-library-mini-stat" onClick={() => setSelected(selectedBook)}>
+                              <span>进度</span>
+                              <strong>{formatPercent(asNumber(selectedBook.progress, 0), 0)}</strong>
+                              <small>{formatCount(selectedBook.cursor)} / {formatCount(selectedBook.text_chars)} 字</small>
+                            </button>
+                            <button type="button" className="agent-library-mini-stat" onClick={() => setSelected(selectedBook)}>
+                              <span>理解</span>
+                              <strong>{formatCount(selectedBook.review_count)}</strong>
+                              <small>tick {formatCount(selectedBook.read_tick_count)}</small>
+                            </button>
+                            <button type="button" className="agent-library-mini-stat" onClick={() => setSelected(selectedBook)}>
+                              <span>状态</span>
+                              <strong>{shortText(String(selectedBook.status || '-'), 10)}</strong>
+                              <small>{timeLabel(selectedBook.last_read_at_ms)}</small>
+                            </button>
+                          </SimpleGrid>
+                          <Group justify="space-between" mt={4}>
+                            <Text size="xs" fw={800}>段落理解列表</Text>
+                            <Badge size="xs" variant="light" color={asArray<AnyRecord>(selectedBook.reviews).length ? 'teal' : 'gray'}>
+                              {formatCount(asArray<AnyRecord>(selectedBook.reviews).length)}
+                            </Badge>
+                          </Group>
+                          <ScrollArea.Autosize mah={220}>
+                            <Stack gap={6}>
+                              {asArray<AnyRecord>(selectedBook.reviews).slice().reverse().slice(0, 8).map((review) => (
+                                <button key={String(review.id)} type="button" className={`agent-tool-row ${String(selectedLibraryReview?.id || '') === String(review.id || '') ? 'is-selected' : ''}`} onClick={() => void selectLibraryReview(review)}>
+                                  <div>
+                                    <strong>{shortText(String(review.title || review.id || '-'), 36)}</strong>
+                                    <small>{shortText(String(review.preview || review.understanding || review.summary || ''), 88)}</small>
+                                  </div>
+                                  <Badge size="xs" variant="outline">{shortText(String(review.range?.start ?? '-'), 8)}</Badge>
+                                </button>
+                              ))}
+                              {!asArray<AnyRecord>(selectedBook.reviews).length ? <div className="empty-box compact">还没有段落理解。点击“读下一段”后会生成第一条。</div> : null}
+                            </Stack>
+                          </ScrollArea.Autosize>
+                          {selectedLibraryReview ? (
+                            <div className="agent-library-review-detail">
+                              <Group justify="space-between" gap={6}>
+                                <Text size="xs" fw={800}>{shortText(String(selectedLibraryReview.title || selectedLibraryReview.id || '段落理解'), 42)}</Text>
+                                <Badge size="xs" variant="light">tick {formatCount(selectedLibraryReview.ap_tick_count)}</Badge>
+                              </Group>
+                              <Text size="xs" c="dimmed">
+                                {formatCount(selectedLibraryReview.range?.start)}-{formatCount(selectedLibraryReview.range?.end)} 字
+                              </Text>
+                              <ScrollArea.Autosize mah={220}>
+                                <Text size="sm" className="agent-library-review-content">
+                                  {String(selectedLibraryReview.understanding || selectedLibraryReview.summary || selectedLibraryReview.preview || '点击上方段落理解条目查看详情。')}
+                                </Text>
+                              </ScrollArea.Autosize>
+                              {selectedLibraryReview.excerpt ? (
+                                <details className="agent-library-review-excerpt">
+                                  <summary>查看原文片段</summary>
+                                  <p>{String(selectedLibraryReview.excerpt)}</p>
+                                </details>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="empty-box compact">选择一本书后，可以继续读、查看段落理解、回看原文或删除。</div>
+                      )}
+                    </Stack>
+                  </SimpleGrid>
                 </Card>
               </section>
 
@@ -7055,6 +7851,18 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 <Card className="pa-panel" mt="md">
                   <MultimodalReadinessPanel readiness={multimodalReadiness} busy={busy} onRefresh={refreshMultimodalReadiness} onInspect={setSelected} />
                 </Card>
+                <ToolRunLogCard
+                  events={toolEvents}
+                  counts={toolEventCounts}
+                  activeTasks={toolActiveTasks}
+                  activeToolTask={(status?.active_tool_task || {}) as AnyRecord}
+                  view={toolLogView}
+                  busy={isBusy('diag') || isBusy('tool')}
+                  onViewChange={setToolLogView}
+                  onRefresh={() => void refreshToolEvents(true)}
+                  onSelect={setSelected}
+                />
+                <LibraryReviewReaderCard review={selectedLibraryReview} onInspect={setSelected} />
               </aside>
 
               <aside className="pa-json-column">
@@ -8085,6 +8893,20 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
             </Group>
             <EnergyTrendChart snapshots={snapshots} dark={dark} />
           </Card>
+
+          <ToolRunLogCard
+            events={toolEvents}
+            counts={toolEventCounts}
+            activeTasks={toolActiveTasks}
+            activeToolTask={(status?.active_tool_task || {}) as AnyRecord}
+            view={toolLogView}
+            busy={isBusy('diag') || isBusy('tool')}
+            onViewChange={setToolLogView}
+            onRefresh={() => void refreshToolEvents(true)}
+            onSelect={setSelected}
+          />
+
+          <LibraryReviewReaderCard review={selectedLibraryReview} onInspect={setSelected} />
 
           <Card className="agent-cloud-card">
             <Group justify="space-between" mb="xs">

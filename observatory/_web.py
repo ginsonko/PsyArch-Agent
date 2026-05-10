@@ -806,6 +806,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 "thought_ready",
                 "reply_deferred_for_external_input",
                 "thought_ingested",
+                "reading_book",
                 "tool_result_ingested",
                 "post_thought_tick",
                 "decision_continue",
@@ -2630,6 +2631,22 @@ def _build_handler():
                     payload["scheduler"] = self.server.agent_scheduler_status()
                     self._send_json({"success": True, "data": payload})
                     return
+                if parsed.path == "/api/agent/library":
+                    detail = str(query.get("detail", ["0"])[0] or "").lower() in {"1", "true", "yes"}
+                    book_id = str(query.get("id", [""])[0] or query.get("book_id", [""])[0] or "").strip()
+                    payload = self.server.agent_runtime.library_public(detail=detail, book_id=book_id)
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/runtime-packages":
+                    payload = self.server.agent_runtime.runtime_packages_public()
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/system-events":
+                    limit = _maybe_int(query.get("limit", [120])[0]) or 120
+                    view = str(query.get("view", ["important"])[0] or "important")
+                    payload = self.server.agent_runtime.system_events(limit=limit, view=view)
+                    self._send_json({"success": True, "data": payload})
+                    return
                 if parsed.path == "/api/agent/prompt/experiments":
                     limit = _maybe_int(query.get("limit", [40])[0]) or 40
                     payload = self.server.agent_runtime.prompt_experiments(limit=limit)
@@ -3166,6 +3183,18 @@ def _build_handler():
                         return
                 self._send_json({"success": False, "message": "Unknown API path"}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:
+                try:
+                    if hasattr(self.server, "agent_runtime"):
+                        self.server.agent_runtime.record_system_log({
+                            "event": "agent_api_request_failed",
+                            "level": "error",
+                            "task": "Web API",
+                            "stage": parsed.path,
+                            "summary": f"API 请求失败：{parsed.path}",
+                            "error": str(exc),
+                        })
+                except Exception:
+                    pass
                 self._send_json({"success": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
         def _handle_api_post(self, parsed: urllib.parse.ParseResult) -> None:
@@ -3241,6 +3270,43 @@ def _build_handler():
                 if parsed.path == "/api/agent/scheduled-tasks/delete":
                     result = self.server.agent_runtime.delete_scheduled_tasks(payload if isinstance(payload, dict) else {})
                     result["scheduler"] = self.server.agent_scheduler_status()
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/library/import":
+                    result = self.server.agent_runtime.import_book(payload if isinstance(payload, dict) else {}, source="agent_page_library")
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/library/file-dialog":
+                    result = self.server.agent_runtime.pick_library_file()
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/library/summary":
+                    result = self.server.agent_runtime.suggest_library_summary(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/library/read":
+                    apply_experiment_default_app_overrides(
+                        self.server.app,
+                        source="agent_api_library_read",
+                    )
+                    result = self.server.agent_runtime.read_book(payload if isinstance(payload, dict) else {}, source="agent_page_library")
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/library/delete":
+                    result = self.server.agent_runtime.delete_library_book(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/runtime-packages/export":
+                    result = self.server.agent_runtime.export_runtime_package(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/runtime-packages/import":
+                    with self.server.app_lock:
+                        apply_experiment_default_app_overrides(
+                            self.server.app,
+                            source="agent_api_runtime_package_import",
+                        )
+                        result = self.server.agent_runtime.import_runtime_package(payload if isinstance(payload, dict) else {})
                     self._send_json({"success": True, "data": result})
                     return
                 if parsed.path == "/api/agent/prompt/preview":

@@ -195,21 +195,21 @@ def test_schedule_task_keeps_qq_origin_from_tool_context(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path, monkeypatch)
     origin = {
         "source": "napcat_qq",
-        "conversation_id": "private:474764004",
-        "adapter_label": "私聊 银子 (474764004)",
+        "conversation_id": "private:1000010001",
+        "adapter_label": "私聊 测试用户 (1000010001)",
         "reply_target": {
             "adapter": "napcat_qq",
             "message_type": "private",
-            "conversation_id": "private:474764004",
-            "user_id": "474764004",
-            "target_label": "私聊 银子 (474764004)",
+            "conversation_id": "private:1000010001",
+            "user_id": "1000010001",
+            "target_label": "私聊 测试用户 (1000010001)",
         },
         "adapter_event": {
             "adapter": "napcat_qq",
             "message_type": "private",
-            "conversation_id": "private:474764004",
-            "user_id": "474764004",
-            "target_label": "私聊 银子 (474764004)",
+            "conversation_id": "private:1000010001",
+            "user_id": "1000010001",
+            "target_label": "私聊 测试用户 (1000010001)",
         },
     }
 
@@ -219,8 +219,8 @@ def test_schedule_task_keeps_qq_origin_from_tool_context(tmp_path, monkeypatch):
                 "name": "schedule_task",
                 "args": {
                     "operation": "create",
-                    "summary": "提醒银子睡觉",
-                    "prompt": "提醒银子该睡觉了",
+                    "summary": "提醒测试用户睡觉",
+                    "prompt": "提醒测试用户该睡觉了",
                     "trigger": {"type": "once", "at": "2099-01-01 00:00"},
                 },
             }
@@ -233,5 +233,5 @@ def test_schedule_task_keeps_qq_origin_from_tool_context(tmp_path, monkeypatch):
     assert result[0]["ok"] is True
     task = result[0]["output"]["created_tasks"][0]
     assert task["origin"]["source"] == "napcat_qq"
-    assert task["origin"]["conversation_id"] == "private:474764004"
-    assert task["origin"]["reply_target"]["user_id"] == "474764004"
+    assert task["origin"]["conversation_id"] == "private:1000010001"
+    assert task["origin"]["reply_target"]["user_id"] == "1000010001"

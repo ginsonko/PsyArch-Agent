@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import fnmatch
 import gzip
 import difflib
 import hashlib
@@ -23,6 +24,8 @@ import random
 import re
 import shutil
 import socket
+import sqlite3
+import tempfile
 import threading
 import time
 import urllib.error
@@ -31,8 +34,10 @@ import urllib.request
 import zlib
 from dataclasses import dataclass, field
 from io import BytesIO
+from xml.etree import ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
+from zipfile import ZipFile, ZIP_DEFLATED
 
 try:
     from observatory.experiment.metrics import extract_tick_metrics as _extract_tick_metrics_for_agent
@@ -152,6 +157,40 @@ def _diary_path() -> Path:
 
 def _scheduled_tasks_path() -> Path:
     return _outputs_dir() / "agent_scheduled_tasks.json"
+
+
+def _library_dir() -> Path:
+    path = _outputs_dir() / "library"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _library_files_dir() -> Path:
+    path = _library_dir() / "files"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _library_books_dir() -> Path:
+    path = _library_dir() / "books"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _library_assets_dir() -> Path:
+    path = _library_dir() / "assets"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _library_catalog_path() -> Path:
+    return _library_dir() / "agent_library.json"
+
+
+def _runtime_packages_dir() -> Path:
+    path = _outputs_dir() / "runtime_packages"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _events_path() -> Path:
@@ -327,6 +366,10 @@ def _llm_api_log_path() -> Path:
     return _outputs_dir() / "agent_llm_api_events.jsonl"
 
 
+def _system_log_path() -> Path:
+    return _outputs_dir() / "agent_system_events.jsonl"
+
+
 def _experiments_path() -> Path:
     return _outputs_dir() / "agent_prompt_experiments.jsonl"
 
@@ -364,6 +407,7 @@ def _agent_log_paths() -> dict[str, Path]:
         "events": _events_path(),
         "adapter_events": _adapter_log_path(),
         "llm_api_events": _llm_api_log_path(),
+        "system_events": _system_log_path(),
         "outbox": _outbox_path(),
         "experiments": _experiments_path(),
         "wake_previews": _wake_previews_path(),
@@ -478,6 +522,7 @@ def _trim_output_files() -> None:
             ("agent/generated_image_reviews/*.json", 80, 14),
             ("agent/generated_images/*", 120, 30),
             ("agent/incoming_attachments/*", 240, 14),
+            ("agent/runtime_packages/*.zip", 30, 90),
         ):
             rows = sorted(root.glob(pattern), key=lambda item: item.stat().st_mtime if item.exists() else 0)
             cutoff = now - max_age_days * 24 * 3600
@@ -508,6 +553,344 @@ def _safe_read_json(path: Path, default: Any) -> Any:
         return data if data is not None else copy.deepcopy(default)
     except Exception:
         return copy.deepcopy(default)
+
+
+def _read_text_file_with_fallback(path: Path, *, max_chars: int = 2_000_000) -> tuple[str, str]:
+    raw = path.read_bytes()[: max(0, int(max_chars * 4))]
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "big5", "latin-1"):
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace"), "utf-8-replace"
+
+
+def _runtime_merge_strategy(value: Any) -> str:
+    text = str(value or "stack").strip().lower()
+    aliases = {
+        "add": "stack",
+        "merge": "stack",
+        "append": "stack",
+        "overlay": "stack",
+        "叠加": "stack",
+        "stack_average": "stack_average",
+        "average": "stack_average",
+        "soft_stack": "stack_average",
+        "柔和叠加": "stack_average",
+        "覆盖": "overwrite",
+        "replace": "overwrite",
+        "competition": "competitive",
+        "compete": "competitive",
+        "竞争合并": "competitive",
+        "退避": "retreat",
+        "keep": "retreat",
+        "skip": "retreat",
+        "叠加": "stack",
+        "柔和叠加": "stack_average",
+        "平均叠加": "stack_average",
+        "覆盖": "overwrite",
+        "竞争": "competitive",
+        "竞争合并": "competitive",
+        "退避": "retreat",
+    }
+    text = aliases.get(text, text)
+    if text not in {"stack", "stack_average", "overwrite", "competitive", "retreat"}:
+        text = "stack"
+    return text
+
+
+def _looks_like_weight_key(key: Any) -> bool:
+    text = str(key or "").strip().lower()
+    return text in {
+        "weight",
+        "score",
+        "value",
+        "energy",
+        "drive",
+        "strength",
+        "confidence",
+        "importance",
+        "probability",
+        "activation",
+        "rank",
+    } or text.endswith(("_weight", "_score", "_energy", "_strength", "_drive"))
+
+
+def _looks_like_time_key(key: Any) -> bool:
+    text = str(key or "").strip().lower()
+    return text in {"created_at", "updated_at", "created_at_ms", "updated_at_ms", "ts", "timestamp", "timestamp_ms"} or text.endswith(("_at", "_at_ms", "_time", "_time_ms"))
+
+
+def _merge_number_value(old: Any, new: Any, strategy: str) -> Any:
+    old_num = _as_float(old, 0.0)
+    new_num = _as_float(new, 0.0)
+    if strategy == "stack_average":
+        return (old_num + new_num) / 2.0
+    if strategy == "competitive":
+        return old if old_num >= new_num else new
+    if strategy == "overwrite":
+        return new
+    if strategy == "retreat":
+        return old
+    return old_num + new_num
+
+
+def _merge_runtime_payload(old: Any, new: Any, *, strategy: str = "stack", key_hint: str = "") -> Any:
+    strategy = _runtime_merge_strategy(strategy)
+    if old is None:
+        return copy.deepcopy(new)
+    if new is None:
+        return copy.deepcopy(old)
+    if strategy == "overwrite":
+        return copy.deepcopy(new)
+    if strategy == "retreat":
+        return copy.deepcopy(old)
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        if _looks_like_time_key(key_hint):
+            return max(old, new)
+        if _looks_like_weight_key(key_hint) or strategy in {"stack", "stack_average"}:
+            return _merge_number_value(old, new, strategy)
+        return copy.deepcopy(new if strategy == "competitive" and _as_float(new) > _as_float(old) else old)
+    if isinstance(old, dict) and isinstance(new, dict):
+        merged = copy.deepcopy(old)
+        for key, value in new.items():
+            if key not in merged:
+                merged[key] = copy.deepcopy(value)
+            else:
+                merged[key] = _merge_runtime_payload(merged.get(key), value, strategy=strategy, key_hint=str(key))
+        return merged
+    if isinstance(old, list) and isinstance(new, list):
+        rows = copy.deepcopy(old)
+        keyed: dict[str, int] = {}
+        for idx, item in enumerate(rows):
+            if isinstance(item, dict):
+                identity = str(item.get("id") or item.get("key") or item.get("name") or item.get("title") or "")
+                if identity:
+                    keyed[identity] = idx
+            else:
+                keyed[json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)] = idx
+        for item in new:
+            if isinstance(item, dict):
+                identity = str(item.get("id") or item.get("key") or item.get("name") or item.get("title") or "")
+                if identity and identity in keyed:
+                    idx = keyed[identity]
+                    rows[idx] = _merge_runtime_payload(rows[idx], item, strategy=strategy)
+                    continue
+                if identity:
+                    keyed[identity] = len(rows)
+                rows.append(copy.deepcopy(item))
+            else:
+                identity = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+                if identity not in keyed:
+                    keyed[identity] = len(rows)
+                    rows.append(copy.deepcopy(item))
+        return rows
+    if old == new:
+        return copy.deepcopy(old)
+    if strategy == "competitive":
+        if isinstance(old, (str, bytes, bytearray)) and isinstance(new, (str, bytes, bytearray)):
+            return copy.deepcopy(new if len(new) > len(old) else old)
+        return copy.deepcopy(new)
+    return [copy.deepcopy(old), copy.deepcopy(new)] if old != new else copy.deepcopy(old)
+
+
+def _sqlite_decode_payload(blob: Any, codec: Any = "") -> tuple[Any, str]:
+    raw = bytes(blob or b"")
+    codec_text = str(codec or "").strip().lower()
+    if not raw:
+        return None, codec_text or "json"
+    candidates: list[tuple[str, bytes]] = []
+    if codec_text in {"zlib+json", "zlib", "compressed"}:
+        try:
+            candidates.append(("zlib+json", zlib.decompress(raw)))
+        except Exception:
+            pass
+    candidates.append((codec_text or "json", raw))
+    if not any(name == "zlib+json" for name, _ in candidates):
+        try:
+            candidates.append(("zlib+json", zlib.decompress(raw)))
+        except Exception:
+            pass
+    for candidate_codec, data in candidates:
+        try:
+            return json.loads(data.decode("utf-8")), candidate_codec or "json"
+        except Exception:
+            continue
+    return None, codec_text or "binary"
+
+
+def _sqlite_encode_payload(payload: Any, codec: str = "json") -> bytes:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if str(codec or "").strip().lower() in {"zlib+json", "zlib", "compressed"}:
+        return zlib.compress(data)
+    return data
+
+
+def _safe_copytree_contents(src: Path, dst: Path, *, ignore_patterns: tuple[str, ...] = ()) -> int:
+    copied = 0
+    if not src.exists():
+        return 0
+    for item in src.rglob("*"):
+        rel = item.relative_to(src)
+        rel_text = str(rel).replace("\\", "/")
+        if any(fnmatch.fnmatch(rel_text, pattern) for pattern in ignore_patterns):
+            continue
+        target = dst / rel
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        copied += 1
+    return copied
+
+
+def _safe_extract_zip(zip_file: ZipFile, dst: Path) -> list[str]:
+    extracted: list[str] = []
+    root = dst.resolve()
+    for info in zip_file.infolist():
+        name = str(info.filename or "").replace("\\", "/")
+        parts = [part for part in name.split("/") if part not in {"", "."}]
+        if not parts or any(part == ".." for part in parts):
+            raise ValueError(f"unsafe zip path: {name}")
+        target = (root / Path(*parts)).resolve()
+        try:
+            inside = target.is_relative_to(root)
+        except AttributeError:  # pragma: no cover - Python < 3.9 fallback
+            inside = str(target).startswith(str(root) + str(Path.sep))
+        if not inside:
+            raise ValueError(f"unsafe zip path: {name}")
+        if info.is_dir() or name.endswith("/"):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zip_file.open(info, "r") as src, target.open("wb") as out:
+            shutil.copyfileobj(src, out)
+        extracted.append(name)
+    return extracted
+
+
+def _sanitize_runtime_package_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe = copy.deepcopy(config if isinstance(config, dict) else {})
+    for secret_key in _CONFIG_SECRET_KEYS + _CONFIG_SECRET_MASK_KEYS:
+        safe[secret_key] = ""
+    for key, value in list(safe.items()):
+        key_text = str(key).lower()
+        if any(token in key_text for token in ("url", "endpoint", "base_url", "webhook", "host")):
+            if str(value or "").strip():
+                safe[key] = ""
+    for row in _as_list(safe.get("model_pool")):
+        if isinstance(row, dict):
+            for secret_key in _CONFIG_SECRET_KEYS + _CONFIG_SECRET_MASK_KEYS:
+                row[secret_key] = ""
+            for key, value in list(row.items()):
+                key_text = str(key).lower()
+                if any(token in key_text for token in ("url", "endpoint", "base_url", "webhook", "host")) and str(value or "").strip():
+                    row[key] = ""
+    return safe
+
+
+def _zip_write_path(zip_file: ZipFile, file_path: Path, arcname: str) -> None:
+    if not file_path.exists() or not file_path.is_file():
+        return
+    zip_file.write(file_path, arcname.replace("\\", "/"))
+
+
+def _zip_write_json(zip_file: ZipFile, arcname: str, payload: Any) -> None:
+    zip_file.writestr(arcname.replace("\\", "/"), _json_bytes(payload, compact=False))
+
+
+def _merge_sqlite_store_file(target: Path, incoming: Path, *, strategy: str = "stack") -> dict[str, Any]:
+    strategy = _runtime_merge_strategy(strategy)
+    if not incoming.exists():
+        return {"ok": False, "error": "incoming_missing", "target": str(target), "incoming": str(incoming)}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        shutil.copy2(incoming, target)
+        return {"ok": True, "mode": "copied_new_sqlite", "inserted": 0, "updated": 0, "skipped": 0, "target": str(target)}
+    inserted = 0
+    updated = 0
+    skipped = 0
+    errors: list[str] = []
+    src = sqlite3.connect(str(incoming))
+    dst = sqlite3.connect(str(target))
+    try:
+        src.row_factory = sqlite3.Row
+        dst.row_factory = sqlite3.Row
+        src_tables = {str(row[0]) for row in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        dst_tables = {str(row[0]) for row in dst.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in sorted(src_tables & dst_tables):
+            if table.startswith("sqlite_"):
+                continue
+            columns = [str(row[1]) for row in dst.execute(f"PRAGMA table_info({table})")]
+            src_columns = [str(row[1]) for row in src.execute(f"PRAGMA table_info({table})")]
+            common = [col for col in columns if col in src_columns]
+            if not common:
+                continue
+            key_candidates = [col for col in ("id", "structure_db_id", "owner_structure_id", "key", "name") if col in common]
+            if not key_candidates:
+                skipped += int(src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+                continue
+            key_col = key_candidates[0]
+            placeholders = ",".join("?" for _ in common)
+            update_clause = ",".join(f"{col}=?" for col in common)
+            for row in src.execute(f"SELECT {','.join(common)} FROM {table}"):
+                incoming_row = {col: row[col] for col in common}
+                key = incoming_row.get(key_col)
+                existing = dst.execute(f"SELECT {','.join(common)} FROM {table} WHERE {key_col}=?", (key,)).fetchone()
+                if existing is None:
+                    dst.execute(f"INSERT INTO {table} ({','.join(common)}) VALUES ({placeholders})", [incoming_row.get(col) for col in common])
+                    inserted += 1
+                    continue
+                if strategy == "retreat":
+                    skipped += 1
+                    continue
+                if strategy == "overwrite":
+                    merged_row = incoming_row
+                else:
+                    existing_row = {col: existing[col] for col in common}
+                    merged_row = copy.deepcopy(existing_row)
+                    if "payload" in common:
+                        old_payload, old_codec = _sqlite_decode_payload(existing_row.get("payload"), existing_row.get("codec"))
+                        new_payload, new_codec = _sqlite_decode_payload(incoming_row.get("payload"), incoming_row.get("codec"))
+                        if old_payload is not None and new_payload is not None:
+                            codec = old_codec if old_codec != "binary" else new_codec
+                            merged_row["payload"] = _sqlite_encode_payload(
+                                _merge_runtime_payload(old_payload, new_payload, strategy=strategy),
+                                codec=codec,
+                            )
+                            if "codec" in common:
+                                merged_row["codec"] = codec
+                        elif strategy == "competitive":
+                            if len(bytes(incoming_row.get("payload") or b"")) > len(bytes(existing_row.get("payload") or b"")):
+                                merged_row["payload"] = incoming_row.get("payload")
+                    for col in common:
+                        if col == "payload":
+                            continue
+                        if col.endswith("_at") or col.endswith("_ms") or col == "updated_at":
+                            merged_row[col] = max(_as_int(existing_row.get(col), 0), _as_int(incoming_row.get(col), 0)) or incoming_row.get(col) or existing_row.get(col)
+                        elif col not in merged_row or merged_row.get(col) in (None, ""):
+                            merged_row[col] = incoming_row.get(col)
+                dst.execute(f"UPDATE {table} SET {update_clause} WHERE {key_col}=?", [merged_row.get(col) for col in common] + [key])
+                updated += 1
+        dst.commit()
+    except Exception as exc:
+        dst.rollback()
+        errors.append(str(exc))
+    finally:
+        src.close()
+        dst.close()
+    return {
+        "ok": not errors,
+        "mode": "sqlite_merge",
+        "strategy": strategy,
+        "target": str(target),
+        "incoming": str(incoming),
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 
 def _persist_inline_attachment_data_url(data_url: str, *, index: int = 0, name: str = "") -> dict[str, Any]:
@@ -655,7 +1038,7 @@ def _mask_secret(value: str) -> str:
     return f"{text[:3]}...{text[-4:]}"
 
 
-_CONFIG_SECRET_KEYS = ("api_key", "vision_api_key", "multimodal_api_key", "image_generation_api_key")
+_CONFIG_SECRET_KEYS = ("api_key", "vision_api_key", "multimodal_api_key", "image_generation_api_key", "library_review_api_key")
 _CONFIG_SECRET_MASK_KEYS = tuple(f"{key}_masked" for key in _CONFIG_SECRET_KEYS)
 
 
@@ -1556,6 +1939,19 @@ def _canonical_tool_name(name: Any) -> str:
         "查日记": "read_diary",
         "读日记": "read_diary",
         "查看日记": "read_diary",
+        "browse_library": "browse_library",
+        "library_browse": "browse_library",
+        "visit_library": "browse_library",
+        "逛图书馆": "browse_library",
+        "图书馆": "browse_library",
+        "read_book": "read_book",
+        "book_read": "read_book",
+        "读书": "read_book",
+        "阅读": "read_book",
+        "import_book": "import_book",
+        "book_import": "import_book",
+        "导入书籍": "import_book",
+        "add_book": "import_book",
         "schedule_task": "schedule_task",
         "scheduled_task": "schedule_task",
         "timer_task": "schedule_task",
@@ -1667,6 +2063,61 @@ def _summarize_tool_output(output: Any, *, max_chars: int = 600) -> str:
                 parts.append("warnings=" + "；".join(str(item) for item in warnings[:3]))
             if parts:
                 return _naturalize_runtime_text("；".join(parts), max_chars=max_chars)
+        if output.get("mode") in {"browse_library", "read_book", "import_book"} or output.get("book") or output.get("books") or output.get("review"):
+            parts: list[str] = []
+            for key in ("summary", "view", "path"):
+                value = output.get(key)
+                if value not in (None, "", [], {}):
+                    parts.append(f"{key}={_short(value, 260)}")
+            book = _as_dict(output.get("book"))
+            if book:
+                parts.append(
+                    "book="
+                    + json.dumps(
+                        {
+                            "id": book.get("id") or "",
+                            "title": book.get("title") or "",
+                            "progress": book.get("progress") or "",
+                            "cursor": book.get("cursor") or 0,
+                            "char_count": book.get("char_count") or 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            books = _as_list(output.get("books"))
+            if books:
+                compact_books = []
+                for item in books[:8]:
+                    row = _as_dict(item)
+                    compact_books.append({"id": row.get("id") or "", "title": row.get("title") or "", "progress": row.get("progress") or ""})
+                parts.append("books=" + json.dumps(compact_books, ensure_ascii=False))
+            chunk = _as_dict(output.get("chunk"))
+            if chunk:
+                parts.append("chunk=" + json.dumps({"start": chunk.get("start"), "end": chunk.get("end"), "text": _short(chunk.get("text"), 220)}, ensure_ascii=False))
+            review = _as_dict(output.get("review"))
+            if review:
+                understanding = _clean_multiline_text(review.get("understanding") or review.get("summary") or "", max_chars=900)
+                parts.append(
+                    "段落理解="
+                    + json.dumps(
+                        {
+                            "id": review.get("id") or "",
+                            "title": review.get("title") or "",
+                            "range": review.get("range") or {},
+                            "summary": understanding,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            reviews = _as_list(output.get("reviews"))
+            if reviews:
+                compact_reviews = []
+                for item in reviews[:6]:
+                    row = _as_dict(item)
+                    compact_reviews.append({"id": row.get("id") or "", "title": row.get("title") or "", "range": row.get("range") or {}})
+                parts.append("reviews=" + json.dumps(compact_reviews, ensure_ascii=False))
+            if parts:
+                return _naturalize_runtime_text("；".join(parts), max_chars=max_chars)
         if output.get("mode") == "image_generation" or output.get("attachment") or output.get("send_recommendation"):
             parts: list[str] = []
             for key in ("summary", "path", "file", "send_recommendation", "next"):
@@ -1737,6 +2188,11 @@ def _safe_tool_feedback_text(result: dict[str, Any], *, max_chars: int = 420) ->
     if ok:
         text = _summarize_tool_output(result.get("output"), max_chars=max_chars)
         return _sanitize_text_for_ap_ingest(text, max_chars=max_chars)
+    if tool in {"browse_library", "read_book", "import_book"}:
+        text = _summarize_tool_output(result.get("output"), max_chars=max_chars)
+        if text:
+            return _sanitize_text_for_ap_ingest(text, max_chars=max_chars)
+        return "图书馆工具这次没有成功返回可用结果；我需要检查书籍 id、导入路径或阅读参数后再继续。"
     if tool == "weather":
         location = (
             output.get("normalized_location")
@@ -1787,6 +2243,7 @@ def _public_tool_result(result: dict[str, Any], *, max_summary_chars: int = 260)
         "content",
         "note",
         "result",
+        "understanding",
         "normalized_location",
         "location",
         "provider",
@@ -1810,10 +2267,11 @@ def _public_tool_result(result: dict[str, Any], *, max_summary_chars: int = 260)
     if isinstance(output.get("review"), dict):
         review = _as_dict(output.get("review"))
         public_output["review"] = {
-            "ok": bool(review.get("ok")),
-            "send_recommendation": review.get("send_recommendation") or "",
-            "summary": _sanitize_object_display_text(review.get("summary"), max_chars=360),
-            "review_path": review.get("review_path") or "",
+            "id": review.get("id") or "",
+            "title": review.get("title") or "",
+            "book_id": review.get("book_id") or "",
+            "range": review.get("range") or {},
+            "summary": _sanitize_object_display_text(review.get("summary") or review.get("understanding"), max_chars=900),
         }
     if not ok:
         public_output["feedback"] = _safe_tool_feedback_text(result, max_chars=max_summary_chars)
@@ -2546,7 +3004,7 @@ class AgentConfig:
     multimodal_model: str = "gpt-4.1-mini"
     multimodal_api_key: str = ""
     temperature: float = 0.72
-    max_completion_tokens: int = 1600
+    max_completion_tokens: int = 5000
     timeout_sec: int = 120
     retry_count: int = 1
     pre_thought_ticks: int = 5
@@ -2627,9 +3085,18 @@ class AgentConfig:
     scheduled_tasks_enabled: bool = True
     scheduled_task_limit: int = 100
     scheduled_task_warn_ratio: float = 0.9
+    tool_context_top_limit: int = 5
+    library_enabled: bool = True
+    library_chunk_target_chars: int = 30
+    library_after_chunk_ticks: int = 6
+    library_review_model: str = ""
+    library_review_api_key: str = ""
+    library_review_tick_interval: int = 300
+    library_review_text_chars: int = 200000
+    library_book_limit: int = 200
     mcp_enabled: bool = False
     skill_enabled: bool = True
-    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
+    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
     model_pool: list[dict[str, Any]] = field(default_factory=list)
     persona_name: str = _DEFAULT_PERSONA_NAME
     persona_text: str = _DEFAULT_PERSONA_TEXT
@@ -2688,7 +3155,7 @@ class AgentConfig:
         base.llm_wait_tick_max_per_call = max(0, min(80, _as_int(base.llm_wait_tick_max_per_call, 8)))
         base.retry_count = max(0, min(5, _as_int(base.retry_count, 1)))
         base.timeout_sec = max(5, min(600, _as_int(base.timeout_sec, 120)))
-        base.max_completion_tokens = max(256, min(12000, _as_int(base.max_completion_tokens, 1600)))
+        base.max_completion_tokens = max(256, min(12000, _as_int(base.max_completion_tokens, 5000)))
         base.temperature = max(0.0, min(2.0, _as_float(base.temperature, 0.72)))
         base.base_url = _clean_text(base.base_url or "https://api.openai.com", max_chars=800) or "https://api.openai.com"
         request_format = str(base.api_request_format or "auto").strip().lower()
@@ -2799,8 +3266,17 @@ class AgentConfig:
         base.scheduled_tasks_enabled = bool(base.scheduled_tasks_enabled)
         base.scheduled_task_limit = max(5, min(1000, _as_int(base.scheduled_task_limit, 100)))
         base.scheduled_task_warn_ratio = max(0.1, min(1.0, _as_float(base.scheduled_task_warn_ratio, 0.9)))
-        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
-        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
+        base.tool_context_top_limit = max(0, min(20, _as_int(base.tool_context_top_limit, 5)))
+        base.library_enabled = bool(base.library_enabled)
+        base.library_chunk_target_chars = max(10, min(800, _as_int(base.library_chunk_target_chars, 30)))
+        base.library_after_chunk_ticks = max(0, min(80, _as_int(base.library_after_chunk_ticks, 6)))
+        base.library_review_model = _clean_text(base.library_review_model, max_chars=160)
+        base.library_review_api_key = _clean_text(base.library_review_api_key, max_chars=4000)
+        base.library_review_tick_interval = max(10, min(10000, _as_int(base.library_review_tick_interval, 300)))
+        base.library_review_text_chars = max(1000, min(1000000, _as_int(base.library_review_text_chars, 200000)))
+        base.library_book_limit = max(1, min(1000, _as_int(base.library_book_limit, 200)))
+        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
+        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
             if builtin_tool not in base.tool_allowlist:
                 base.tool_allowlist.append(builtin_tool)
         if not isinstance(base.model_pool, list):
@@ -2826,6 +3302,8 @@ class AgentConfig:
             data["multimodal_api_key_masked"] = _mask_secret(self.multimodal_api_key)
             data["image_generation_api_key"] = ""
             data["image_generation_api_key_masked"] = _mask_secret(self.image_generation_api_key)
+            data["library_review_api_key"] = ""
+            data["library_review_api_key_masked"] = _mask_secret(self.library_review_api_key)
         return data
 
 
@@ -2856,6 +3334,8 @@ class LLMGateway:
             return str(self.config.multimodal_api_key or self.config.vision_api_key or self.config.api_key or "").strip()
         if purpose_key in {"group_continuity_gate", "continuity_gate", "group_gate"}:
             return str(self.config.api_key or self.config.multimodal_api_key or self.config.vision_api_key or "").strip()
+        if purpose_key in {"library_review", "book_review", "reading_review"}:
+            return str(self.config.library_review_api_key or self.config.api_key or self.config.multimodal_api_key or self.config.vision_api_key or "").strip()
         return str(self.config.api_key or "").strip()
 
     def _cooldown_key(self, *, model: str, api_key: str, purpose: str, endpoint: str = "") -> str:
@@ -3363,7 +3843,7 @@ class LLMGateway:
             "model": model,
             "messages": messages,
             "temperature": float(self.config.temperature),
-            "max_tokens": int(max_tokens or min(1800, max(256, int(self.config.max_completion_tokens or 1600)))),
+            "max_tokens": int(max_tokens or min(5000, max(256, int(self.config.max_completion_tokens or 5000)))),
         }
         if response_format and self._supports_openai_response_format(model):
             payload["response_format"] = response_format
@@ -3416,7 +3896,7 @@ class LLMGateway:
             "model": model,
             "messages": provider_messages,
             "temperature": float(self.config.temperature),
-            "max_tokens": int(max_tokens or min(1800, max(256, int(self.config.max_completion_tokens or 1600)))),
+            "max_tokens": int(max_tokens or min(5000, max(256, int(self.config.max_completion_tokens or 5000)))),
         }
         if system_text:
             payload["system"] = system_text
@@ -3635,6 +4115,37 @@ class LocalToolRegistry:
                 },
             },
             {
+                "name": "browse_library",
+                "label": "图书馆",
+                "enabled": self._allowed("browse_library"),
+                "description": "查看本地图书馆书籍、书签、阅读状态和近期段落理解。无参数返回书籍列表；带 id/detail 可看目录和理解索引。",
+                "input_schema": {"id": "可选书籍 id", "query": "可选标题/简介搜索", "detail": "true 返回详细信息", "limit": "最多返回多少本"},
+            },
+            {
+                "name": "read_book",
+                "label": "读书",
+                "enabled": self._allowed("read_book"),
+                "description": "从书签或指定位置连续读取多个短片段，每个片段喂给 AP 后运行空 tick；累计到段落回顾 tick 间隔、读到书末或被打断时收口，未打断则调用段落理解模型生成一条可读理解并保存；也可查看原文、段落理解或暂停阅读。工具返回 review 后由下一段 thought 决定继续读、回复或休眠。",
+                "input_schema": {
+                    "book_id": "书籍 id，也可用 id",
+                    "mode": "read | list | reviews | original | stop",
+                    "chars": "可选，本次片段目标长度",
+                    "ticks": "可选，每个短片段输入 AP 后用于消化的空 tick 数",
+                    "review_ticks": "可选，本次阅读批次累计到多少 AP tick 后生成一条段落理解；默认使用配置里的段落回顾 tick 间隔",
+                    "max_chunks": "可选，本次最多连续读多少个短片段；通常不需要设置",
+                    "position": "可选，指定字符位置",
+                    "review_ids": ["可选，一次查看多条段落理解 id"],
+                    "range": {"start": "可选原文起点", "end": "可选原文终点"},
+                },
+            },
+            {
+                "name": "import_book",
+                "label": "导入书籍",
+                "enabled": self._allowed("import_book"),
+                "description": "把本地 txt/md/docx/pdf/doc 等文件或直接文本导入图书馆。doc 旧格式会给出转换提示。",
+                "input_schema": {"path": "本地文件路径", "title": "可选标题", "text": "也可直接传文本内容", "summary": "可选简介", "tags": ["可选标签"]},
+            },
+            {
                 "name": "ap_tick_report",
                 "label": "AP 近期 tick 报告",
                 "enabled": self._allowed("ap_tick_report"),
@@ -3706,9 +4217,10 @@ class LocalToolRegistry:
             },
         ]
 
-    def run(self, name: Any, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+    def run(self, name: Any, args: dict[str, Any] | None = None, *, source: str = "manual_tool", context: dict[str, Any] | None = None) -> dict[str, Any]:
         tool_name = _canonical_tool_name(name)
         args = args if isinstance(args, dict) else {}
+        context = context if isinstance(context, dict) else {}
         started = _now_ms()
         allowed = self._allowed(tool_name)
         if not allowed:
@@ -3735,6 +4247,17 @@ class LocalToolRegistry:
                 output = self.runtime.read_diary(args)
             elif tool_name == "schedule_task":
                 output = self.runtime.schedule_task(args, source=source)
+            elif tool_name == "browse_library":
+                output = self.runtime.browse_library(args)
+            elif tool_name == "read_book":
+                output = self.runtime.read_book(
+                    args,
+                    source=source,
+                    interrupt_checker=context.get("should_stop") if callable(context.get("should_stop")) else None,
+                    progress_emit=context.get("emit") if callable(context.get("emit")) else None,
+                )
+            elif tool_name == "import_book":
+                output = self.runtime.import_book(args, source=source)
             elif tool_name == "ap_tick_report":
                 output = self._tool_ap_tick_report(args)
             elif tool_name == "ap_recall":
@@ -4744,6 +5267,8 @@ class AgentRuntime:
         self._state_lock = threading.RLock()
         self._diary_lock = threading.RLock()
         self._scheduled_tasks_lock = threading.RLock()
+        self._library_lock = threading.RLock()
+        self._runtime_package_lock = threading.RLock()
         self._pending_external_inputs: list[dict[str, Any]] = []
         self._pending_teacher_feedback_labels: list[dict[str, Any]] = []
         self._reload_config_before_adapter_send = True
@@ -5438,6 +5963,48 @@ class AgentRuntime:
         rows.reverse()
         return rows
 
+    def _recent_tool_top_context_text(self) -> str:
+        limit = max(0, min(20, _as_int(self.config.tool_context_top_limit, 5)))
+        if limit <= 0:
+            return ""
+        sections: list[str] = []
+        try:
+            diary = self.read_diary({"limit": limit, "detail": False})
+            entries = []
+            for row in _as_list(_as_dict(diary).get("entries"))[:limit]:
+                item = _as_dict(row)
+                entries.append({"id": item.get("id"), "title": item.get("title"), "importance": item.get("importance"), "preview": _short(item.get("preview") or "", 120)})
+            sections.append("最近日记标题（快捷线索，不代表完整列表）：\n" + (json.dumps(entries, ensure_ascii=False) if entries else "暂无"))
+        except Exception as exc:
+            sections.append(f"最近日记标题读取失败：{exc}")
+        try:
+            tasks_payload = self.scheduled_tasks_public(detail=False, include_inactive=False)
+            tasks = []
+            for row in _as_list(_as_dict(tasks_payload).get("tasks"))[:limit]:
+                item = _as_dict(row)
+                tasks.append({"id": item.get("id"), "summary": item.get("summary"), "next_fire_at": item.get("next_fire_at") or item.get("next_fire_at_ms"), "prompt": _short(item.get("prompt") or "", 120)})
+            sections.append("最近将触发的定时任务（快捷线索，不代表完整列表）：\n" + (json.dumps(tasks, ensure_ascii=False) if tasks else "暂无"))
+        except Exception as exc:
+            sections.append(f"最近定时任务读取失败：{exc}")
+        try:
+            catalog = self._load_library_catalog()
+            reviews: list[dict[str, Any]] = []
+            for book in _as_list(catalog.get("books")):
+                if not isinstance(book, dict):
+                    continue
+                for review in _as_list(book.get("reviews")):
+                    if isinstance(review, dict):
+                        reviews.append({**review, "book_id": book.get("id"), "book_title": book.get("title")})
+            reviews.sort(key=lambda row: _as_int(row.get("created_at_ms"), 0), reverse=True)
+            compact_reviews = []
+            for row in reviews[:limit]:
+                compact_reviews.append({"id": row.get("id"), "title": row.get("title"), "book_id": row.get("book_id"), "book_title": row.get("book_title"), "range": row.get("range"), "preview": _short(row.get("summary") or "", 140)})
+            sections.append("最近书籍段落理解（快捷线索，可用 read_book reviews/original 深挖）：\n" + (json.dumps(compact_reviews, ensure_ascii=False) if compact_reviews else "暂无"))
+        except Exception as exc:
+            sections.append(f"最近书籍段落理解读取失败：{exc}")
+        sections.append("使用说明：这些 top 信息只是最近线索，适合快速拿 id 继续查日记、取消/更新定时任务、继续读书或查看段落理解；如果没有命中，不要硬猜，应调用 read_diary / schedule_task list / browse_library 查询完整列表。")
+        return "\n\n".join(sections)
+
     def _recent_outbound_reply_ledger(self, *, limit: int = 12) -> list[dict[str, Any]]:
         limit = max(1, min(40, int(limit or 12)))
         merged: list[dict[str, Any]] = []
@@ -5972,6 +6539,40 @@ class AgentRuntime:
         _trim_jsonl(_llm_api_log_path(), limit=self.config.event_log_limit)
         return row
 
+    def record_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = dict(payload or {})
+        row.setdefault("ts", _now_ms())
+        row.setdefault("level", "info")
+        row.setdefault("event", "system_event")
+        row["level"] = str(row.get("level") or "info").strip().lower()
+        if row["level"] == "warning":
+            row["level"] = "warn"
+        row["event"] = _short(row.get("event") or "system_event", 120)
+        row["task"] = _short(row.get("task") or row.get("task_name") or "", 120)
+        row["stage"] = _short(row.get("stage") or "", 120)
+        row["task_id"] = _short(row.get("task_id") or "", 100)
+        row["summary"] = _short(row.get("summary") or row.get("message") or "", 500)
+        row["detail"] = _short(row.get("detail") or "", 1200)
+        if "progress" in row:
+            row["progress"] = max(0, min(100, _as_int(row.get("progress"), 0)))
+        if "progress_total" in row:
+            row["progress_total"] = max(0, _as_int(row.get("progress_total"), 0))
+        if "progress_current" in row:
+            row["progress_current"] = max(0, _as_int(row.get("progress_current"), 0))
+        if row.get("error"):
+            row["error"] = _short(row.get("error"), 900)
+            row["level"] = "error"
+        for forbidden in _CONFIG_SECRET_KEYS + _CONFIG_SECRET_MASK_KEYS:
+            row.pop(forbidden, None)
+        _append_jsonl(_system_log_path(), row)
+        _trim_jsonl(_system_log_path(), limit=self.config.event_log_limit)
+        return row
+
+    def _record_tool_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = dict(payload or {})
+        row.setdefault("category", "tool")
+        return self.record_system_log(row)
+
     def get_config_public(self) -> dict[str, Any]:
         self._maybe_reload_config_from_disk()
         return self.config.to_dict(public=True)
@@ -6363,6 +6964,1722 @@ class AgentRuntime:
                 else f"当前日记本共有 {len(entries)} 条，返回 {len(public_entries)} 条标题。"
             ),
             "path": str(_diary_path()),
+        }
+
+    def _load_library_catalog(self) -> dict[str, Any]:
+        raw = _safe_read_json(_library_catalog_path(), {"version": 1, "books": []})
+        if isinstance(raw, list):
+            raw = {"version": 1, "books": raw}
+        if not isinstance(raw, dict):
+            raw = {"version": 1, "books": []}
+        books: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        now = _now_ms()
+        for idx, item in enumerate(_as_list(raw.get("books"))):
+            if not isinstance(item, dict):
+                continue
+            title = _clean_text(item.get("title") or item.get("name") or f"book_{idx + 1}", max_chars=180)
+            book_id = _slug_id(item.get("id") or title or f"book_{idx + 1}", fallback=f"book_{idx + 1}")
+            if book_id in seen:
+                suffix = 2
+                base_id = book_id
+                while f"{base_id}_{suffix}" in seen:
+                    suffix += 1
+                book_id = f"{base_id}_{suffix}"
+            seen.add(book_id)
+            created_at = _as_int(item.get("created_at_ms"), now)
+            updated_at = _as_int(item.get("updated_at_ms"), created_at)
+            text_path = _clean_text(item.get("text_path") or "", max_chars=500)
+            if text_path and not Path(text_path).is_absolute():
+                text_path = str(_library_books_dir() / text_path)
+            if text_path and not Path(text_path).exists():
+                # Keep the catalog row visible, but mark it so users can repair/delete it.
+                warnings = [str(row) for row in _as_list(item.get("warnings")) if str(row or "").strip()]
+                if "正文文件不存在" not in warnings:
+                    warnings.append("正文文件不存在")
+            else:
+                warnings = [str(row) for row in _as_list(item.get("warnings")) if str(row or "").strip()]
+            book = {
+                "id": book_id,
+                "title": title,
+                "summary": _clean_multiline_text(item.get("summary") or item.get("description") or "", max_chars=2000),
+                "source_path": _clean_text(item.get("source_path") or "", max_chars=800),
+                "source_type": _clean_text(item.get("source_type") or "", max_chars=40),
+                "text_path": text_path,
+                "asset_dir": _clean_text(item.get("asset_dir") or "", max_chars=500),
+                "text_chars": max(0, _as_int(item.get("text_chars"), 0)),
+                "cursor": max(0, _as_int(item.get("cursor"), 0)),
+                "read_chars": max(0, _as_int(item.get("read_chars"), 0)),
+                "read_tick_count": max(0, _as_int(item.get("read_tick_count"), 0)),
+                "last_read_at_ms": max(0, _as_int(item.get("last_read_at_ms"), 0)),
+                "status": _clean_text(item.get("status") or "ready", max_chars=40) or "ready",
+                "tags": _optional_string_list(item.get("tags"))[:20],
+                "warnings": warnings[:20],
+                "assets": [row for row in _as_list(item.get("assets"))[:200] if isinstance(row, dict)],
+                "reviews": [row for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
+                "created_at_ms": created_at,
+                "updated_at_ms": updated_at,
+                "source": _clean_text(item.get("source") or "", max_chars=120),
+            }
+            if book["text_chars"] <= 0 and text_path and Path(text_path).exists():
+                try:
+                    book["text_chars"] = len(Path(text_path).read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    pass
+            books.append(book)
+        books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
+        return {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "books": books}
+
+    def _save_library_catalog(self, books: list[dict[str, Any]]) -> None:
+        safe_books: list[dict[str, Any]] = []
+        for item in books:
+            if not isinstance(item, dict):
+                continue
+            safe_books.append(
+                {
+                    "id": _slug_id(item.get("id") or item.get("title") or f"book_{len(safe_books) + 1}", fallback=f"book_{len(safe_books) + 1}"),
+                    "title": _clean_text(item.get("title") or "", max_chars=180) or f"book_{len(safe_books) + 1}",
+                    "summary": _clean_multiline_text(item.get("summary") or "", max_chars=2000),
+                    "source_path": _clean_text(item.get("source_path") or "", max_chars=800),
+                    "source_type": _clean_text(item.get("source_type") or "", max_chars=40),
+                    "text_path": _clean_text(item.get("text_path") or "", max_chars=500),
+                    "asset_dir": _clean_text(item.get("asset_dir") or "", max_chars=500),
+                    "text_chars": max(0, _as_int(item.get("text_chars"), 0)),
+                    "cursor": max(0, _as_int(item.get("cursor"), 0)),
+                    "read_chars": max(0, _as_int(item.get("read_chars"), 0)),
+                    "read_tick_count": max(0, _as_int(item.get("read_tick_count"), 0)),
+                    "last_read_at_ms": max(0, _as_int(item.get("last_read_at_ms"), 0)),
+                    "status": _clean_text(item.get("status") or "ready", max_chars=40) or "ready",
+                    "tags": _optional_string_list(item.get("tags"))[:20],
+                    "warnings": [str(row) for row in _as_list(item.get("warnings"))[:20] if str(row or "").strip()],
+                    "assets": [row for row in _as_list(item.get("assets"))[:200] if isinstance(row, dict)],
+                    "reviews": [row for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
+                    "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+                    "updated_at_ms": _as_int(item.get("updated_at_ms"), _now_ms()),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                }
+            )
+        limit = max(1, int(self.config.library_book_limit or 200))
+        safe_books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
+        for row in safe_books[limit:]:
+            try:
+                path = Path(str(row.get("text_path") or "")).resolve()
+                if path.exists() and path.is_file() and _library_dir().resolve() in path.parents:
+                    path.unlink()
+            except Exception:
+                pass
+        _safe_write_json(_library_catalog_path(), {"version": 1, "updated_at_ms": _now_ms(), "books": safe_books[:limit]})
+
+    def _public_library_review(self, review: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+        item = review if isinstance(review, dict) else {}
+        row = {
+            "id": str(item.get("id") or ""),
+            "title": _clean_text(item.get("title") or "", max_chars=180),
+            "book_id": str(item.get("book_id") or ""),
+            "book_title": _clean_text(item.get("book_title") or "", max_chars=180),
+            "range": _as_dict(item.get("range")),
+            "created_at_ms": _as_int(item.get("created_at_ms"), 0),
+            "preview": _clean_text(item.get("understanding") or item.get("summary") or item.get("content") or "", max_chars=260),
+            "model": _clean_text(item.get("model") or "", max_chars=160),
+            "llm_generated": bool(item.get("llm_generated")),
+        }
+        if detail:
+            row["summary"] = _clean_multiline_text(item.get("understanding") or item.get("summary") or item.get("content") or "", max_chars=60000)
+            row["understanding"] = row["summary"]
+            row["excerpt"] = _clean_multiline_text(item.get("excerpt") or "", max_chars=4000)
+            row["ap_tick_count"] = _as_int(item.get("ap_tick_count"), 0)
+            row["model_status"] = _as_dict(item.get("model_status"))
+        return row
+
+    def _public_library_book(self, book: dict[str, Any], *, detail: bool = False, include_text: bool = False) -> dict[str, Any]:
+        item = book if isinstance(book, dict) else {}
+        cursor = max(0, _as_int(item.get("cursor"), 0))
+        text_chars = max(0, _as_int(item.get("text_chars"), 0))
+        reviews = [row for row in _as_list(item.get("reviews")) if isinstance(row, dict)]
+        row = {
+            "id": str(item.get("id") or ""),
+            "title": _clean_text(item.get("title") or "", max_chars=180),
+            "summary": _clean_text(item.get("summary") or "", max_chars=260),
+            "source_type": str(item.get("source_type") or ""),
+            "source_path": str(item.get("source_path") or ""),
+            "status": str(item.get("status") or "ready"),
+            "text_chars": text_chars,
+            "cursor": cursor,
+            "progress": round(cursor / text_chars, 4) if text_chars else 0,
+            "review_count": len(reviews),
+            "asset_count": len(_as_list(item.get("assets"))),
+            "last_read_at_ms": _as_int(item.get("last_read_at_ms"), 0),
+            "updated_at_ms": _as_int(item.get("updated_at_ms"), 0),
+            "tags": _optional_string_list(item.get("tags"))[:20],
+            "warnings": [str(w) for w in _as_list(item.get("warnings"))[:8] if str(w or "").strip()],
+        }
+        if detail:
+            row["assets"] = _as_list(item.get("assets"))[:80]
+            row["reviews"] = [self._public_library_review(review, detail=False) for review in reviews[-40:]]
+            row["text_path"] = str(item.get("text_path") or "")
+        if include_text:
+            row["text"] = self._read_library_text(item)[:20000]
+        return row
+
+    def _read_library_text(self, book: dict[str, Any]) -> str:
+        path = Path(str(_as_dict(book).get("text_path") or ""))
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+
+    def _chunk_library_text(self, text: str, start: int, target_chars: int | None = None) -> dict[str, Any]:
+        raw = str(text or "")
+        total = len(raw)
+        start = max(0, min(total, int(start or 0)))
+        target = max(10, min(800, int(target_chars or self.config.library_chunk_target_chars or 30)))
+        if start >= total:
+            return {"text": "", "start": start, "end": start, "done": True}
+        limit = min(total, start + target)
+        punctuation = "。！？!?；;\n\r\t 　.：:"
+        end = limit
+        search_end = min(total, start + max(target, int(target * 1.5)))
+        best = -1
+        for idx in range(start + 1, search_end + 1):
+            if raw[idx - 1] in punctuation and idx - start <= max(target + 12, int(target * 1.4)):
+                best = idx
+                if idx - start >= max(6, int(target * 0.75)):
+                    break
+        if best > start:
+            end = best
+        chunk = raw[start:end].strip()
+        if not chunk and end < total:
+            end = min(total, start + target)
+            chunk = raw[start:end].strip()
+        return {"text": chunk, "start": start, "end": end, "done": end >= total}
+
+    def _extract_docx_book(self, path: Path, book_id: str) -> dict[str, Any]:
+        warnings: list[str] = []
+        assets: list[dict[str, Any]] = []
+        parts: list[str] = []
+        asset_dir = _library_assets_dir() / book_id
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        with ZipFile(path, "r") as zf:
+            for name in zf.namelist():
+                if name == "word/document.xml":
+                    root = ET.fromstring(zf.read(name))
+                    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                    for para in root.findall(".//w:p", ns):
+                        texts = [node.text or "" for node in para.findall(".//w:t", ns)]
+                        line = "".join(texts).strip()
+                        if line:
+                            parts.append(line)
+                elif name.startswith("word/media/") and not name.endswith("/"):
+                    data = zf.read(name)
+                    digest = hashlib.sha256(data).hexdigest()[:16]
+                    ext = Path(name).suffix or ".bin"
+                    out = asset_dir / f"{digest}{ext}"
+                    if not out.exists():
+                        out.write_bytes(data)
+                    mime = mimetypes.guess_type(str(out))[0] or ""
+                    assets.append({"name": Path(name).name, "file": str(out), "size": len(data), "sha256": digest, "kind": "image" if mime.startswith("image/") else "asset"})
+        if not parts:
+            warnings.append("docx 未提取到正文文本。")
+        return {"text": "\n".join(parts), "assets": assets, "warnings": warnings, "asset_dir": str(asset_dir)}
+
+    def _extract_pdf_text(self, path: Path) -> dict[str, Any]:
+        warnings: list[str] = []
+        for module_name in ("pypdf", "PyPDF2"):
+            try:
+                module = __import__(module_name)
+                reader = module.PdfReader(str(path))
+                parts = []
+                for idx, page in enumerate(reader.pages[:2000]):
+                    try:
+                        text = page.extract_text() or ""
+                    except Exception as exc:
+                        warnings.append(f"PDF 第 {idx + 1} 页提取失败：{exc}")
+                        text = ""
+                    if text.strip():
+                        parts.append(f"[page {idx + 1}]\n{text.strip()}")
+                return {"text": "\n\n".join(parts), "assets": [], "warnings": warnings, "asset_dir": ""}
+            except ImportError:
+                continue
+            except Exception as exc:
+                warnings.append(f"PDF 解析失败：{exc}")
+                break
+        warnings.append("当前环境没有 pypdf/PyPDF2，PDF 暂时只能登记文件，不能提取正文。")
+        return {"text": "", "assets": [], "warnings": warnings, "asset_dir": ""}
+
+    def _extract_pdf_book(self, path: Path, book_id: str) -> dict[str, Any]:
+        extracted = self._extract_pdf_text(path)
+        text = str(_as_dict(extracted).get("text") or "")
+        warnings = [str(item) for item in _as_list(_as_dict(extracted).get("warnings")) if str(item or "").strip()]
+        assets: list[dict[str, Any]] = []
+        asset_dir = _library_assets_dir() / book_id
+        try:
+            import fitz  # type: ignore
+
+            asset_dir.mkdir(parents=True, exist_ok=True)
+            with fitz.open(str(path)) as doc:
+                for page_index in range(min(len(doc), 2000)):
+                    page = doc[page_index]
+                    for image_index, image in enumerate(page.get_images(full=True)[:80]):
+                        xref = image[0]
+                        try:
+                            image_payload = doc.extract_image(xref)
+                        except Exception as exc:
+                            warnings.append(f"PDF page {page_index + 1} image {image_index + 1} extract failed: {exc}")
+                            continue
+                        data = image_payload.get("image") or b""
+                        if not data:
+                            continue
+                        digest = hashlib.sha256(data).hexdigest()[:16]
+                        ext = "." + str(image_payload.get("ext") or "bin").lstrip(".")
+                        out = asset_dir / f"{digest}{ext}"
+                        if not out.exists():
+                            out.write_bytes(data)
+                        assets.append(
+                            {
+                                "name": f"page_{page_index + 1}_image_{image_index + 1}{ext}",
+                                "file": str(out),
+                                "size": len(data),
+                                "sha256": digest,
+                                "page": page_index + 1,
+                                "kind": "image",
+                            }
+                        )
+        except ImportError:
+            warnings.append("PDF image extraction requires PyMuPDF(fitz); text extraction can still work.")
+        except Exception as exc:
+            warnings.append(f"PDF image extraction failed: {exc}")
+        return {"text": text, "assets": assets, "warnings": warnings, "asset_dir": str(asset_dir) if assets else ""}
+
+    def _extract_book_from_path(self, path: Path, *, book_id: str) -> dict[str, Any]:
+        suffix = path.suffix.lower().lstrip(".")
+        warnings: list[str] = []
+        assets: list[dict[str, Any]] = []
+        asset_dir = ""
+        if suffix in {"txt", "md", "markdown", "json", "csv", "log", "py", "js", "ts", "tsx", "html", "css", "xml", "yaml", "yml"}:
+            text, encoding = _read_text_file_with_fallback(path, max_chars=5_000_000)
+            warnings.append(f"文本编码识别：{encoding}")
+        elif suffix == "docx":
+            extracted = self._extract_docx_book(path, book_id)
+            text = str(extracted.get("text") or "")
+            assets = _as_list(extracted.get("assets"))
+            warnings.extend(str(item) for item in _as_list(extracted.get("warnings")))
+            asset_dir = str(extracted.get("asset_dir") or "")
+        elif suffix == "pdf":
+            extracted = self._extract_pdf_book(path, book_id=book_id)
+            text = str(extracted.get("text") or "")
+            assets = _as_list(extracted.get("assets"))
+            warnings.extend(str(item) for item in _as_list(extracted.get("warnings")))
+            asset_dir = str(extracted.get("asset_dir") or "")
+        elif suffix == "doc":
+            text = ""
+            warnings.append("doc 是旧版二进制格式，当前第一版图书馆不会强行解析；建议另存为 docx/pdf/txt 后导入。")
+        else:
+            text, encoding = _read_text_file_with_fallback(path, max_chars=5_000_000)
+            warnings.append(f"未知扩展名，按文本尝试读取：{encoding}")
+        return {"text": text, "assets": assets, "warnings": warnings, "asset_dir": asset_dir}
+
+    def pick_library_file(self) -> dict[str, Any]:
+        task_id = f"tool_library_pick_file_{_now_ms()}"
+        self._record_tool_log(
+            {
+                "event": "tool_library_file_picker_started",
+                "task": "选择图书文件",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "dialog",
+                "progress": 10,
+                "summary": "正在打开本地文件选择框。",
+            }
+        )
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            path = filedialog.askopenfilename(
+                title="选择要导入图书馆的文件",
+                filetypes=[
+                    ("Readable documents", "*.txt *.md *.markdown *.docx *.pdf *.json *.csv *.log"),
+                    ("Text files", "*.txt *.md *.markdown *.json *.csv *.log"),
+                    ("Word documents", "*.docx"),
+                    ("PDF files", "*.pdf"),
+                    ("All files", "*.*"),
+                ],
+            )
+            root.destroy()
+            if not path:
+                self._record_tool_log(
+                    {
+                        "event": "tool_library_file_picker_cancelled",
+                        "task": "选择图书文件",
+                        "task_id": task_id,
+                        "status": "cancelled",
+                        "stage": "dialog",
+                        "progress": 100,
+                        "summary": "用户取消了文件选择。",
+                    }
+                )
+                return {"ok": False, "cancelled": True, "summary": "已取消选择文件。"}
+            selected = Path(path)
+            result = {"ok": True, "path": str(selected), "title": selected.stem, "summary": f"已选择文件：{selected.name}"}
+            self._record_tool_log(
+                {
+                    "event": "tool_library_file_selected",
+                    "task": "选择图书文件",
+                    "task_id": task_id,
+                    "status": "completed",
+                    "stage": "selected",
+                    "progress": 100,
+                    "summary": result["summary"],
+                    "path": str(selected),
+                }
+            )
+            return result
+        except Exception as exc:
+            self._record_tool_log(
+                {
+                    "event": "tool_library_file_picker_failed",
+                    "task": "选择图书文件",
+                    "task_id": task_id,
+                    "status": "failed",
+                    "stage": "dialog",
+                    "progress": 100,
+                    "summary": "本地文件选择框打开失败。",
+                    "error": str(exc),
+                }
+            )
+            return {"ok": False, "error": str(exc), "summary": "本地文件选择框打开失败。可以手动粘贴文件路径。"}
+
+    def _library_preview_text_from_path(self, path: Path, *, max_chars: int = 12000) -> dict[str, Any]:
+        suffix = path.suffix.lower().lstrip(".")
+        warnings: list[str] = []
+        if suffix in {"txt", "md", "markdown", "json", "csv", "log", "py", "js", "ts", "tsx", "html", "css", "xml", "yaml", "yml", ""}:
+            text, encoding = _read_text_file_with_fallback(path, max_chars=max_chars)
+            warnings.append(f"文本编码识别：{encoding}")
+            return {"text": text[:max_chars], "warnings": warnings}
+        if suffix == "docx":
+            try:
+                parts: list[str] = []
+                with ZipFile(path, "r") as zf:
+                    if "word/document.xml" in zf.namelist():
+                        root = ET.fromstring(zf.read("word/document.xml"))
+                        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                        for para in root.findall(".//w:p", ns):
+                            line = "".join(node.text or "" for node in para.findall(".//w:t", ns)).strip()
+                            if line:
+                                parts.append(line)
+                            if sum(len(part) for part in parts) >= max_chars:
+                                break
+                return {"text": "\n".join(parts)[:max_chars], "warnings": warnings}
+            except Exception as exc:
+                warnings.append(f"docx 预览提取失败：{exc}")
+                return {"text": "", "warnings": warnings}
+        if suffix == "pdf":
+            extracted = self._extract_pdf_text(path)
+            text = str(_as_dict(extracted).get("text") or "")
+            warnings.extend(str(item) for item in _as_list(_as_dict(extracted).get("warnings")) if str(item or "").strip())
+            return {"text": text[:max_chars], "warnings": warnings}
+        text, encoding = _read_text_file_with_fallback(path, max_chars=max_chars)
+        warnings.append(f"未知扩展名，按文本尝试预览：{encoding}")
+        return {"text": text[:max_chars], "warnings": warnings}
+
+    def suggest_library_summary(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        task_id = f"tool_library_summary_{_now_ms()}"
+        title = _clean_text(args.get("title") or args.get("name") or "", max_chars=180)
+        raw_path = str(args.get("path") or args.get("file") or "").strip().strip('"')
+        raw_text = _clean_multiline_text(args.get("text") or args.get("content") or "", max_chars=12000)
+        self._record_tool_log(
+            {
+                "event": "tool_library_summary_started",
+                "task": "生成图书简介",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "prepare",
+                "progress": 5,
+                "summary": f"开始为《{title or Path(raw_path).stem or '未命名书籍'}》生成简介。",
+            }
+        )
+        warnings: list[str] = []
+        preview_text = raw_text
+        source_path = ""
+        if raw_path and not preview_text:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = (_repo_root() / path).resolve()
+            source_path = str(path)
+            if not path.exists() or not path.is_file():
+                self._record_tool_log(
+                    {
+                        "event": "tool_library_summary_failed",
+                        "task": "生成图书简介",
+                        "task_id": task_id,
+                        "status": "failed",
+                        "stage": "extract",
+                        "progress": 100,
+                        "summary": "生成简介失败：文件不存在。",
+                        "error": f"file not found: {path}",
+                    }
+                )
+                return {"ok": False, "error": "file_not_found", "path": str(path), "summary": "没有找到图书文件，无法生成简介。"}
+            preview = self._library_preview_text_from_path(path, max_chars=12000)
+            preview_text = _clean_multiline_text(preview.get("text") or "", max_chars=12000)
+            warnings.extend(str(item) for item in _as_list(preview.get("warnings")) if str(item or "").strip())
+            if not title:
+                title = path.stem
+        if not preview_text.strip():
+            self._record_tool_log(
+                {
+                    "event": "tool_library_summary_failed",
+                    "task": "生成图书简介",
+                    "task_id": task_id,
+                    "status": "failed",
+                    "stage": "extract",
+                    "progress": 100,
+                    "summary": "生成简介失败：没有可读取的文本。",
+                    "error": "empty_preview_text",
+                }
+            )
+            return {"ok": False, "error": "empty_text", "warnings": warnings, "summary": "没有可读取的文本，无法自动生成简介。"}
+        fallback = _short(preview_text, 260)
+        self._record_tool_log(
+            {
+                "event": "tool_library_summary_progress",
+                "task": "生成图书简介",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "llm",
+                "progress": 35,
+                "summary": "正在调用模型生成简介。",
+                "detail": f"preview_chars={len(preview_text)}",
+            }
+        )
+        summary = ""
+        status: dict[str, Any] = {}
+        try:
+            prompt_title = title or Path(source_path).stem or "未命名书籍"
+            raw, status = self.gateway.generate_text(
+                [
+                    {"role": "system", "content": "你是图书馆导入助手。请用中文为书籍生成简洁简介，只输出 1-3 句话，不要剧透过多，不要写项目日志。"},
+                    {"role": "user", "content": f"书名：{prompt_title}\n\n文本预览：\n{preview_text[:10000]}"},
+                ],
+                purpose="library_summary",
+                max_tokens=500,
+            )
+            if status.get("ok"):
+                summary = _clean_multiline_text(raw, max_chars=1000)
+        except Exception as exc:
+            status = {"ok": False, "error": str(exc)}
+        if not summary:
+            summary = fallback
+            warnings.append("模型简介生成未成功，已使用文本开头作为简介。")
+        self._record_tool_log(
+            {
+                "event": "tool_library_summary_completed",
+                "task": "生成图书简介",
+                "task_id": task_id,
+                "status": "completed",
+                "stage": "done",
+                "progress": 100,
+                "summary": "图书简介已生成。" if status.get("ok") else "图书简介已用本地摘要兜底生成。",
+                "detail": _short(summary, 500),
+            }
+        )
+        return {
+            "ok": True,
+            "title": title,
+            "summary": summary,
+            "warnings": warnings,
+            "model_status": status,
+            "path": source_path,
+        }
+
+    def import_book(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.library_enabled:
+            return {"ok": False, "mode": "import_book", "error": "library_disabled", "summary": "图书馆当前未启用。"}
+        now = _now_ms()
+        raw_path = str(args.get("path") or args.get("file") or "").strip().strip('"')
+        raw_text = _clean_multiline_text(args.get("text") or args.get("content") or "", max_chars=5_000_000)
+        title = _clean_text(args.get("title") or args.get("name") or (Path(raw_path).stem if raw_path else "未命名书籍"), max_chars=180) or "未命名书籍"
+        book_id = _slug_id(args.get("id") or title or f"book_{now}", fallback=f"book_{now}")
+        task_id = f"tool_import_book_{book_id}_{now}"
+        self._record_tool_log(
+            {
+                "event": "tool_import_book_started",
+                "task": "导入图书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "prepare",
+                "progress": 5,
+                "summary": f"开始导入《{title}》。",
+                "path": raw_path,
+            }
+        )
+        warnings: list[str] = []
+        assets: list[dict[str, Any]] = []
+        source_type = "text"
+        source_path = ""
+        asset_dir = ""
+        if raw_path:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = (_repo_root() / path).resolve()
+            source_path = str(path)
+            source_type = path.suffix.lower().lstrip(".") or "file"
+            if not path.exists() or not path.is_file():
+                self._record_tool_log(
+                    {
+                        "event": "tool_import_book_failed",
+                        "task": "导入图书",
+                        "task_id": task_id,
+                        "status": "failed",
+                        "stage": "extract",
+                        "progress": 100,
+                        "summary": f"导入《{title}》失败：文件不存在。",
+                        "error": f"file not found: {path}",
+                    }
+                )
+                return {"ok": False, "mode": "import_book", "error": "file_not_found", "path": str(path), "summary": f"没有找到书籍文件：{path}"}
+            self._record_tool_log(
+                {
+                    "event": "tool_import_book_progress",
+                    "task": "导入图书",
+                    "task_id": task_id,
+                    "status": "running",
+                    "stage": "extract",
+                    "progress": 25,
+                    "summary": f"正在提取《{title}》文本和图片资源。",
+                    "path": str(path),
+                }
+            )
+            extracted = self._extract_book_from_path(path, book_id=book_id)
+            text = str(extracted.get("text") or "")
+            warnings.extend(str(item) for item in _as_list(extracted.get("warnings")) if str(item or "").strip())
+            assets = [row for row in _as_list(extracted.get("assets")) if isinstance(row, dict)]
+            asset_dir = str(extracted.get("asset_dir") or "")
+            dest_file = _library_files_dir() / f"{book_id}{path.suffix.lower() or '.txt'}"
+            if not dest_file.exists():
+                try:
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, dest_file)
+                except Exception as exc:
+                    warnings.append(f"原始文件备份失败：{exc}")
+        else:
+            text = raw_text
+        if not text.strip():
+            text = raw_text
+        if not text.strip():
+            self._record_tool_log(
+                {
+                    "event": "tool_import_book_failed",
+                    "task": "导入图书",
+                    "task_id": task_id,
+                    "status": "failed",
+                    "stage": "extract",
+                    "progress": 100,
+                    "summary": f"导入《{title}》失败：没有提取到可阅读文本。",
+                    "error": "empty_text",
+                }
+            )
+            return {"ok": False, "mode": "import_book", "error": "empty_text", "warnings": warnings, "summary": "没有提取到可阅读文本。"}
+        text = text.replace("\x00", "").strip()
+        text_path = _library_books_dir() / f"{book_id}.txt"
+        suffix = 2
+        while text_path.exists():
+            book_id = _slug_id(f"{book_id}_{suffix}", fallback=f"book_{now}_{suffix}")
+            text_path = _library_books_dir() / f"{book_id}.txt"
+            suffix += 1
+        text_path.parent.mkdir(parents=True, exist_ok=True)
+        self._record_tool_log(
+            {
+                "event": "tool_import_book_progress",
+                "task": "导入图书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "write",
+                "progress": 70,
+                "summary": f"正在写入《{title}》图书馆正文。",
+                "detail": f"chars={len(text)} assets={len(assets)}",
+            }
+        )
+        text_path.write_text(text, encoding="utf-8")
+        summary = _clean_multiline_text(args.get("summary") or args.get("description") or _short(text, 260), max_chars=2000)
+        book = {
+            "id": book_id,
+            "title": title,
+            "summary": summary,
+            "source_path": source_path,
+            "source_type": source_type,
+            "text_path": str(text_path),
+            "asset_dir": asset_dir,
+            "text_chars": len(text),
+            "cursor": 0,
+            "read_chars": 0,
+            "read_tick_count": 0,
+            "last_read_at_ms": 0,
+            "status": "ready",
+            "tags": _optional_string_list(args.get("tags"))[:20],
+            "warnings": warnings[:20],
+            "assets": assets[:200],
+            "reviews": [],
+            "created_at_ms": now,
+            "updated_at_ms": now,
+            "source": _clean_text(source, max_chars=120),
+        }
+        with self._library_lock:
+            catalog = self._load_library_catalog()
+            books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+            books = [row for row in books if str(row.get("id") or "") != book_id]
+            books.append(book)
+            self._save_library_catalog(books)
+        self.record_event({"event": "library_book_imported", "id": book_id, "title": title, "chars": len(text), "source": source})
+        self._record_tool_log(
+            {
+                "event": "tool_import_book_completed",
+                "task": "导入图书",
+                "task_id": task_id,
+                "status": "completed",
+                "stage": "done",
+                "progress": 100,
+                "summary": f"已导入《{title}》，正文 {len(text)} 字，图片/附件 {len(assets)} 个。",
+                "detail": "\n".join(warnings[:6]),
+            }
+        )
+        return {
+            "ok": True,
+            "mode": "import_book",
+            "book": self._public_library_book(book, detail=True),
+            "summary": f"已导入书籍《{title}》，正文 {len(text)} 字，图片/附件 {len(assets)} 个。",
+            "warnings": warnings,
+            "path": str(_library_catalog_path()),
+        }
+
+    def browse_library(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.library_enabled:
+            return {"ok": False, "mode": "browse_library", "error": "library_disabled", "summary": "图书馆当前未启用。"}
+        with self._library_lock:
+            catalog = self._load_library_catalog()
+            books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+        book_id = str(args.get("id") or args.get("book_id") or "").strip()
+        query = _plain_compact_text(args.get("query") or args.get("q") or "", max_chars=200).lower()
+        detail = bool(args.get("detail")) or bool(book_id)
+        limit = max(1, min(200, _as_int(args.get("limit"), 60)))
+        if book_id:
+            books = [row for row in books if str(row.get("id") or "") == book_id]
+        elif query:
+            books = [
+                row
+                for row in books
+                if query in _plain_compact_text(row.get("title") or "", max_chars=240).lower()
+                or query in _plain_compact_text(row.get("summary") or "", max_chars=500).lower()
+            ]
+        rows = [self._public_library_book(row, detail=detail) for row in books[:limit]]
+        return {
+            "ok": True,
+            "mode": "browse_library",
+            "view": "detail" if detail else "list",
+            "books": rows,
+            "count": len(rows),
+            "total": len(_as_list(catalog.get("books"))),
+            "path": str(_library_catalog_path()),
+            "summary": f"图书馆共有 {len(_as_list(catalog.get('books')))} 本书，返回 {len(rows)} 本。",
+        }
+
+    def _library_find_book(self, books: list[dict[str, Any]], args: dict[str, Any]) -> dict[str, Any] | None:
+        book_id = str(args.get("book_id") or args.get("id") or "").strip()
+        title = _plain_compact_text(args.get("title") or "", max_chars=220).lower()
+        if book_id:
+            for row in books:
+                if str(row.get("id") or "") == book_id:
+                    return row
+        if title:
+            for row in books:
+                row_title = _plain_compact_text(row.get("title") or "", max_chars=220).lower()
+                if title == row_title or title in row_title or row_title in title:
+                    return row
+        return books[0] if len(books) == 1 else None
+
+    def _library_report_digest(self, reports: list[dict[str, Any]], *, max_rows: int = 16) -> list[dict[str, Any]]:
+        digest: list[dict[str, Any]] = []
+        for index, report in enumerate([row for row in reports if isinstance(row, dict)][-max(1, int(max_rows or 16)) :]):
+            packet: dict[str, Any] = {}
+            try:
+                packet = self.build_prompt_packet(reports=[report])
+            except Exception:
+                packet = {}
+            summary = _as_dict(packet.get("summary"))
+            action = _as_dict(packet.get("action"))
+            cfs_rows = []
+            for item in _as_list(packet.get("cognitive_feelings"))[:8]:
+                row = _as_dict(item)
+                name = _clean_text(row.get("name") or row.get("label") or "", max_chars=80)
+                value = row.get("value", row.get("score"))
+                if name:
+                    cfs_rows.append({"name": name, "value": round(_as_float(value, 0.0), 4)})
+            emotion_rows = []
+            emotion = _as_dict(packet.get("emotion"))
+            for item in _as_list(emotion.get("channels") or emotion.get("nt_channels") or emotion.get("items"))[:8]:
+                row = _as_dict(item)
+                name = _clean_text(row.get("name") or row.get("label") or row.get("id") or "", max_chars=80)
+                value = row.get("value", row.get("score", row.get("level")))
+                if name:
+                    emotion_rows.append({"name": name, "value": round(_as_float(value, 0.0), 4)})
+            top_actions = []
+            for item in _as_list(action.get("top_actions"))[:5]:
+                row = _as_dict(item)
+                label = _clean_text(row.get("label") or row.get("display") or row.get("id") or row.get("action_id") or "", max_chars=100)
+                if label:
+                    top_actions.append({"label": label, "drive": round(_as_float(row.get("drive"), 0.0), 4)})
+            digest.append(
+                {
+                    "step": index + 1,
+                    "tick": packet.get("tick_counter") or report.get("tick_counter"),
+                    "mood": _sanitize_llm_visible_text(summary.get("mood_hint") or "", max_chars=220),
+                    "energy": {
+                        "er": round(_as_float(summary.get("total_er"), 0.0), 4),
+                        "ev": round(_as_float(summary.get("total_ev"), 0.0), 4),
+                        "cp": round(_as_float(summary.get("total_cp"), 0.0), 4),
+                    },
+                    "top_objects": _llm_object_hints(_as_list(packet.get("dominant_objects")), limit=6),
+                    "cognitive_feelings": cfs_rows,
+                    "nt_channels": emotion_rows,
+                    "top_actions": top_actions,
+                }
+            )
+        return digest
+
+    def _recent_library_review_context(self, book: dict[str, Any], *, limit: int = 3) -> list[dict[str, Any]]:
+        rows = []
+        for review in _as_list(_as_dict(book).get("reviews"))[-max(0, int(limit or 0)) :]:
+            item = _as_dict(review)
+            if not item:
+                continue
+            rows.append(
+                {
+                    "id": item.get("id") or "",
+                    "title": item.get("title") or "",
+                    "range": item.get("range") or {},
+                    "summary": _clean_multiline_text(item.get("understanding") or item.get("summary") or "", max_chars=900),
+                }
+            )
+        return rows
+
+    def _fallback_library_review_text(self, book: dict[str, Any], chunk: dict[str, Any], reports: list[dict[str, Any]], reason: str = "") -> str:
+        text = str(chunk.get("text") or "")
+        start = _as_int(chunk.get("start"), 0)
+        end = _as_int(chunk.get("end"), start)
+        digest = self._library_report_digest(reports, max_rows=4)
+        hint_lines = []
+        for row in digest[-3:]:
+            mood = _clean_text(row.get("mood") or "", max_chars=160)
+            objects = "、".join(_short(item, 40) for item in _as_list(row.get("top_objects"))[:3])
+            if mood or objects:
+                hint_lines.append(f"- tick {row.get('tick') or '-'}：{mood or '状态较平稳'}；关注 {objects or '本段文本'}")
+        parts = [
+            f"我读到《{book.get('title') or '这本书'}》{start}-{end} 字这一小段，原文主要是：{_short(text, 260)}",
+        ]
+        if hint_lines:
+            parts.append("AP 消化时的主要线索：\n" + "\n".join(hint_lines))
+        if reason:
+            parts.append(f"这条理解由本地兜底生成，原因：{_short(reason, 180)}")
+        return _clean_multiline_text("\n\n".join(parts), max_chars=6000)
+
+    def _make_library_review(self, book: dict[str, Any], chunk: dict[str, Any], reports: list[dict[str, Any]]) -> dict[str, Any]:
+        text = str(chunk.get("text") or "")
+        start = _as_int(chunk.get("start"), 0)
+        end = _as_int(chunk.get("end"), start)
+        book_title = str(book.get("title") or "书籍")
+        model = _clean_text(self.config.library_review_model or self.config.model or "", max_chars=160)
+        digest = self._library_report_digest(reports, max_rows=18)
+        recent_reviews = self._recent_library_review_context(book, limit=3)
+        chunk_count = max(1, len(_as_list(chunk.get("chunks"))))
+        messages = [
+            {
+                "role": "system",
+                "content": "\n".join(
+                    [
+                        "你是 PA 的图书馆段落理解器，只负责把 AP 阅读一个批次文本后的理解转写成人类可读中文。",
+                        "输入会包含：本批次原文、阅读范围、AP 从多次片段输入到最新空 tick 的消化线索、近期已有段落理解。",
+                        "请输出一段可保存的“段落理解”，不是 JSON，也不是调试日志。",
+                        "写作要求：自然、清晰、可被用户阅读；说明这段原文大意、AP 注意到了什么、情绪/认知线索如何辅助理解、可能的疑问或下一步阅读方向。",
+                        "不要机械逐项复述 ER/EV/CP、对象 id、字段名或原始 JSON；可以把它们转成“更贴近现实输入/联想增加/有一点压力”等自然语言。",
+                        "不要冒充已经读完全书，只评价这一个阅读批次，并承接已有段落理解。",
+                    ]
+                ),
+            },
+            {
+                "role": "user",
+                "content": _clean_multiline_text(
+                    "\n\n".join(
+                        [
+                            f"书名：{book_title}",
+                            f"本批次范围：{start}-{end} 字",
+                            f"本批次短片段数：{chunk_count}",
+                            f"本批次原文：\n{text}",
+                            "近期已有段落理解：\n" + (json.dumps(recent_reviews, ensure_ascii=False, indent=2) if recent_reviews else "暂无"),
+                            "AP 阅读消化线索（已压缩，按时间顺序）：\n" + json.dumps(digest, ensure_ascii=False, indent=2),
+                            "请直接输出本批次段落理解正文，建议 2-6 段，必要时可用短标题，但不要输出 JSON。",
+                        ]
+                    ),
+                    max_chars=max(2000, min(120000, int(self.config.library_review_text_chars or 200000))),
+                ),
+            },
+        ]
+        status: dict[str, Any] = {}
+        understanding = ""
+        raw = ""
+        try:
+            raw, status = self.gateway.generate_text(
+                messages,
+                model=model,
+                purpose="library_review",
+                max_tokens=min(5000, max(800, int(self.config.max_completion_tokens or 5000))),
+            )
+            if status.get("ok"):
+                understanding = _clean_multiline_text(raw, max_chars=60000)
+        except Exception as exc:
+            status = {"ok": False, "error": str(exc), "reason": "library_review_exception"}
+        generated_understanding = bool(status.get("ok") and raw.strip() and understanding)
+        if not understanding:
+            understanding = self._fallback_library_review_text(book, chunk, reports, reason=str(status.get("reason") or status.get("error") or "llm_empty"))
+        llm_generated = generated_understanding
+        understanding = _clean_multiline_text(understanding, max_chars=60000)
+        return {
+            "id": f"review_{_now_ms()}_{hashlib.sha1((str(book.get('id')) + str(start) + str(end)).encode('utf-8', errors='ignore')).hexdigest()[:8]}",
+            "book_id": str(book.get("id") or ""),
+            "book_title": book_title,
+            "title": f"{book_title} {start}-{end}",
+            "range": {"start": start, "end": end},
+            "excerpt": text,
+            "summary": understanding,
+            "understanding": understanding,
+            "chunk_count": chunk_count,
+            "ap_tick_count": len(reports),
+            "ap_tick_digest": digest[-18:],
+            "llm_generated": llm_generated,
+            "model": model,
+            "model_status": {k: v for k, v in status.items() if k not in _CONFIG_SECRET_KEYS + _CONFIG_SECRET_MASK_KEYS},
+            "created_at_ms": _now_ms(),
+        }
+
+    def _read_book_batch(
+        self,
+        args: dict[str, Any],
+        *,
+        book: dict[str, Any],
+        text: str,
+        source: str,
+        interrupt_checker: Callable[[], bool] | None,
+        progress_emit: Callable[..., None] | None,
+    ) -> dict[str, Any]:
+        start = max(0, min(len(text), _as_int(args.get("position", args.get("cursor")), _as_int(book.get("cursor"), 0))))
+        book_title = str(book.get("title") or book.get("id") or "未命名书籍")
+        book_id = str(book.get("id") or "")
+        task_id = f"tool_read_book_{book_id}_{_now_ms()}"
+        chunk_chars = max(10, min(800, _as_int(args.get("chars"), self.config.library_chunk_target_chars)))
+        tick_each_chunk = max(0, min(80, _as_int(args.get("ticks"), self.config.library_after_chunk_ticks)))
+        review_target_raw = args.get(
+            "review_ticks",
+            args.get("review_tick_interval", args.get("review_interval_ticks", self.config.library_review_tick_interval)),
+        )
+        review_tick_target = max(10, min(10000, _as_int(review_target_raw, self.config.library_review_tick_interval)))
+        explicit_chunk_limit = args.get("max_chunks", args.get("chunks", args.get("paragraphs", args.get("segments"))))
+        chunk_limit = max(1, min(2000, _as_int(explicit_chunk_limit, 0))) if explicit_chunk_limit is not None else 0
+
+        def progress_percent(current_ticks: int, *, floor: int = 8, span: int = 74) -> int:
+            ratio = min(1.0, max(0.0, current_ticks / max(1, review_tick_target)))
+            return max(0, min(100, floor + int(ratio * span)))
+
+        def combined_chunk(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+            if not chunks:
+                return {"text": "", "start": start, "end": start, "done": start >= len(text), "chunks": []}
+            return {
+                "text": "\n".join(str(chunk.get("text") or "").strip() for chunk in chunks if str(chunk.get("text") or "").strip()),
+                "start": _as_int(chunks[0].get("start"), start),
+                "end": _as_int(chunks[-1].get("end"), start),
+                "done": bool(chunks[-1].get("done")) or _as_int(chunks[-1].get("end"), 0) >= len(text),
+                "chunks": [
+                    {"start": _as_int(chunk.get("start"), 0), "end": _as_int(chunk.get("end"), 0)}
+                    for chunk in chunks
+                ],
+            }
+
+        def emit_progress(stage: str, summary: str, *, progress: int = 0, **extra: Any) -> None:
+            if not callable(progress_emit):
+                return
+            payload = {
+                "library_read_stage": stage,
+                "library_read_progress": max(0, min(100, int(progress or 0))),
+                "active_tool_task": dict(self.state.get("active_tool_task") or {}),
+                **extra,
+            }
+            try:
+                progress_emit("reading_book", summary, **payload)
+            except Exception:
+                try:
+                    progress_emit({"stage": "reading_book", "stage_label": summary, **payload})
+                except Exception:
+                    return
+
+        def set_active(stage: str, summary: str, *, progress: int, current: int, total: int, **extra: Any) -> None:
+            self.state["active_tool_task"] = {
+                "task": "读书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": stage,
+                "progress": max(0, min(100, int(progress))),
+                "summary": summary,
+                "progress_current": max(0, int(current)),
+                "progress_total": max(1, int(total)),
+                "book_id": book_id,
+                "book_title": book_title,
+                "updated_at_ms": _now_ms(),
+                **extra,
+            }
+            self._refresh_compact_status_cache()
+
+        def interrupted(stage: str, chunks: list[dict[str, Any]], reports: list[dict[str, Any]]) -> dict[str, Any] | None:
+            try:
+                should_interrupt = callable(interrupt_checker) and bool(interrupt_checker())
+            except Exception:
+                should_interrupt = False
+            if not should_interrupt:
+                return None
+            batch = combined_chunk(chunks)
+            self._record_tool_log(
+                {
+                    "event": "tool_read_book_interrupted",
+                    "task": "读书",
+                    "task_id": task_id,
+                    "status": "cancelled",
+                    "stage": stage,
+                    "progress": 100,
+                    "summary": f"阅读《{book_title}》被外界输入或停止请求打断，未生成段落理解。",
+                    "book_id": book_id,
+                    "book_title": book_title,
+                    "progress_current": len(reports),
+                    "progress_total": review_tick_target,
+                    "chunk_count": len(chunks),
+                }
+            )
+            self.state["active_tool_task"] = {
+                "task": "读书",
+                "task_id": task_id,
+                "status": "cancelled",
+                "stage": stage,
+                "progress": 100,
+                "summary": f"阅读《{book_title}》被打断，未生成段落理解。",
+                "book_id": book_id,
+                "book_title": book_title,
+                "updated_at_ms": _now_ms(),
+            }
+            self._refresh_compact_status_cache()
+            return {
+                "ok": False,
+                "mode": "read_book",
+                "view": "interrupted",
+                "interrupted": True,
+                "book": self._public_library_book(book, detail=True),
+                "chunk": {"range": {"start": batch.get("start"), "end": batch.get("end")}, "text": batch.get("text") or "", "done": bool(batch.get("done")), "chunk_count": len(chunks)},
+                "ap_tick_count": len(reports),
+                "review_tick_target": review_tick_target,
+                "summary": f"阅读《{book_title}》被外界输入打断，未生成段落理解。",
+            }
+
+        self._record_tool_log(
+            {
+                "event": "tool_read_book_started",
+                "task": "读书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "reading_batch",
+                "progress": 5,
+                "summary": f"开始连续阅读《{book_title}》，目标累计 {review_tick_target} 个 AP tick 后生成段落理解。",
+                "detail": f"起点 {start}；片段目标 {chunk_chars} 字；每片段后空 tick {tick_each_chunk}。",
+                "progress_current": 0,
+                "progress_total": review_tick_target,
+                "book_id": book_id,
+                "book_title": book_title,
+            }
+        )
+        if start >= len(text):
+            with self._library_lock:
+                catalog = self._load_library_catalog()
+                books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+                for row in books:
+                    if str(row.get("id") or "") == book_id:
+                        row["status"] = "finished"
+                        row["updated_at_ms"] = _now_ms()
+                        book = row
+                        break
+                self._save_library_catalog(books)
+            self._record_tool_log(
+                {
+                    "event": "tool_read_book_completed",
+                    "task": "读书",
+                    "task_id": task_id,
+                    "status": "completed",
+                    "stage": "finished",
+                    "progress": 100,
+                    "summary": f"《{book_title}》已经读到末尾。",
+                    "book_id": book_id,
+                    "book_title": book_title,
+                }
+            )
+            return {"ok": True, "mode": "read_book", "view": "finished", "book": self._public_library_book(book, detail=True), "summary": f"《{book_title}》已经读到末尾。"}
+
+        chunks: list[dict[str, Any]] = []
+        reports: list[dict[str, Any]] = []
+        cursor = start
+        ap_error = ""
+
+        try:
+            while len(reports) < review_tick_target and (not chunk_limit or len(chunks) < chunk_limit):
+                stopped = interrupted("before_ap_input", chunks, reports)
+                if stopped:
+                    return stopped
+                chunk = self._chunk_library_text(text, cursor, chunk_chars)
+                chunk_text = str(chunk.get("text") or "")
+                chunk_start = _as_int(chunk.get("start"), cursor)
+                chunk_end = _as_int(chunk.get("end"), chunk_start)
+                if not chunk_text:
+                    break
+                chunks.append(chunk)
+                set_active(
+                    "ap_input",
+                    f"正在阅读《{book_title}》片段 {len(chunks)}，范围 {chunk_start}-{chunk_end} 字。",
+                    progress=progress_percent(len(reports)),
+                    current=len(reports),
+                    total=review_tick_target,
+                    chunk_count=len(chunks),
+                )
+                emit_progress(
+                    "ap_input",
+                    f"正在阅读《{book_title}》片段 {len(chunks)}，范围 {chunk_start}-{chunk_end} 字。",
+                    progress=progress_percent(len(reports)),
+                    ap_tick_count=len(reports),
+                    chunk_count=len(chunks),
+                )
+                self._record_tool_log(
+                    {
+                        "event": "tool_read_book_progress",
+                        "task": "读书",
+                        "task_id": task_id,
+                        "status": "running",
+                        "stage": "ap_input",
+                        "progress": progress_percent(len(reports)),
+                        "summary": f"输入《{book_title}》片段 {len(chunks)}：{chunk_start}-{chunk_end} 字。",
+                        "detail": _short(chunk_text, 500),
+                        "progress_current": len(reports),
+                        "progress_total": review_tick_target,
+                        "chunk_count": len(chunks),
+                        "book_id": book_id,
+                        "book_title": book_title,
+                    }
+                )
+                labels = {
+                    "source": "library_read",
+                    "book_id": book_id,
+                    "book_title": book_title,
+                    "range": {"start": chunk_start, "end": chunk_end},
+                    "batch_start": start,
+                    "chunk_index": len(chunks),
+                }
+                reports.append(self._run_app_cycle(text=f"[读书]《{book_title}》片段 {chunk_start}-{chunk_end}：{chunk_text}", labels=labels))
+                cursor = chunk_end
+                stopped = interrupted("after_ap_input", chunks, reports)
+                if stopped:
+                    return stopped
+
+                for index in range(tick_each_chunk):
+                    reports.append(self._run_app_cycle(text=None, labels={"source": "library_read_empty_tick", "book_id": book_id, "chunk_index": len(chunks)}))
+                    current_tick = len(reports)
+                    progress = progress_percent(current_tick)
+                    set_active(
+                        "empty_ticks",
+                        f"AP 正在消化《{book_title}》片段 {len(chunks)}：累计 tick {current_tick}/{review_tick_target}。",
+                        progress=progress,
+                        current=current_tick,
+                        total=review_tick_target,
+                        chunk_count=len(chunks),
+                    )
+                    emit_progress(
+                        "empty_ticks",
+                        f"AP 正在消化《{book_title}》片段 {len(chunks)}：累计 tick {current_tick}/{review_tick_target}。",
+                        progress=progress,
+                        ap_tick_count=current_tick,
+                        chunk_count=len(chunks),
+                    )
+                    if current_tick <= 3 or current_tick >= review_tick_target or current_tick % 10 == 0 or index == tick_each_chunk - 1:
+                        self._record_tool_log(
+                            {
+                                "event": "tool_read_book_tick",
+                                "task": "读书",
+                                "task_id": task_id,
+                                "status": "running",
+                                "stage": "empty_ticks",
+                                "progress": progress,
+                                "summary": f"AP 空 tick 累计 {current_tick}/{review_tick_target}，正在消化《{book_title}》。",
+                                "progress_current": current_tick,
+                                "progress_total": review_tick_target,
+                                "chunk_count": len(chunks),
+                                "book_id": book_id,
+                                "book_title": book_title,
+                            }
+                        )
+                    stopped = interrupted("empty_ticks", chunks, reports)
+                    if stopped:
+                        return stopped
+                if bool(chunk.get("done")) or cursor >= len(text):
+                    break
+        except Exception as exc:
+            ap_error = str(exc)
+            self.record_event({"event": "library_read_ap_error", "book_id": book_id, "error": ap_error})
+            self._record_tool_log(
+                {
+                    "event": "tool_read_book_ap_error",
+                    "task": "读书",
+                    "task_id": task_id,
+                    "status": "running",
+                    "stage": "ap_tick_error",
+                    "progress": progress_percent(len(reports)),
+                    "summary": f"阅读《{book_title}》时 AP tick 报错；若已有阅读片段，仍会尝试保存段落理解。",
+                    "error": ap_error,
+                    "book_id": book_id,
+                    "book_title": book_title,
+                    "progress_current": len(reports),
+                    "progress_total": review_tick_target,
+                    "chunk_count": len(chunks),
+                }
+            )
+
+        if not chunks:
+            return {
+                "ok": False,
+                "mode": "read_book",
+                "view": "read",
+                "error": "empty_read_batch" if not ap_error else "ap_tick_failed",
+                "book": self._public_library_book(book, detail=True),
+                "summary": f"没有读到可生成段落理解的内容。{('AP 报错：' + _short(ap_error, 180)) if ap_error else ''}",
+            }
+
+        batch_chunk = combined_chunk(chunks)
+        batch_start = _as_int(batch_chunk.get("start"), start)
+        batch_end = _as_int(batch_chunk.get("end"), batch_start)
+        set_active(
+            "review",
+            f"正在生成《{book_title}》{batch_start}-{batch_end} 字这一批次的段落理解。",
+            progress=86,
+            current=len(reports),
+            total=review_tick_target,
+            chunk_count=len(chunks),
+        )
+        emit_progress("review", f"正在生成《{book_title}》这一批次的段落理解。", progress=86, ap_tick_count=len(reports), chunk_count=len(chunks))
+        self._record_tool_log(
+            {
+                "event": "tool_read_book_review_started",
+                "task": "读书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "review",
+                "progress": 86,
+                "summary": f"开始生成《{book_title}》{batch_start}-{batch_end} 字这一批次的段落理解。",
+                "progress_current": len(reports),
+                "progress_total": review_tick_target,
+                "chunk_count": len(chunks),
+                "book_id": book_id,
+                "book_title": book_title,
+            }
+        )
+        stopped = interrupted("before_review", chunks, reports)
+        if stopped:
+            return stopped
+
+        review = self._make_library_review(book, batch_chunk, reports)
+        self._record_tool_log(
+            {
+                "event": "tool_read_book_review_completed",
+                "task": "读书",
+                "task_id": task_id,
+                "status": "running",
+                "stage": "review_done",
+                "progress": 92,
+                "summary": f"《{book_title}》本批次段落理解已生成。",
+                "detail": _short(review.get("summary") or "", 1200),
+                "progress_current": len(reports),
+                "progress_total": review_tick_target,
+                "chunk_count": len(chunks),
+                "book_id": book_id,
+                "book_title": book_title,
+                "review_id": str(review.get("id") or ""),
+            }
+        )
+        emit_progress("review_done", f"《{book_title}》本批次段落理解已生成。", progress=92, ap_tick_count=len(reports), chunk_count=len(chunks), review_id=str(review.get("id") or ""))
+
+        try:
+            review_digest_report = self._run_app_cycle(
+                text=f"[读书理解]《{book_title}》{batch_start}-{batch_end}：{_clean_multiline_text(review.get('summary') or '', max_chars=4000)}",
+                labels={"source": "library_review_digest", "book_id": book_id, "review_id": review.get("id")},
+            )
+            reports.append(review_digest_report)
+        except Exception as exc:
+            self._record_tool_log(
+                {
+                    "event": "tool_read_book_review_digest_failed",
+                    "task": "读书",
+                    "task_id": task_id,
+                    "status": "running",
+                    "stage": "review_digest",
+                    "progress": 94,
+                    "summary": "段落理解回灌 AP 时失败；理解文本已保留。",
+                    "error": str(exc),
+                    "book_id": book_id,
+                    "book_title": book_title,
+                    "review_id": str(review.get("id") or ""),
+                }
+            )
+
+        with self._library_lock:
+            catalog = self._load_library_catalog()
+            books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+            for row in books:
+                if str(row.get("id") or "") == book_id:
+                    row["cursor"] = batch_end
+                    row["read_chars"] = max(_as_int(row.get("read_chars"), 0), batch_end)
+                    row["read_tick_count"] = _as_int(row.get("read_tick_count"), 0) + len(reports)
+                    row["last_read_at_ms"] = _now_ms()
+                    row["updated_at_ms"] = _now_ms()
+                    row["status"] = "finished" if bool(batch_chunk.get("done")) else "reading"
+                    review["ap_tick_count"] = len(reports)
+                    review["chunk_count"] = len(chunks)
+                    review["review_tick_target"] = review_tick_target
+                    row_reviews = [r for r in _as_list(row.get("reviews")) if isinstance(r, dict)]
+                    row_reviews.append(review)
+                    row["reviews"] = row_reviews[-300:]
+                    book = row
+                    break
+            self._save_library_catalog(books)
+
+        self._remember_snapshot({"kind": "library_review", "created_at_ms": _now_ms(), "book_id": book_id, "review": review})
+        self.record_event(
+            {
+                "event": "library_book_read",
+                "id": book_id,
+                "range": review.get("range"),
+                "ticks": len(reports),
+                "chunks": len(chunks),
+                "review_tick_target": review_tick_target,
+                "source": source,
+            }
+        )
+        self.state["active_tool_task"] = {
+            "task": "读书",
+            "task_id": task_id,
+            "status": "completed",
+            "stage": "done",
+            "progress": 100,
+            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {len(reports)} 个 AP tick，保存 1 条段落理解。",
+            "progress_current": len(reports),
+            "progress_total": review_tick_target,
+            "chunk_count": len(chunks),
+            "book_id": book_id,
+            "book_title": book_title,
+            "updated_at_ms": _now_ms(),
+        }
+        self._refresh_compact_status_cache()
+        emit_progress("done", f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。", progress=100, ap_tick_count=len(reports), chunk_count=len(chunks), review_id=str(review.get("id") or ""))
+        self._record_tool_log(
+            {
+                "event": "tool_read_book_completed",
+                "task": "读书",
+                "task_id": task_id,
+                "status": "completed",
+                "stage": "done",
+                "progress": 100,
+                "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。",
+                "detail": _short(review.get("summary") or "", 900),
+                "progress_current": len(reports),
+                "progress_total": review_tick_target,
+                "chunk_count": len(chunks),
+                "book_id": book_id,
+                "book_title": book_title,
+                "review_id": str(review.get("id") or ""),
+            }
+        )
+        return {
+            "ok": True,
+            "mode": "read_book",
+            "view": "read",
+            "book": self._public_library_book(book, detail=True),
+            "chunk": {
+                "range": review.get("range"),
+                "text": str(batch_chunk.get("text") or ""),
+                "done": bool(batch_chunk.get("done")),
+                "chunk_count": len(chunks),
+                "chunks": batch_chunk.get("chunks") or [],
+            },
+            "review": self._public_library_review(review, detail=True),
+            "ap_tick_count": len(reports),
+            "review_tick_target": review_tick_target,
+            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {len(reports)} 个 AP tick，并记录 1 条段落理解。",
+        }
+
+    def read_book(
+        self,
+        args: dict[str, Any] | None = None,
+        *,
+        source: str = "manual_tool",
+        interrupt_checker: Callable[[], bool] | None = None,
+        progress_emit: Callable[..., None] | None = None,
+    ) -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not self.config.library_enabled:
+            return {"ok": False, "mode": "read_book", "error": "library_disabled", "summary": "图书馆当前未启用。"}
+        mode = str(args.get("mode") or args.get("operation") or "read").strip().lower()
+        aliases = {"browse": "list", "review": "reviews", "understanding": "reviews", "text": "original", "pause": "stop", "停止": "stop", "阅读": "read", "读": "read"}
+        mode = aliases.get(mode, mode)
+        with self._library_lock:
+            catalog = self._load_library_catalog()
+            books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+            book = self._library_find_book(books, args)
+        if mode in {"list", "books"} or not book:
+            result = self.browse_library(args)
+            if not book and mode not in {"list", "books"}:
+                result["ok"] = False
+                result["error"] = "book_not_found"
+                result["summary"] = "没有找到要阅读的书籍；请先 browse_library 查看书籍 id。"
+            return result
+        if mode == "stop":
+            with self._library_lock:
+                catalog = self._load_library_catalog()
+                books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+                for row in books:
+                    if str(row.get("id") or "") == str(book.get("id") or ""):
+                        row["status"] = "paused"
+                        row["updated_at_ms"] = _now_ms()
+                        book = row
+                        break
+                self._save_library_catalog(books)
+            return {"ok": True, "mode": "read_book", "view": "stop", "book": self._public_library_book(book, detail=True), "summary": f"已暂停阅读《{book.get('title')}》。"}
+        reviews = [row for row in _as_list(book.get("reviews")) if isinstance(row, dict)]
+        if mode in {"reviews", "review_list"}:
+            ids = _optional_string_list(args.get("review_ids") or args.get("ids"))
+            if ids:
+                selected = [row for row in reviews if str(row.get("id") or "") in ids]
+                detail = True
+            else:
+                selected = reviews[-max(1, min(80, _as_int(args.get("limit"), 20))) :]
+                detail = bool(args.get("detail"))
+            return {
+                "ok": True,
+                "mode": "read_book",
+                "view": "reviews",
+                "book": self._public_library_book(book, detail=False),
+                "reviews": [self._public_library_review(row, detail=detail) for row in selected],
+                "summary": f"返回《{book.get('title')}》的 {len(selected)} 条段落理解。",
+            }
+        text = self._read_library_text(book)
+        if not text:
+            return {"ok": False, "mode": "read_book", "error": "text_missing", "book": self._public_library_book(book), "summary": "这本书的正文文件不存在或无法读取。"}
+        if mode == "original":
+            range_args = _as_dict(args.get("range"))
+            start = max(0, _as_int(args.get("start", range_args.get("start")), _as_int(book.get("cursor"), 0)))
+            end = _as_int(args.get("end", range_args.get("end")), start + max(100, _as_int(args.get("chars"), 1000)))
+            end = max(start, min(len(text), end))
+            return {
+                "ok": True,
+                "mode": "read_book",
+                "view": "original",
+                "book": self._public_library_book(book, detail=False),
+                "range": {"start": start, "end": end},
+                "text": text[start:end],
+                "summary": f"返回《{book.get('title')}》原文 {start}-{end}。",
+            }
+        return self._read_book_batch(
+            args,
+            book=book,
+            text=text,
+            source=source,
+            interrupt_checker=interrupt_checker,
+            progress_emit=progress_emit,
+        )
+
+    def library_public(self, *, detail: bool = False, book_id: str = "") -> dict[str, Any]:
+        args: dict[str, Any] = {"detail": detail, "limit": 200}
+        if book_id:
+            args["id"] = book_id
+        return self.browse_library(args)
+
+    def delete_library_book(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        ids = _optional_string_list(payload.get("ids"))
+        single_id = str(payload.get("id") or payload.get("book_id") or "").strip()
+        if single_id:
+            ids.append(single_id)
+        if not ids:
+            return {"ok": False, "error": "ids_required", "summary": "删除书籍需要 id 或 ids。"}
+        delete_files = payload.get("delete_files", True) is not False
+        removed: list[dict[str, Any]] = []
+        with self._library_lock:
+            catalog = self._load_library_catalog()
+            books = [row for row in _as_list(catalog.get("books")) if isinstance(row, dict)]
+            kept = []
+            for row in books:
+                if str(row.get("id") or "") in ids:
+                    removed.append(row)
+                else:
+                    kept.append(row)
+            if delete_files:
+                for row in removed:
+                    for key in ("text_path",):
+                        try:
+                            path = Path(str(row.get(key) or "")).resolve()
+                            if path.exists() and _library_dir().resolve() in path.parents:
+                                path.unlink()
+                        except Exception:
+                            pass
+            self._save_library_catalog(kept)
+        self.record_event({"event": "library_books_deleted", "ids": ids, "removed_count": len(removed)})
+        result = self.library_public(detail=False)
+        result.update({"removed_books": [self._public_library_book(row, detail=False) for row in removed], "summary": f"已删除 {len(removed)} 本书。"})
+        return result
+
+    def runtime_packages_public(self) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for path in sorted(_runtime_packages_dir().glob("*.zip"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
+            info = _file_info(path)
+            manifest: dict[str, Any] = {}
+            try:
+                with ZipFile(path, "r") as zf:
+                    manifest = json.loads(zf.read("manifest.json").decode("utf-8", errors="replace"))
+            except Exception:
+                manifest = {}
+            rows.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "bytes": info.get("bytes", 0),
+                    "updated_at_ms": info.get("updated_at_ms", 0),
+                    "manifest": manifest,
+                }
+            )
+        return {
+            "ok": True,
+            "packages": rows[:80],
+            "count": len(rows),
+            "dir": str(_runtime_packages_dir()),
+            "strategies": [
+                {"value": "stack", "label": "叠加", "risk": "同名数据库/条目保留并合并，数值权重相加。适合合并技能包，但可能增强旧偏差。"},
+                {"value": "stack_average", "label": "柔和叠加", "risk": "同名数值取平均，更稳但学习强度较弱。"},
+                {"value": "overwrite", "label": "覆盖", "risk": "同名条目以导入包为准。适合迁移完整人格包，风险最高。"},
+                {"value": "competitive", "label": "竞争合并", "risk": "同名数值/内容保留更强或更完整者。适合压缩冲突，但可能丢掉弱信号。"},
+                {"value": "retreat", "label": "退避", "risk": "本地已有内容优先，只补本地没有的信息。最保守。"},
+            ],
+        }
+
+    def _runtime_export_manifest(self, *, name: str, note: str, include_hdb: bool, include_state: bool, include_agent_data: bool, include_library: bool) -> dict[str, Any]:
+        return {
+            "kind": "psyarch_agent_runtime_package",
+            "version": 1,
+            "name": name,
+            "note": note,
+            "created_at_ms": _now_ms(),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "pa_version_hint": "prototype",
+            "include_hdb": include_hdb,
+            "include_state": include_state,
+            "include_agent_data": include_agent_data,
+            "include_library": include_library,
+            "merge_strategies": ["stack", "stack_average", "overwrite", "competitive", "retreat"],
+            "privacy": {
+                "config_secrets_redacted": True,
+                "logs_excluded": True,
+                "adapter_history_excluded": True,
+                "large_generated_media_excluded": True,
+            },
+        }
+
+    def export_runtime_package(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        name = _clean_text(payload.get("name") or f"PA runtime {time.strftime('%Y%m%d-%H%M%S')}", max_chars=80)
+        note = _clean_text(payload.get("note") or "", max_chars=800)
+        package_id = _slug_id(payload.get("id") or name or f"runtime_{_now_ms()}", fallback=f"runtime_{_now_ms()}")
+        task_id = f"runtime_export_{package_id}_{_now_ms()}"
+        include_hdb = payload.get("include_hdb", True) is not False
+        include_state = payload.get("include_state", True) is not False
+        include_agent_data = payload.get("include_agent_data", True) is not False
+        include_library = payload.get("include_library", True) is not False
+        manifest = self._runtime_export_manifest(name=name, note=note, include_hdb=include_hdb, include_state=include_state, include_agent_data=include_agent_data, include_library=include_library)
+        self.record_system_log({"event": "runtime_package_export_started", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "prepare", "progress": 0, "summary": f"开始导出运行包：{name}"})
+        try:
+            with self._runtime_package_lock:
+                path = _runtime_packages_dir() / f"{package_id}_{time.strftime('%Y%m%d-%H%M%S')}.zip"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "zip_open", "progress": 15, "summary": "已创建运行包文件，开始写入 manifest、脱敏配置和运行数据。"})
+                with ZipFile(path, "w", compression=ZIP_DEFLATED, compresslevel=5) as zf:
+                    _zip_write_json(zf, "manifest.json", manifest)
+                    _zip_write_json(zf, "agent/config.redacted.json", _sanitize_runtime_package_config(self.config.to_dict(public=False)))
+                    self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "config", "progress": 30, "summary": "已写入 manifest 与脱敏配置。"})
+                    if include_state and _state_path().exists():
+                        _zip_write_path(zf, _state_path(), "agent/agent_state.json")
+                        self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "state", "progress": 45, "summary": "已写入 AP/PA 运行态。"})
+                    if include_agent_data:
+                        for src, arc in (
+                            (_diary_path(), "agent/agent_diary.json"),
+                            (_scheduled_tasks_path(), "agent/agent_scheduled_tasks.json"),
+                            (_stickers_catalog_path(), "agent/agent_stickers.json"),
+                        ):
+                            _zip_write_path(zf, src, arc)
+                        self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "agent_data", "progress": 60, "summary": "已写入日记、定时任务和表情索引。"})
+                    if include_library and _library_dir().exists():
+                        for file_path in _library_dir().rglob("*"):
+                            if file_path.is_file():
+                                rel = file_path.relative_to(_library_dir()).as_posix()
+                                if rel.endswith(".jsonl") or rel.endswith(".gz"):
+                                    continue
+                                _zip_write_path(zf, file_path, f"library/{rel}")
+                        self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "library", "progress": 75, "summary": "已写入图书馆数据。"})
+                    if include_hdb and (_repo_root() / "hdb" / "data").exists():
+                        for file_path in (_repo_root() / "hdb" / "data").rglob("*"):
+                            if file_path.is_file():
+                                rel = file_path.relative_to(_repo_root() / "hdb" / "data").as_posix()
+                                if rel.endswith(".jsonl") or rel.endswith(".gz") or ".backup" in rel:
+                                    continue
+                                _zip_write_path(zf, file_path, f"hdb/data/{rel}")
+                        self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "hdb", "progress": 90, "summary": "已写入 HDB 数据。"})
+                self.record_event({"event": "runtime_package_exported", "path": str(path), "include_hdb": include_hdb, "include_library": include_library})
+            _trim_output_files()
+            info = _file_info(path)
+            self.record_system_log({"event": "runtime_package_exported", "task": "导出运行包", "task_id": task_id, "status": "done", "stage": "completed", "progress": 100, "summary": f"运行包导出完成：{path.name}", "path": str(path), "bytes": info.get("bytes")})
+            return {"ok": True, "mode": "runtime_package_export", "task_id": task_id, "package": {"path": str(path), "name": path.name, **info, "manifest": manifest}, "summary": f"已导出运行包：{path.name}"}
+        except Exception as exc:
+            self.record_system_log({"event": "runtime_package_export_failed", "task": "导出运行包", "task_id": task_id, "status": "failed", "stage": "failed", "progress": 100, "summary": "运行包导出失败。", "error": str(exc)})
+            raise
+
+    def _merge_json_file_from_package(self, target: Path, incoming: Path, *, strategy: str) -> dict[str, Any]:
+        old_payload = _safe_read_json(target, None)
+        new_payload = _safe_read_json(incoming, None)
+        if old_payload is None:
+            if incoming.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(incoming, target)
+            return {"ok": True, "mode": "copied_json", "target": str(target)}
+        merged = _merge_runtime_payload(old_payload, new_payload, strategy=strategy)
+        _safe_write_json(target, merged)
+        return {"ok": True, "mode": "merged_json", "target": str(target), "strategy": _runtime_merge_strategy(strategy)}
+
+    def _import_package_files(self, root: Path, *, strategy: str, include_hdb: bool, include_state: bool, include_agent_data: bool, include_library: bool, task_id: str = "") -> list[dict[str, Any]]:
+        ops: list[dict[str, Any]] = []
+        if include_state and (root / "agent" / "agent_state.json").exists():
+            ops.append(self._merge_json_file_from_package(_state_path(), root / "agent" / "agent_state.json", strategy=strategy))
+            self.record_system_log({"event": "runtime_package_merge_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "state", "progress": 55, "summary": "已合并 AP/PA 运行态。"})
+            self.state = self._load_state()
+            self._refresh_compact_status_cache()
+        if include_agent_data:
+            for rel, target in (
+                ("agent/agent_diary.json", _diary_path()),
+                ("agent/agent_scheduled_tasks.json", _scheduled_tasks_path()),
+                ("agent/agent_stickers.json", _stickers_catalog_path()),
+            ):
+                incoming = root / rel
+                if incoming.exists():
+                    ops.append(self._merge_json_file_from_package(target, incoming, strategy=strategy))
+            self.record_system_log({"event": "runtime_package_merge_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "agent_data", "progress": 65, "summary": "已合并日记、定时任务和表情索引。"})
+        if include_library and (root / "library").exists():
+            incoming_catalog = root / "library" / "agent_library.json"
+            if incoming_catalog.exists():
+                ops.append(self._merge_json_file_from_package(_library_catalog_path(), incoming_catalog, strategy=strategy))
+            for subdir in ("books", "files", "assets"):
+                incoming_dir = root / "library" / subdir
+                if incoming_dir.exists():
+                    copied = _safe_copytree_contents(incoming_dir, _library_dir() / subdir, ignore_patterns=("*.jsonl", "*.gz"))
+                    ops.append({"ok": True, "mode": "copied_library_files", "subdir": subdir, "copied": copied})
+            self.record_system_log({"event": "runtime_package_merge_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "library", "progress": 78, "summary": "已合并图书馆目录和书籍文件。"})
+        if include_hdb and (root / "hdb" / "data").exists():
+            hdb_root = _repo_root() / "hdb" / "data"
+            for incoming in (root / "hdb" / "data").rglob("*"):
+                if not incoming.is_file():
+                    continue
+                rel = incoming.relative_to(root / "hdb" / "data")
+                target = hdb_root / rel
+                suffix = incoming.suffix.lower()
+                if suffix in {".sqlite", ".sqlite3", ".db"}:
+                    ops.append(_merge_sqlite_store_file(target, incoming, strategy=strategy))
+                elif suffix == ".json":
+                    ops.append(self._merge_json_file_from_package(target, incoming, strategy=strategy))
+                else:
+                    if target.exists() and _runtime_merge_strategy(strategy) == "retreat":
+                        ops.append({"ok": True, "mode": "retreat_skip_file", "target": str(target)})
+                    elif target.exists() and _runtime_merge_strategy(strategy) == "overwrite":
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(incoming, target)
+                        ops.append({"ok": True, "mode": "overwrite_file", "target": str(target)})
+                    elif not target.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(incoming, target)
+                        ops.append({"ok": True, "mode": "copy_new_file", "target": str(target)})
+                    else:
+                        ops.append({"ok": True, "mode": "keep_existing_binary", "target": str(target), "strategy": _runtime_merge_strategy(strategy)})
+            self.record_system_log({"event": "runtime_package_merge_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "hdb", "progress": 92, "summary": "已合并 HDB 数据。"})
+        return ops
+
+    def import_runtime_package(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        raw_path = str(payload.get("path") or payload.get("file") or payload.get("package_path") or "").strip().strip('"')
+        if not raw_path:
+            return {"ok": False, "mode": "runtime_package_import", "error": "path_required", "summary": "导入运行包需要 zip 路径。"}
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = (_runtime_packages_dir() / path).resolve()
+        if not path.exists() or not path.is_file():
+            return {"ok": False, "mode": "runtime_package_import", "error": "file_not_found", "path": str(path), "summary": f"没有找到运行包：{path}"}
+        strategy = _runtime_merge_strategy(payload.get("strategy") or "retreat")
+        include_hdb = payload.get("include_hdb", True) is not False
+        include_state = payload.get("include_state", True) is not False
+        include_agent_data = payload.get("include_agent_data", True) is not False
+        include_library = payload.get("include_library", True) is not False
+        task_id = f"runtime_import_{_slug_id(path.stem, fallback='package')}_{_now_ms()}"
+        self.record_system_log({"event": "runtime_package_import_started", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "prepare", "progress": 0, "summary": f"开始导入运行包：{path.name}", "strategy": strategy, "path": str(path)})
+        with self._runtime_package_lock:
+            self.record_system_log({"event": "runtime_package_import_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "backup", "progress": 12, "summary": "正在自动备份当前 AP/PA 运行数据。"})
+            backup = self.export_runtime_package({"name": f"before-import-{time.strftime('%Y%m%d-%H%M%S')}", "note": f"自动备份，导入 {path.name} 前创建", "include_hdb": include_hdb, "include_state": include_state, "include_agent_data": include_agent_data, "include_library": include_library})
+            self.record_system_log({"event": "runtime_package_import_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "extract", "progress": 28, "summary": "备份完成，正在安全解压运行包。"})
+            with tempfile.TemporaryDirectory(prefix="pa_runtime_pkg_") as tmp:
+                tmp_root = Path(tmp)
+                extracted: list[str] = []
+                try:
+                    with ZipFile(path, "r") as zf:
+                        extracted = _safe_extract_zip(zf, tmp_root)
+                except Exception as exc:
+                    self.record_system_log({"event": "runtime_package_import_failed", "task": "导入运行包", "task_id": task_id, "status": "failed", "stage": "extract", "progress": 100, "summary": "运行包 zip 无法安全解压。", "error": str(exc)})
+                    return {"ok": False, "mode": "runtime_package_import", "error": "unsafe_or_invalid_zip", "path": str(path), "summary": f"运行包 zip 无法安全解压：{exc}"}
+                try:
+                    manifest = json.loads((tmp_root / "manifest.json").read_text(encoding="utf-8"))
+                except Exception:
+                    manifest = {}
+                if manifest and manifest.get("kind") != "psyarch_agent_runtime_package":
+                    self.record_system_log({"event": "runtime_package_import_failed", "task": "导入运行包", "task_id": task_id, "status": "failed", "stage": "manifest", "progress": 100, "summary": "运行包 manifest 类型不匹配。", "error": "invalid_manifest"})
+                    return {"ok": False, "mode": "runtime_package_import", "error": "invalid_manifest", "manifest": manifest, "summary": "这不是 PsyArch Agent 运行包。"}
+                self.record_system_log({"event": "runtime_package_import_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "merge", "progress": 45, "summary": f"解压完成，正在按 {strategy} 策略合并数据。", "extracted_count": len(extracted)})
+                ops = self._import_package_files(tmp_root, strategy=strategy, include_hdb=include_hdb, include_state=include_state, include_agent_data=include_agent_data, include_library=include_library, task_id=task_id)
+            self.record_event({"event": "runtime_package_imported", "path": str(path), "strategy": strategy, "operation_count": len(ops)})
+        self.record_system_log({"event": "runtime_package_imported", "task": "导入运行包", "task_id": task_id, "status": "done", "stage": "completed", "progress": 100, "summary": f"运行包导入完成：{path.name}", "strategy": strategy, "operation_count": len(ops), "extracted_count": len(extracted)})
+        return {
+            "ok": True,
+            "mode": "runtime_package_import",
+            "task_id": task_id,
+            "strategy": strategy,
+            "package": {"path": str(path), "name": path.name, "manifest": manifest},
+            "backup": backup.get("package") if isinstance(backup, dict) else {},
+            "operations": ops,
+            "extracted_count": len(extracted),
+            "summary": f"已按 {strategy} 策略导入运行包；导入前自动备份已创建。",
         }
 
     def write_diary(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
@@ -7526,7 +9843,7 @@ class AgentRuntime:
             checks.append(item("adapter", "平台适配器", "pass", f"当前使用 {self.config.platform_adapter or 'local'} 本地适配。"))
 
         tool_names = {str(row.get("name") or "") for row in self.tools.list_tools()}
-        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "image_understanding") if name not in tool_names]
         if missing_tools:
             checks.append(item("tools", "本地工具", "fail", f"缺少关键工具：{', '.join(missing_tools)}。"))
         else:
@@ -8182,6 +10499,116 @@ class AgentRuntime:
                 "fused": sum(1 for row in rows if isinstance(row, dict) and (bool(row.get("fused")) or event_of(row) == "llm_circuit_open")),
                 "warn": sum(1 for row in rows if isinstance(row, dict) and level_of(row) in {"warn", "warning"}),
                 "error": sum(1 for row in rows if isinstance(row, dict) and level_of(row) in {"error", "fail"}),
+            },
+        }
+
+    def system_events(self, *, limit: int = 120, view: str = "important") -> dict[str, Any]:
+        rows = _read_jsonl_tail(_system_log_path(), limit=min(max(int(limit or 120), 1) * 6, self.config.event_log_limit))
+        view_key = str(view or "important").strip().lower()
+
+        def level_of(row: dict[str, Any]) -> str:
+            return str(row.get("level") or "").strip().lower()
+
+        def event_of(row: dict[str, Any]) -> str:
+            return str(row.get("event") or "")
+
+        def is_tool_row(row: dict[str, Any]) -> bool:
+            event = event_of(row)
+            task = str(row.get("task") or "")
+            category = str(row.get("category") or "").strip().lower()
+            return (
+                category == "tool"
+                or event.startswith("tool_")
+                or "library" in event
+                or "read_book" in event
+                or task in {"读书", "导入图书", "生成图书简介", "选择图书文件"}
+            )
+
+        if view_key in {"errors", "error", "warn", "warning"}:
+            filtered = [
+                row for row in rows
+                if isinstance(row, dict)
+                and (level_of(row) in {"warn", "warning", "error", "fail"} or event_of(row).endswith("_failed"))
+            ]
+            view_key = "errors"
+        elif view_key in {"tools", "tool", "tool_detail"}:
+            filtered = [row for row in rows if isinstance(row, dict) and is_tool_row(row)]
+            view_key = "tools"
+        elif view_key in {"tool_errors", "tools_errors"}:
+            filtered = [
+                row for row in rows
+                if isinstance(row, dict)
+                and is_tool_row(row)
+                and (level_of(row) in {"warn", "warning", "error", "fail"} or event_of(row).endswith("_failed"))
+            ]
+            view_key = "tool_errors"
+        elif view_key in {"tool_important", "tools_important"}:
+            filtered = [
+                row for row in rows
+                if isinstance(row, dict)
+                and is_tool_row(row)
+                and (
+                    level_of(row) in {"info", "warn", "warning", "error", "fail"}
+                    or bool(row.get("task_id"))
+                    or row.get("progress") is not None
+                )
+            ]
+            view_key = "tool_important"
+        elif view_key in {"detail", "detailed", "all"}:
+            filtered = [row for row in rows if isinstance(row, dict)]
+            view_key = "detail"
+        else:
+            important_events = {
+                "runtime_package_export_started",
+                "runtime_package_export_progress",
+                "runtime_package_exported",
+                "runtime_package_export_failed",
+                "runtime_package_import_started",
+                "runtime_package_import_progress",
+                "runtime_package_imported",
+                "runtime_package_import_failed",
+                "runtime_package_merge_progress",
+                "agent_log_maintenance",
+            }
+            filtered = [
+                row for row in rows
+                if isinstance(row, dict)
+                and (
+                    level_of(row) in {"info", "warn", "warning", "error", "fail"}
+                    or event_of(row) in important_events
+                    or bool(row.get("task_id"))
+                    or row.get("progress") is not None
+                )
+            ]
+            view_key = "important"
+        selected = filtered[-min(int(limit or 120), self.config.event_log_limit):]
+        active_by_task: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            task_id = str(row.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            active_by_task[task_id] = row
+        active_tasks = [
+            row for row in active_by_task.values()
+            if str(row.get("status") or "").strip().lower() not in {"done", "completed", "failed", "error", "cancelled"}
+        ]
+        active_tasks.sort(key=lambda item: _as_int(item.get("ts"), 0), reverse=True)
+        return {
+            "events": selected,
+            "active_tasks": active_tasks[:20],
+            "path": str(_system_log_path()),
+            "limit": limit,
+            "view": view_key,
+            "counts": {
+                "total_scanned": len(rows),
+                "returned": len(selected),
+                "active": len(active_tasks),
+                "info": sum(1 for row in rows if isinstance(row, dict) and level_of(row) in {"info", "debug"}),
+                "warn": sum(1 for row in rows if isinstance(row, dict) and level_of(row) in {"warn", "warning"}),
+                "error": sum(1 for row in rows if isinstance(row, dict) and level_of(row) in {"error", "fail"}),
+                "tasks": len(active_by_task),
             },
         }
 
@@ -9204,7 +11631,7 @@ class AgentRuntime:
 
     def tool_matrix(self) -> dict[str, Any]:
         tools = self.tools.list_tools()
-        mutating_tools = {"memory_note", "write_diary", "schedule_task", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
+        mutating_tools = {"memory_note", "write_diary", "schedule_task", "read_book", "import_book", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"}
         stub_tools = {"web_search", "image_understanding", "mcp_ping", "skill_run"}
         external_reserved = {"weather", "web_search", "mcp_ping", "skill_run", "image_understanding"}
         rows: list[dict[str, Any]] = []
@@ -9437,7 +11864,7 @@ class AgentRuntime:
             "rows": rows,
             "counts": counts,
             "readiness": readiness,
-                "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "write_diary", "read_diary", "schedule_task", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
+            "tool_links": {name: tool_by_name.get(name, {}) for name in ("mcp_ping", "skill_run", "web_search", "weather", "image_understanding", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message")},
             "allowlist": list(self.config.tool_allowlist),
             "mcp_enabled": mcp_enabled,
             "skill_enabled": skill_enabled,
@@ -12122,7 +14549,7 @@ class AgentRuntime:
 
         tools = self.list_tools()
         tool_names = {str(item.get("name") or "") for item in _as_list(tools.get("tools")) if isinstance(item, dict)}
-        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "image_understanding") if name not in tool_names]
+        missing_tools = [name for name in ("time", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "image_understanding") if name not in tool_names]
         add("tools", "pass" if not missing_tools else "fail", f"tools={len(tool_names)} missing={','.join(missing_tools) or '-'}", meta={"tools": sorted(tool_names)})
 
         profiles = self.config_profiles()
@@ -15440,7 +17867,14 @@ class AgentRuntime:
                 "reply_target": copy.deepcopy(reply_target),
                 "adapter_event": copy.deepcopy(adapter_event),
             }
-            tool_results = self._execute_tool_calls(tool_calls, turn_id=turn_id, thought_index=index + 1, context=tool_context)
+            tool_results = self._execute_tool_calls(
+                tool_calls,
+                turn_id=turn_id,
+                thought_index=index + 1,
+                context=tool_context,
+                emit=emit,
+                should_stop=should_stop,
+            )
             quality = self._score_thought_quality(thought_text, normalized, packet)
             thought_row = {
                 "id": f"{'internal_thought' if internal_mode else 'thought'}_{_now_ms()}_{index + 1}",
@@ -17345,6 +19779,7 @@ class AgentRuntime:
             "turns": self.state.get("turns", [])[-self.config.history_limit :],
             "snapshots": self.state.get("snapshots", [])[-self.config.history_limit :],
             "ap_packet": packet,
+            "active_tool_task": _as_dict(self.state.get("active_tool_task")),
             "paths": {
                 "config": str(_config_path()),
                 "state": str(_state_path()),
@@ -17378,6 +19813,7 @@ class AgentRuntime:
                 "max_total_thought_steps_per_turn": self.config.max_total_thought_steps_per_turn,
                 "thought_budget_reset_limit": self.config.thought_budget_reset_limit,
             },
+            "active_tool_task": _as_dict(self.state.get("active_tool_task")),
             "group_continuity_windows": {
                 key: {
                     "conversation_id": _as_dict(value).get("conversation_id") or key,
@@ -17899,6 +20335,7 @@ class AgentRuntime:
             if isinstance(item, dict):
                 recent_attachments.extend(_as_list(item.get("attachments")))
         attachment_text = _attachment_summary([att for att in recent_attachments if isinstance(att, dict)][-8:])
+        tool_top_context_text = self._recent_tool_top_context_text()
         recent_thoughts = []
         for item in self.state.get("thoughts", [])[-16:]:
             if not isinstance(item, dict):
@@ -18262,6 +20699,10 @@ class AgentRuntime:
                         "创建定时任务必须写清 summary、prompt、trigger。trigger 常用格式：{\"type\":\"once\",\"at\":\"2026-05-10 21:30\"}；{\"type\":\"interval\",\"interval_minutes\":30}；{\"type\":\"daily\",\"time\":\"08:00\"}；{\"type\":\"weekly\",\"weekdays\":[7],\"time\":\"08:00\"}；{\"type\":\"workday\",\"time\":\"09:00\"}。",
                         "如果发现循环任务太频繁、提示词太含糊、已经完成或可能造成重复打扰，可以 tool_call schedule_task 取消、更新或删除后重建。接近任务数量上限时，工具结果会提醒你管理任务数量。",
                         "定时任务只负责到点注入提示，不代表任务已经完成。触发后要像处理普通用户消息一样继续思考：需要查资料就先 tool_call，需要发消息就 reply/actions，不适合回复就 sleep。",
+                        "browse_library / read_book / import_book：图书馆工具。用户要求导入书、让你读书、评价文档/小说，或你空闲且主观能动性允许继续探索时可以使用。先 browse_library 看书籍 id；read_book 默认从书签继续读一个阅读批次：连续把多个短片段输入 AP、每段后跑空 tick，直到累计达到配置里的段落回顾 tick 间隔、书末或被打断；未被打断时会调用段落理解模型生成一条可读总结，再把理解保存到书籍信息并作为工具反馈返回给你；mode=reviews 可查看自己的段落理解，mode=original 可按 range 查看原文，mode=stop 可暂停阅读。",
+                        "读书不是必须一口气读完。一次 read_book 读的是一个可中断的阅读批次，而不是整本书；工具反馈里的 review.summary/understanding 是这一批次已经消化出的段落理解。收到它后，你应判断下一步是继续读下一批次、回答用户、记录日记，还是 sleep，不要默认无限 continue_thinking。",
+                        "外界输入优先级更高；如果阅读过程中被用户打断，read_book 会返回 interrupted=true 且不会保存本段理解。看到这种反馈时，先处理用户消息，并知道自己之前的阅读可以之后从书签继续。",
+                        "当用户问“你怎么看这本书/这份文档/你读到哪里了”时，不要凭空回答。优先利用近期工具 top 里的 book_id/review_id；如果不足，再 browse_library 或 read_book mode=reviews/original 查证后回复。段落理解是你过去认真读过后的可读理解，不是原始 JSON。",
                         "memory_note、web_search、mcp_ping、skill_run 只在用户需求或上下文明确需要时使用。",
                     ]
                 ),
@@ -18396,6 +20837,7 @@ class AgentRuntime:
                 ),
             ),
             ("回复连续性账本", continuity_ledger),
+            ("近期工具 top 信息", tool_top_context_text),
             (
                 "近期真实外发凭证（跨轮）",
                 "\n".join(
@@ -18811,7 +21253,16 @@ class AgentRuntime:
             return ""
         return f"同时有一点{'、'.join(list(dict.fromkeys(natural))[:3])}在心里。"
 
-    def _execute_tool_calls(self, calls: Any, *, turn_id: str, thought_index: int, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _execute_tool_calls(
+        self,
+        calls: Any,
+        *,
+        turn_id: str,
+        thought_index: int,
+        context: dict[str, Any] | None = None,
+        emit: Callable[..., None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         origin = self._scheduled_task_origin_from_context(context)
         for idx, call in enumerate(_as_list(calls)[:5]):
@@ -18822,10 +21273,34 @@ class AgentRuntime:
             args = copy.deepcopy(args) if isinstance(args, dict) else {}
             if _canonical_tool_name(name) == "schedule_task" and origin and "_scheduled_task_origin" not in args:
                 args["_scheduled_task_origin"] = copy.deepcopy(origin)
+            context_for_tool = copy.deepcopy(context or {})
+            canonical_name = _canonical_tool_name(name)
+
+            def tool_should_stop() -> bool:
+                stopped = False
+                if callable(should_stop):
+                    try:
+                        stopped = bool(should_stop())
+                    except Exception:
+                        stopped = False
+                if stopped:
+                    return True
+                if canonical_name == "read_book":
+                    try:
+                        return self.pending_external_input_count() > 0
+                    except Exception:
+                        return False
+                return False
+
+            if callable(emit):
+                context_for_tool["emit"] = emit
+            if callable(should_stop) or canonical_name == "read_book":
+                context_for_tool["should_stop"] = tool_should_stop
             result = self.tools.run(
                 name,
                 args,
                 source=f"llm_tool_call:{turn_id}:{thought_index}:{idx + 1}",
+                context=context_for_tool,
             )
             results.append(result)
         return results
@@ -19001,6 +21476,21 @@ class AgentRuntime:
                         f"{output_dict.get('summary') or '写日记完成'}；id={entry.get('id') or ''}；title={entry.get('title') or ''}；importance={entry.get('importance')}",
                         max_chars=520,
                     )
+            if ok and _canonical_tool_name(tool) == "read_book":
+                output_dict = _as_dict(output)
+                review = _as_dict(output_dict.get("review"))
+                if review:
+                    understanding = _clean_multiline_text(review.get("understanding") or review.get("summary") or "", max_chars=2400)
+                    book = _as_dict(output_dict.get("book"))
+                    body = _clean_multiline_text(
+                        "读书工具已完成一段阅读，并生成段落理解：\n"
+                        f"book_id={book.get('id') or review.get('book_id') or ''} title={book.get('title') or review.get('book_title') or ''}\n"
+                        f"review_id={review.get('id') or ''} range={json.dumps(review.get('range') or {}, ensure_ascii=False)}\n"
+                        f"{understanding}",
+                        max_chars=3600,
+                    )
+                elif output_dict.get("interrupted"):
+                    body = _clean_text(output_dict.get("summary") or "读书被外界输入打断，未生成段落理解。下一段 thought 应先处理新输入，之后可从书签继续读。", max_chars=900)
             if not body:
                 body = "没有可用结果文本"
             state = "成功" if ok else "失败"

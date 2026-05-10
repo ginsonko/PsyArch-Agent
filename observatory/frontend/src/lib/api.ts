@@ -171,6 +171,18 @@ export const api = {
   agentSaveScheduledTask: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/scheduled-tasks/save', payload, 30000),
   agentRunScheduledTaskCommand: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/scheduled-tasks/run', payload, 30000),
   agentDeleteScheduledTask: (ids: string[] | string) => apiPost<any>('/api/agent/scheduled-tasks/delete', { ids: Array.isArray(ids) ? ids : [ids] }, 30000),
+  agentLibrary: (detail = false, id = '') =>
+    apiGet<any>(`/api/agent/library?detail=${detail ? '1' : '0'}${id ? `&id=${encodeURIComponent(id)}` : ''}`, 20000),
+  agentImportBook: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/import', payload, 60000),
+  agentPickLibraryFile: () => apiPost<any>('/api/agent/library/file-dialog', {}, 120000),
+  agentSuggestLibrarySummary: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/summary', payload, 180000),
+  agentReadBook: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/read', payload, 180000),
+  agentDeleteBook: (ids: string[] | string) => apiPost<any>('/api/agent/library/delete', { ids: Array.isArray(ids) ? ids : [ids] }, 30000),
+  agentRuntimePackages: () => apiGet<any>('/api/agent/runtime-packages', 20000),
+  agentExportRuntimePackage: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/runtime-packages/export', payload, 180000),
+  agentImportRuntimePackage: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/runtime-packages/import', payload, 300000),
+  agentSystemEvents: (limit = 120, view = 'important') =>
+    apiGet<any>(`/api/agent/system-events?limit=${encodeURIComponent(String(limit))}&view=${encodeURIComponent(view)}`, 20000),
   agentToolMatrix: () => apiGet<any>('/api/agent/tool-matrix', 20000),
   agentProtocolRegistry: () => apiGet<any>('/api/agent/protocol-registry', 20000),
   agentIntegrations: () => apiGet<any>('/api/agent/integrations', 20000),
