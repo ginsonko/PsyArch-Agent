@@ -518,3 +518,57 @@ def test_idle_prune_frees_capacity_for_new_tool_action_nodes():
         row.get("action_kind") == "weather_stub" and row.get("failure_reason") == "async_pending_completion"
         for row in executed
     )
+
+
+def test_action_drive_stacks_by_action_id_and_splits_by_parameterized_target():
+    manager = ActionManager(
+        config_override={
+            "drive_decay_ratio": 1.0,
+            "drive_max": 10.0,
+            "node_idle_prune_ticks": 999,
+            "threshold_scale_by_rwd_pun_enabled": False,
+            "local_drive_modulation_by_rwd_pun_enabled": False,
+            "action_fatigue_enabled": False,
+        }
+    )
+
+    same_target_trigger = {
+        "action_id": "attention_focus_st_same",
+        "action_kind": "attention_focus",
+        "gain": 0.3,
+        "threshold": 99.0,
+        "params": {
+            "target_ref_object_id": "st_same",
+            "target_ref_object_type": "st",
+            "target_display": "同一目标",
+        },
+    }
+    other_target_trigger = {
+        "action_id": "attention_focus_st_other",
+        "action_kind": "attention_focus",
+        "gain": 0.3,
+        "threshold": 99.0,
+        "params": {
+            "target_ref_object_id": "st_other",
+            "target_ref_object_type": "st",
+            "target_display": "另一个目标",
+        },
+    }
+
+    for tick in range(1, 4):
+        triggers = [same_target_trigger] if tick < 3 else [same_target_trigger, other_target_trigger]
+        manager.run_action_cycle(
+            trace_id=f"trace_action_identity_{tick}",
+            tick_id=f"cycle_action_identity_{tick:04d}",
+            tick_index=tick,
+            cfs_signals=[],
+            emotion_state={},
+            innate_focus_directives=[],
+            innate_action_triggers=triggers,
+            memory_activation_snapshot={},
+            local_reward_punish_map={},
+        )
+
+    assert set(manager._nodes) == {"attention_focus_st_same", "attention_focus_st_other"}
+    assert abs(manager._nodes["attention_focus_st_same"]["drive"] - 0.9) < 1e-12
+    assert abs(manager._nodes["attention_focus_st_other"]["drive"] - 0.3) < 1e-12

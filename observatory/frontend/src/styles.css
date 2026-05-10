@@ -1737,6 +1737,85 @@ body {
     var(--ap-bg-elevated);
 }
 
+.agent-ap-maintenance-card {
+  border-color: color-mix(in srgb, #ffd43b 28%, var(--ap-border));
+  background:
+    linear-gradient(135deg, rgba(255, 212, 59, 0.08), transparent 52%),
+    var(--ap-bg-layer);
+}
+
+.agent-maintenance-action {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  min-height: 74px;
+  padding: 9px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 92%, #20c997 5%);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-maintenance-action:hover:not(:disabled) {
+  border-color: rgba(32, 201, 151, 0.46);
+  background: color-mix(in srgb, var(--ap-bg-elevated) 84%, #20c997 10%);
+}
+
+.agent-maintenance-action:disabled {
+  cursor: progress;
+  opacity: 0.62;
+}
+
+.agent-maintenance-action.danger {
+  background: color-mix(in srgb, var(--ap-bg-elevated) 90%, #fa5252 6%);
+}
+
+.agent-maintenance-action.danger:hover:not(:disabled),
+.agent-maintenance-action.danger.strong {
+  border-color: rgba(250, 82, 82, 0.46);
+  background: color-mix(in srgb, var(--ap-bg-elevated) 82%, #fa5252 11%);
+}
+
+.agent-maintenance-action span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.agent-maintenance-action strong,
+.agent-maintenance-action small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-maintenance-action strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.agent-maintenance-action small {
+  color: var(--ap-text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.agent-maintenance-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 9px;
+  color: var(--ap-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .agent-config-tabs .mantine-Tabs-list {
   gap: 6px;
 }
@@ -3560,6 +3639,28 @@ body {
   min-width: 0;
   color: var(--ap-text-muted);
   font-size: 12px;
+}
+
+.pa-action-drive-row {
+  align-items: center;
+}
+
+.pa-action-drive-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.pa-action-drive-row span strong {
+  color: var(--ap-text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.pa-action-drive-row span small {
+  color: var(--ap-text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .pa-cloud-panel {

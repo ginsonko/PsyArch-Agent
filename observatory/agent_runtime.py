@@ -19344,12 +19344,35 @@ class AgentRuntime:
         for item in _as_list(action.get("nodes") or action.get("action_nodes") or action.get("top_nodes")):
             if not isinstance(item, dict):
                 continue
+            params = _as_dict(item.get("params"))
+            action_id = str(item.get("action_id", item.get("id", "")) or "")
+            action_kind = str(item.get("action_kind", item.get("kind", action_id)) or "")
+            target_display = _sanitize_cfs_target(
+                item.get("target_display")
+                or params.get("target_display")
+                or item.get("target_ref_object_id")
+                or params.get("target_ref_object_id")
+                or item.get("target_item_id")
+                or params.get("target_item_id")
+                or "",
+                max_chars=140,
+            )
             rows.append(
                 {
-                    "kind": str(item.get("action_kind", item.get("kind", item.get("id", ""))) or ""),
+                    "id": action_id,
+                    "action_id": action_id,
+                    "kind": action_kind,
+                    "action_kind": action_kind,
                     "drive": round(_as_float(item.get("drive", item.get("current_drive", 0.0))), 6),
                     "threshold": round(_as_float(item.get("effective_threshold", item.get("threshold", 0.0))), 6),
                     "status": str(item.get("status", "") or ""),
+                    "target": target_display,
+                    "target_display": target_display,
+                    "target_ref_object_id": str(item.get("target_ref_object_id", params.get("target_ref_object_id", "")) or ""),
+                    "target_ref_object_type": str(item.get("target_ref_object_type", params.get("target_ref_object_type", "")) or ""),
+                    "target_item_id": str(item.get("target_item_id", params.get("target_item_id", "")) or ""),
+                    "tick_gain_total": round(_as_float(item.get("tick_gain_total", 0.0)), 6),
+                    "last_trigger_tick": _as_int(item.get("last_trigger_tick"), -1),
                 }
             )
         rows.sort(key=lambda item: float(item.get("drive", 0.0) or 0.0), reverse=True)

@@ -79,7 +79,8 @@ type BusyScope =
   | 'history'
   | 'background'
   | 'tool'
-  | 'log';
+  | 'log'
+  | 'maintenance';
 
 type AgentJob = AnyRecord & {
   job_id?: string;
@@ -1445,12 +1446,19 @@ function TickInspectorCard({
                 <div className="pa-tick-chip-panel">
                   <Text size="xs" fw={900}>行动驱动力</Text>
                   <Stack gap={4} mt={6}>
-                    {actions.slice(0, 6).map((item, index) => (
-                      <button key={`${item.kind || index}`} type="button" className="pa-mini-row" onClick={() => onSelect(item)}>
-                        <span>{shortText(String(item.kind || '-'), 42)}</span>
+                    {actions.slice(0, 6).map((item, index) => {
+                      const actionKind = String(item.kind || item.action_kind || '-');
+                      const actionTarget = String(item.target_display || item.target || item.target_ref_object_id || item.target_item_id || item.action_id || item.id || '');
+                      return (
+                      <button key={`${item.action_id || item.id || item.kind || index}`} type="button" className="pa-mini-row pa-action-drive-row" onClick={() => onSelect(item)}>
+                        <span>
+                          <strong>{shortText(actionKind, 38)}</strong>
+                          {actionTarget ? <small>{shortText(actionTarget, 74)}</small> : null}
+                        </span>
                         <strong>{formatNumber(item.drive ?? item.value ?? item.level, 3)}</strong>
                       </button>
-                    ))}
+                      );
+                    })}
                     {!actions.length ? <Text size="xs" c="dimmed">无行动节点数据。</Text> : null}
                   </Stack>
                 </div>
@@ -3633,6 +3641,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const historyBusy = isBusy('history');
   const backgroundBusy = isBusy('background');
   const toolBusy = isBusy('tool');
+  const maintenanceBusy = isBusy('maintenance');
 
   async function refreshSnapshotHistory(limit = SNAPSHOT_HISTORY_LIMIT) {
     const snapshotHistory = await api.agentHistory('snapshots', limit, 0).catch(() => null);
@@ -4849,6 +4858,47 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       }));
       setSelected(result);
       await refresh(true);
+    });
+  }
+
+  async function resetApRuntime(scope: 'runtime' | 'hdb' | 'all') {
+    const copy = {
+      runtime: {
+        title: '清空 AP 运行态？',
+        body: '这会清掉状态池、注意力、行动、情绪等短期运行态，相当于让 AP 忘掉当前这一轮短期上下文；PA 对话记录和 HDB 长期记忆会保留。',
+        run: api.clearRuntime,
+      },
+      hdb: {
+        title: '清空 HDB 长期库？',
+        body: '这会清掉 HDB 里的长期结构、情节记忆和理解积累。适合更换人设后彻底重开，但不能从页面撤销。',
+        run: api.clearHdb,
+      },
+      all: {
+        title: '清空 AP 运行态 + HDB？',
+        body: '这会同时清空短期运行态和长期 HDB。相当于给 AP 做一次完整重置，适合换人设重新开始，操作不可撤销。',
+        run: api.clearAll,
+      },
+    }[scope];
+    const ok = window.confirm(`${copy.title}\n\n${copy.body}\n\n确认继续？`);
+    if (!ok) return;
+    await withBusy('maintenance', async () => {
+      const result = await copy.run();
+      setStatus((prev) => ({
+        ...(prev || {}),
+        snapshots: [],
+        ap_packet: {},
+      }));
+      setSnapshotPage(null);
+      setSelected({
+        mode: `ap_${scope}_reset`,
+        summary: copy.title.replace('？', '完成'),
+        result,
+      });
+      await Promise.all([
+        refresh(true),
+        refreshSnapshotHistory().catch(() => null),
+        refreshDiagnostics().catch(() => null),
+      ]);
     });
   }
 
@@ -6282,6 +6332,47 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 </Card>
               </section>
               <aside className="pa-side-column">
+                <Card className="pa-panel agent-ap-maintenance-card">
+                  <Group justify="space-between" align="flex-start" mb="xs">
+                    <div>
+                      <Group gap={8}>
+                        <IconDatabase size={18} />
+                        <Text fw={900}>AP 运行态管理</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed">
+                        换人设重开时先清短期运行态；如果要连长期理解一起重置，再清 HDB。
+                      </Text>
+                    </div>
+                    <Badge variant="light" color="yellow">谨慎操作</Badge>
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing={8}>
+                    <button type="button" className="agent-maintenance-action" disabled={maintenanceBusy} onClick={() => void resetApRuntime('runtime')}>
+                      <IconEraser size={16} />
+                      <span>
+                        <strong>清 AP 运行态</strong>
+                        <small>短期状态、注意力和行动驱动</small>
+                      </span>
+                    </button>
+                    <button type="button" className="agent-maintenance-action danger" disabled={maintenanceBusy} onClick={() => void resetApRuntime('hdb')}>
+                      <IconDatabase size={16} />
+                      <span>
+                        <strong>清 HDB</strong>
+                        <small>长期结构、记忆和理解积累</small>
+                      </span>
+                    </button>
+                    <button type="button" className="agent-maintenance-action danger strong" disabled={maintenanceBusy} onClick={() => void resetApRuntime('all')}>
+                      <IconTrash size={16} />
+                      <span>
+                        <strong>全部重置</strong>
+                        <small>短期运行态 + 长期 HDB</small>
+                      </span>
+                    </button>
+                  </SimpleGrid>
+                  <div className="agent-maintenance-note">
+                    <span>清对话只影响 PA 聊天记录；这里管理的是 AP 本体状态。HDB 清空后，长期学习痕迹会重新开始积累。</span>
+                    {maintenanceBusy ? <Badge size="xs" color="yellow" variant="light">处理中</Badge> : null}
+                  </div>
+                </Card>
                 <Card className="pa-panel" mt="md">
                   <Group justify="space-between" mb="xs">
                     <Text fw={900}>审计与安全</Text>
