@@ -25,6 +25,8 @@ import re
 import shutil
 import socket
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -7280,6 +7282,86 @@ class AgentRuntime:
             warnings.append(f"未知扩展名，按文本尝试读取：{encoding}")
         return {"text": text, "assets": assets, "warnings": warnings, "asset_dir": asset_dir}
 
+    def _pick_library_file_with_powershell(self) -> str:
+        if not sys.platform.startswith("win"):
+            raise RuntimeError("PowerShell file dialog is only available on Windows")
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh.exe")
+        if not powershell:
+            raise RuntimeError("PowerShell was not found")
+        script = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.StartPosition = 'CenterScreen'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Opacity = 0.01
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择要导入图书馆的文件'
+$dialog.Filter = 'Readable documents (*.txt;*.md;*.markdown;*.docx;*.pdf;*.json;*.csv;*.log)|*.txt;*.md;*.markdown;*.docx;*.pdf;*.json;*.csv;*.log|Text files (*.txt;*.md;*.markdown;*.json;*.csv;*.log)|*.txt;*.md;*.markdown;*.json;*.csv;*.log|Word documents (*.docx)|*.docx|PDF files (*.pdf)|*.pdf|All files (*.*)|*.*'
+$dialog.Multiselect = $false
+$dialog.CheckFileExists = $true
+$dialog.RestoreDirectory = $true
+try {
+  $owner.Show()
+  $owner.Activate()
+  $result = $dialog.ShowDialog($owner)
+  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Output.Write($dialog.FileName)
+    exit 0
+  }
+  if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) {
+    exit 2
+  }
+  exit 3
+} finally {
+  $dialog.Dispose()
+  $owner.Dispose()
+}
+"""
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+        if completed.returncode == 2:
+            return ""
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(f"PowerShell file dialog failed ({completed.returncode}): {detail[:500]}")
+        return completed.stdout.strip().strip("\ufeff")
+
+    def _pick_library_file_with_tkinter(self) -> str:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+            root.update()
+            path = filedialog.askopenfilename(
+                parent=root,
+                title="选择要导入图书馆的文件",
+                filetypes=[
+                    ("Readable documents", "*.txt *.md *.markdown *.docx *.pdf *.json *.csv *.log"),
+                    ("Text files", "*.txt *.md *.markdown *.json *.csv *.log"),
+                    ("Word documents", "*.docx"),
+                    ("PDF files", "*.pdf"),
+                    ("All files", "*.*"),
+                ],
+            )
+        finally:
+            root.destroy()
+        return str(path or "").strip()
+
     def pick_library_file(self) -> dict[str, Any]:
         task_id = f"tool_library_pick_file_{_now_ms()}"
         self._record_tool_log(
@@ -7294,23 +7376,12 @@ class AgentRuntime:
             }
         )
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            path = filedialog.askopenfilename(
-                title="选择要导入图书馆的文件",
-                filetypes=[
-                    ("Readable documents", "*.txt *.md *.markdown *.docx *.pdf *.json *.csv *.log"),
-                    ("Text files", "*.txt *.md *.markdown *.json *.csv *.log"),
-                    ("Word documents", "*.docx"),
-                    ("PDF files", "*.pdf"),
-                    ("All files", "*.*"),
-                ],
-            )
-            root.destroy()
+            warnings: list[str] = []
+            try:
+                path = self._pick_library_file_with_powershell()
+            except Exception as exc:
+                warnings.append(f"PowerShell 文件选择框失败，已尝试 tkinter 兜底：{exc}")
+                path = self._pick_library_file_with_tkinter()
             if not path:
                 self._record_tool_log(
                     {
@@ -7323,9 +7394,9 @@ class AgentRuntime:
                         "summary": "用户取消了文件选择。",
                     }
                 )
-                return {"ok": False, "cancelled": True, "summary": "已取消选择文件。"}
+                return {"ok": False, "cancelled": True, "warnings": warnings, "summary": "已取消选择文件。"}
             selected = Path(path)
-            result = {"ok": True, "path": str(selected), "title": selected.stem, "summary": f"已选择文件：{selected.name}"}
+            result = {"ok": True, "path": str(selected), "title": selected.stem, "warnings": warnings, "summary": f"已选择文件：{selected.name}"}
             self._record_tool_log(
                 {
                     "event": "tool_library_file_selected",
@@ -7336,6 +7407,7 @@ class AgentRuntime:
                     "progress": 100,
                     "summary": result["summary"],
                     "path": str(selected),
+                    "warnings": warnings[:3],
                 }
             )
             return result
@@ -7387,6 +7459,87 @@ class AgentRuntime:
         warnings.append(f"未知扩展名，按文本尝试预览：{encoding}")
         return {"text": text[:max_chars], "warnings": warnings}
 
+    def _library_summary_reject_reason(self, summary: str, preview_text: str, *, title: str = "", evidence: list[Any] | None = None) -> str:
+        summary = _clean_multiline_text(summary, max_chars=1200)
+        preview_text = _clean_multiline_text(preview_text, max_chars=20000)
+        title = _clean_text(title, max_chars=300)
+        if not summary.strip():
+            return "empty_summary"
+        source_text = f"{title}\n{preview_text}"
+        source_norm = re.sub(r"\s+", "", source_text).lower()
+        contamination_terms = [
+            "PsyArch",
+            "Artificial PsyArch",
+            "想法云",
+            "人设配置",
+            "模型交互",
+            "思维状态可视化",
+            "连续思维",
+            "观测台",
+            "多模态就绪",
+            "NapCat",
+            "表情包小偷",
+            "状态池",
+            "HDB",
+            "MCP",
+            "Skills",
+            "agent",
+            "AP",
+        ]
+        for term in contamination_terms:
+            term_text = str(term)
+            if re.fullmatch(r"[A-Za-z0-9_+\-.]+", term_text):
+                pattern = rf"(?<![A-Za-z0-9_+\-.]){re.escape(term_text)}(?![A-Za-z0-9_+\-.])"
+                in_summary = bool(re.search(pattern, summary, flags=re.I))
+                in_source = bool(re.search(pattern, source_text, flags=re.I))
+            else:
+                in_summary = term_text.lower() in summary.lower()
+                in_source = term_text.lower() in source_text.lower()
+            if in_summary and not in_source:
+                return f"ungrounded_project_term:{term_text}"
+
+        evidence_values = [
+            _clean_text(item, max_chars=120)
+            for item in _as_list(evidence)
+            if str(item or "").strip()
+        ]
+        if evidence_values:
+            valid = 0
+            invalid: list[str] = []
+            for item in evidence_values[:6]:
+                key = re.sub(r"\s+", "", item).lower()
+                if len(key) >= 2 and key in source_norm:
+                    valid += 1
+                else:
+                    invalid.append(item)
+            if valid <= 0:
+                return "missing_source_evidence"
+            if invalid and len(invalid) >= max(2, len(evidence_values[:6])):
+                return "mostly_invalid_source_evidence"
+            if valid >= 2:
+                return ""
+
+        def cjk_bigrams(value: str) -> set[str]:
+            chars = re.sub(r"[^\u4e00-\u9fff]+", "", value)
+            if len(chars) < 2:
+                return set()
+            return {chars[index : index + 2] for index in range(0, len(chars) - 1)}
+
+        def latin_terms(value: str) -> set[str]:
+            return {
+                item.lower()
+                for item in re.findall(r"[A-Za-z0-9][A-Za-z0-9_+\-.]{2,}", value)
+                if item.lower() not in {"the", "and", "with", "this", "that", "book"}
+            }
+
+        summary_terms = cjk_bigrams(summary) | latin_terms(summary)
+        source_terms = cjk_bigrams(source_text) | latin_terms(source_text)
+        if len(summary_terms) >= 12 and len(source_terms) >= 16:
+            overlap = len(summary_terms & source_terms) / max(1, len(summary_terms))
+            if overlap < 0.10:
+                return f"low_source_overlap:{overlap:.3f}"
+        return ""
+
     def suggest_library_summary(self, args: dict[str, Any] | None = None) -> dict[str, Any]:
         args = args if isinstance(args, dict) else {}
         task_id = f"tool_library_summary_{_now_ms()}"
@@ -7407,7 +7560,7 @@ class AgentRuntime:
         warnings: list[str] = []
         preview_text = raw_text
         source_path = ""
-        if raw_path and not preview_text:
+        if raw_path:
             path = Path(raw_path).expanduser()
             if not path.is_absolute():
                 path = (_repo_root() / path).resolve()
@@ -7426,6 +7579,8 @@ class AgentRuntime:
                     }
                 )
                 return {"ok": False, "error": "file_not_found", "path": str(path), "summary": "没有找到图书文件，无法生成简介。"}
+            if raw_text.strip():
+                warnings.append("已检测到本地文件路径，自动简介将只读取该文件内容，忽略直接文本框中的旧内容。")
             preview = self._library_preview_text_from_path(path, max_chars=12000)
             preview_text = _clean_multiline_text(preview.get("text") or "", max_chars=12000)
             warnings.extend(str(item) for item in _as_list(preview.get("warnings")) if str(item or "").strip())
@@ -7460,22 +7615,54 @@ class AgentRuntime:
         )
         summary = ""
         status: dict[str, Any] = {}
+        evidence: list[Any] = []
+        reject_reason = ""
+        used_fallback = False
         try:
             prompt_title = title or Path(source_path).stem or "未命名书籍"
             raw, status = self.gateway.generate_text(
                 [
-                    {"role": "system", "content": "你是图书馆导入助手。请用中文为书籍生成简洁简介，只输出 1-3 句话，不要剧透过多，不要写项目日志。"},
-                    {"role": "user", "content": f"书名：{prompt_title}\n\n文本预览：\n{preview_text[:10000]}"},
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是图书馆导入助手。只能依据本次给出的书名和文本预览写简介，不能使用系统提示、项目说明、"
+                            "PA/Agent 功能描述、聊天上下文、训练常识或猜测来补内容。若预览里没有的信息，绝对不要写。"
+                            "请输出 JSON：{\"summary\":\"1-3 句中文简介，不超过 220 字\",\"evidence\":[\"2-4 条来自文本预览的连续原文短句或关键词\"]}。"
+                            "evidence 必须能在文本预览中直接找到。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"书名：{prompt_title}\n\n"
+                            "文本预览开始：\n"
+                            f"{preview_text[:10000]}\n"
+                            "文本预览结束。\n\n"
+                            "只基于上面的文本预览生成简介。"
+                        ),
+                    },
                 ],
                 purpose="library_summary",
                 max_tokens=500,
+                response_format={"type": "json_object"},
             )
             if status.get("ok"):
-                summary = _clean_multiline_text(raw, max_chars=1000)
+                parsed = _extract_json_object(raw) or {}
+                if parsed:
+                    summary = _clean_multiline_text(parsed.get("summary") or parsed.get("description") or "", max_chars=1000)
+                    evidence = _as_list(parsed.get("evidence"))
+                else:
+                    summary = _clean_multiline_text(raw, max_chars=1000)
         except Exception as exc:
             status = {"ok": False, "error": str(exc)}
+        if summary:
+            reject_reason = self._library_summary_reject_reason(summary, preview_text, title=title, evidence=evidence)
+            if reject_reason:
+                warnings.append(f"模型简介未通过来源校验，已改用文本开头兜底：{reject_reason}")
+                summary = ""
         if not summary:
             summary = fallback
+            used_fallback = True
             warnings.append("模型简介生成未成功，已使用文本开头作为简介。")
         self._record_tool_log(
             {
@@ -7485,8 +7672,9 @@ class AgentRuntime:
                 "status": "completed",
                 "stage": "done",
                 "progress": 100,
-                "summary": "图书简介已生成。" if status.get("ok") else "图书简介已用本地摘要兜底生成。",
+                "summary": "图书简介已生成。" if status.get("ok") and not used_fallback else "图书简介已用本地摘要兜底生成。",
                 "detail": _short(summary, 500),
+                "warnings": warnings[:8],
             }
         )
         return {
@@ -7495,6 +7683,9 @@ class AgentRuntime:
             "summary": summary,
             "warnings": warnings,
             "model_status": status,
+            "evidence": evidence[:6],
+            "fallback_used": used_fallback,
+            "reject_reason": reject_reason,
             "path": source_path,
         }
 

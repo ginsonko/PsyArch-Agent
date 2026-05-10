@@ -5194,11 +5194,12 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
   async function importBook() {
     await withBusy('tool', async () => {
+      const path = String(bookImportDraft.path || '').trim();
       const result = await api.agentImportBook({
-        path: String(bookImportDraft.path || '').trim(),
+        path,
         title: String(bookImportDraft.title || '').trim(),
         summary: String(bookImportDraft.summary || '').trim(),
-        text: String(bookImportDraft.text || kbText || '').trim(),
+        text: path ? '' : String(bookImportDraft.text || kbText || '').trim(),
       });
       setSelected(result);
       const payload = await api.agentLibrary(false).catch(() => null);
@@ -5245,10 +5246,11 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
   async function suggestLibrarySummary() {
     await withBusy('tool', async () => {
+      const path = String(bookImportDraft.path || '').trim();
       const result = await api.agentSuggestLibrarySummary({
-        path: String(bookImportDraft.path || '').trim(),
+        path,
         title: String(bookImportDraft.title || '').trim(),
-        text: String(bookImportDraft.text || kbText || '').trim(),
+        text: path ? '' : String(bookImportDraft.text || kbText || '').trim(),
       });
       setSelected(result);
       if (result?.summary) {

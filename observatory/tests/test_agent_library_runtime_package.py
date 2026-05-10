@@ -218,6 +218,83 @@ def test_library_review_prompt_includes_persona_and_recent_context(tmp_path, mon
     assert "干巴巴的中立报告腔" in prompt_text
 
 
+def test_library_summary_prefers_file_path_over_stale_text(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    source = tmp_path / "真正的书.txt"
+    source.write_text("晋中风物第一章。这里写的是山西小城、汾河边的风和夜里的灯。", encoding="utf-8")
+    captured = {}
+
+    def fake_generate_text(messages, **kwargs):
+        captured["prompt"] = "\n\n".join(str(item.get("content") or "") for item in messages)
+        return (
+            '{"summary":"这本书从晋中风物写起，描摹山西小城、汾河边的风和夜里的灯。",'
+            '"evidence":["晋中风物","山西小城","汾河边的风"]}',
+            {"ok": True, "mode": "test"},
+        )
+
+    runtime.gateway.generate_text = fake_generate_text
+    result = runtime.suggest_library_summary(
+        {
+            "path": str(source),
+            "title": "真正的书",
+            "text": "本书围绕当前 AI 的技术理想展开，探讨人设配置、模型交互与想法云。",
+        }
+    )
+
+    assert result["ok"] is True
+    assert "晋中风物" in result["summary"]
+    assert "想法云" not in result["summary"]
+    assert "晋中风物" in captured["prompt"]
+    assert "想法云" not in captured["prompt"]
+    assert result["fallback_used"] is False
+    assert any("忽略直接文本框" in item for item in result["warnings"])
+
+
+def test_library_summary_rejects_ungrounded_project_hallucination(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+
+    def fake_generate_text(messages, **kwargs):
+        return (
+            '{"summary":"本书围绕当前 AI 的技术理想展开，探讨人设配置、模型交互与想法云之间的关系。",'
+            '"evidence":["想法云","模型交互"]}',
+            {"ok": True, "mode": "test"},
+        )
+
+    runtime.gateway.generate_text = fake_generate_text
+    result = runtime.suggest_library_summary(
+        {
+            "title": "山城夜雨",
+            "text": "山城夜雨第一章。少女在旧车站等一封迟来的信，雨水把路灯照得很软。",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["fallback_used"] is True
+    assert "山城夜雨第一章" in result["summary"]
+    assert "想法云" not in result["summary"]
+    assert result["reject_reason"]
+    assert any("来源校验" in item for item in result["warnings"])
+
+
+def test_library_file_picker_falls_back_and_sets_title(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    selected = tmp_path / "用户选择的书.docx"
+    selected.write_text("placeholder", encoding="utf-8")
+
+    def fail_powershell():
+        raise RuntimeError("dialog unavailable")
+
+    monkeypatch.setattr(runtime, "_pick_library_file_with_powershell", fail_powershell)
+    monkeypatch.setattr(runtime, "_pick_library_file_with_tkinter", lambda: str(selected))
+
+    result = runtime.pick_library_file()
+
+    assert result["ok"] is True
+    assert result["path"] == str(selected)
+    assert result["title"] == "用户选择的书"
+    assert any("PowerShell 文件选择框失败" in item for item in result["warnings"])
+
+
 def test_runtime_package_export_redacts_config_and_safe_import(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path, monkeypatch)
     runtime.write_diary({"title": "用户信息", "content": "银子是晋中人", "importance": 90}, source="test")

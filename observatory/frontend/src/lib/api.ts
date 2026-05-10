@@ -174,7 +174,7 @@ export const api = {
   agentLibrary: (detail = false, id = '') =>
     apiGet<any>(`/api/agent/library?detail=${detail ? '1' : '0'}${id ? `&id=${encodeURIComponent(id)}` : ''}`, 20000),
   agentImportBook: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/import', payload, 60000),
-  agentPickLibraryFile: () => apiPost<any>('/api/agent/library/file-dialog', {}, 120000),
+  agentPickLibraryFile: () => apiPost<any>('/api/agent/library/file-dialog', {}, 600000),
   agentSuggestLibrarySummary: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/summary', payload, 180000),
   agentReadBook: (payload: Record<string, unknown>) => apiPost<any>('/api/agent/library/read', payload, 180000),
   agentDeleteBook: (ids: string[] | string) => apiPost<any>('/api/agent/library/delete', { ids: Array.isArray(ids) ? ids : [ids] }, 30000),
