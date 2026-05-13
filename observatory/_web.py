@@ -478,6 +478,9 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             "last_step_at_ms": 0,
             "last_result": None,
             "last_error": "",
+            "last_idle_memory_maintenance_at_ms": 0,
+            "last_idle_memory_maintenance_wall_ms": 0,
+            "last_idle_memory_maintenance_result": {},
         }
         # Background experiment jobs (in-memory, non-persistent).
         self.experiment_jobs: dict[str, dict[str, Any]] = {}
@@ -2201,6 +2204,17 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                         self.agent_background_state["last_save_at_ms"] = int(time.time() * 1000)
                         self.agent_background_state["last_save_step_count"] = next_step_count
                         self.agent_background_state["last_save_wall_ms"] = save_wall_ms
+                idle_memory_result = {"ran": False, "reason": "idle_memory_not_due"}
+                if not triggered and not foreground_pending() and not background_stop_requested():
+                    idle_memory_result = self.agent_runtime.maybe_run_idle_memory_maintenance(
+                        source="agent_background",
+                        should_abort=background_should_abort,
+                    )
+                    if bool(idle_memory_result.get("ran")):
+                        with self.agent_background_lock:
+                            self.agent_background_state["last_idle_memory_maintenance_at_ms"] = int(time.time() * 1000)
+                            self.agent_background_state["last_idle_memory_maintenance_wall_ms"] = int(idle_memory_result.get("wall_ms", 0) or 0)
+                            self.agent_background_state["last_idle_memory_maintenance_result"] = dict(idle_memory_result)
             result = {
                 "ok": True,
                 "mode": mode,
@@ -2213,6 +2227,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     "reason": locals().get("save_reason", ""),
                     "wall_ms": int(locals().get("save_wall_ms", 0) or 0),
                 },
+                "idle_memory_maintenance": dict(locals().get("idle_memory_result", {}) or {}),
                 "drive": drive,
                 "report": self.agent_runtime._compact_report_meta(report) if isinstance(report, dict) else {},
                 "ap_packet": packet,

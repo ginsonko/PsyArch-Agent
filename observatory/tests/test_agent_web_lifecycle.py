@@ -36,6 +36,7 @@ class _WebFakeRuntime:
         self.group_history = []
         self.continuity_gate_payload = {"should_pass": True, "confidence": 0.91, "addressed_to_bot": True, "needs_reply": True, "reason": "测试门控通过"}
         self.continuity_windows = {}
+        self.idle_memory_calls = []
 
     def set_app_lock(self, lock):
         self.app_lock = lock
@@ -58,6 +59,14 @@ class _WebFakeRuntime:
 
     def save(self):
         self.saved = True
+
+    def maybe_run_idle_memory_maintenance(self, *, source="", should_abort=None, force=False):
+        aborted = bool(should_abort()) if callable(should_abort) else False
+        row = {"source": source, "force": force, "aborted": aborted}
+        self.idle_memory_calls.append(row)
+        if aborted:
+            return {"ran": False, "aborted": True, "reason": "aborted"}
+        return {"ran": True, "aborted": False, "wall_ms": 7, "trimmed": {"projection_fatigue_trimmed": 3}}
 
     def _compact_report_meta(self, report):
         return {"tick": report.get("tick_counter", 0)}
@@ -302,6 +311,9 @@ def _server_without_init():
         "last_step_at_ms": 0,
         "last_result": None,
         "last_error": "",
+        "last_idle_memory_maintenance_at_ms": 0,
+        "last_idle_memory_maintenance_wall_ms": 0,
+        "last_idle_memory_maintenance_result": {},
     }
     server.agent_turn_jobs = {}
     server.agent_turn_jobs_lock = threading.RLock()
@@ -774,6 +786,30 @@ def test_foreground_priority_pauses_background_before_tick(monkeypatch):
     assert result["reason"] == "background_paused_for_foreground_turn"
     assert result["foreground_priority"] is True
     assert server.app.run_count == 0
+
+
+def test_background_step_runs_idle_memory_maintenance_when_quiet(monkeypatch):
+    server = _server_without_init()
+    monkeypatch.setattr("observatory._web.apply_experiment_default_app_overrides", lambda app, source: {})
+
+    result = server._agent_background_step()
+
+    assert result["ok"] is True
+    assert result["triggered"] is False
+    assert result["idle_memory_maintenance"]["ran"] is True
+    assert server.agent_runtime.idle_memory_calls
+    assert server.agent_background_state["last_idle_memory_maintenance_wall_ms"] == 7
+
+
+def test_background_step_skips_idle_memory_maintenance_when_foreground_pending(monkeypatch):
+    server = _server_without_init()
+    monkeypatch.setattr("observatory._web.apply_experiment_default_app_overrides", lambda app, source: {})
+
+    server._mark_agent_foreground_pending("unit_test", hold_ms=10_000)
+    result = server._agent_background_step()
+
+    assert result["reason"] == "background_paused_for_foreground_turn"
+    assert not server.agent_runtime.idle_memory_calls
 
 
 def test_stop_requested_job_keeps_stable_stopping_stage():

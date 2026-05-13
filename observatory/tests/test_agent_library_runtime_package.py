@@ -139,6 +139,7 @@ def test_library_read_batches_multiple_chunks_before_review(tmp_path, monkeypatc
     assert read["review"]["id"]
     assert read["book"]["review_count"] == 1
     assert read["ap_tick_count"] >= 5
+    assert len(getattr(runtime.app, "_pending_external_text_chunks", []) or []) == 0
 
 
 def test_library_read_uses_llm_review_text(tmp_path, monkeypatch):

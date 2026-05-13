@@ -384,6 +384,7 @@ class ObservatoryApp:
         self.tick_counter = 0
         self._last_report: dict[str, Any] | None = None
         self._report_history: list[dict[str, Any]] = []
+        self._last_report_trace_id: str = ""
         self._started_at = int(time.time() * 1000)
         self._pending_focus_directives: list[dict[str, Any]] = []
         self._last_modulation: dict[str, Any] = {}
@@ -457,6 +458,14 @@ class ObservatoryApp:
             self._current_external_source_text = str(text or "")
         self._pending_external_text_chunks.extend(chunks)
         return chunks
+
+    def _push_single_tick_text(self, text: str) -> list[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        self._current_external_source_text = raw
+        self._pending_external_text_chunks = [raw]
+        return [raw]
 
     def _clear_external_input_queue(self) -> dict[str, Any]:
         cleared_count = int(len(self._pending_external_text_chunks))
@@ -1304,7 +1313,17 @@ class ObservatoryApp:
                     if (submission_integrity or {}).get("status") == "repaired"
                     else "accepted"
                 )
-                queued_chunks = self._enqueue_external_text(accepted_text)
+                label_flags = tick_labels if isinstance(tick_labels, dict) else {}
+                single_tick_input = bool(
+                    label_flags.get("single_tick_input")
+                    or label_flags.get("single_tick_text")
+                    or label_flags.get("bypass_input_chunk_queue")
+                )
+                queued_chunks = (
+                    self._push_single_tick_text(accepted_text)
+                    if single_tick_input
+                    else self._enqueue_external_text(accepted_text)
+                )
             else:
                 accepted_text = ""
                 submission_status = "rejected"
@@ -2622,8 +2641,10 @@ class ObservatoryApp:
         report["tick_counter"] = int(self.tick_counter)
         report["finished_at"] = int(time.time() * 1000)
         report["exports"] = self._export_report(trace_id, report)
-        self._last_report = report
-        self._report_history.append(report)
+        runtime_report = self._compact_report_for_runtime_cache(report)
+        self._last_report = runtime_report
+        self._last_report_trace_id = str(runtime_report.get("trace_id", "") or trace_id)
+        self._report_history.append(runtime_report)
         history_limit = max(1, int(self._config.get("history_limit", 24)))
         if len(self._report_history) > history_limit:
             self._report_history = self._report_history[-history_limit:]
@@ -2686,14 +2707,32 @@ class ObservatoryApp:
 
     def get_report(self, trace_id: str = "latest") -> dict[str, Any] | None:
         if trace_id in {"", "latest"}:
+            candidate_paths: list[Path] = []
+            last_trace_id = str(self._last_report_trace_id or "").strip()
+            if last_trace_id:
+                candidate_paths.append(self.output_dir / f"{last_trace_id}.full.json")
+                candidate_paths.append(self.output_dir / f"{last_trace_id}.json")
+            candidate_paths.append(self.output_dir / "latest.json")
+            for report_path in candidate_paths:
+                if not report_path.exists():
+                    continue
+                try:
+                    return json.loads(report_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
             return self._last_report
-        report_path = self.output_dir / f"{trace_id}.json"
-        if not report_path.exists():
-            return None
-        try:
-            return json.loads(report_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
+        candidate_paths = [
+            self.output_dir / f"{trace_id}.full.json",
+            self.output_dir / f"{trace_id}.json",
+        ]
+        for report_path in candidate_paths:
+            if not report_path.exists():
+                continue
+            try:
+                return json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return None
 
     def get_recent_cycle_summaries(self, limit: int | None = None) -> list[dict]:
         items = self._report_history[-(limit or len(self._report_history)) :]
@@ -2994,6 +3033,7 @@ class ObservatoryApp:
         self._teacher_local_feedback_alias_cache = []
         self._last_report = None
         self._report_history = []
+        self._last_report_trace_id = ""
         old_tick_counter = int(getattr(self, "tick_counter", 0) or 0)
         self.tick_counter = 0
         self._started_at = int(time.time() * 1000)
@@ -13167,6 +13207,41 @@ class ObservatoryApp:
                 "message": 1200,
                 "input_text": 1200,
                 "normalized_text": 1200,
+            },
+        )
+
+    def _compact_report_for_runtime_cache(self, report: dict) -> dict:
+        return self._bounded_json_value(
+            report,
+            max_depth=6,
+            default_list_limit=48,
+            default_string_limit=1200,
+            list_limits={
+                "top_items": 24,
+                "items": 24,
+                "events": 24,
+                "round_details": 4,
+                "candidate_details": 6,
+                "cam_items": 20,
+                "groups": 24,
+                "sequence_groups": 20,
+                "units": 64,
+                "flat_tokens": 96,
+                "target_display_texts": 16,
+                "memory_item_count": 16,
+                "history": 16,
+            },
+            string_limits={
+                "display_text": 900,
+                "grouped_display_text": 900,
+                "semantic_display_text": 800,
+                "semantic_grouped_display_text": 800,
+                "visible_text": 1000,
+                "raw": 1000,
+                "normalized": 1000,
+                "message": 900,
+                "input_text": 900,
+                "normalized_text": 900,
             },
         )
 

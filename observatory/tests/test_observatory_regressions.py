@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from observatory._app import ObservatoryApp
 from observatory.experiment.metrics import extract_tick_metrics
 
@@ -144,6 +146,7 @@ def test_clear_all_resets_cached_reports_and_runtime_state():
         assert report
         assert app._last_report is not None
         assert app._report_history
+        assert app._last_report_trace_id
         assert app.tick_counter == 1
 
         app.time_sensor._delayed_tasks["demo"] = {"target_item_id": "spi_demo", "due_tick": 3}
@@ -163,6 +166,7 @@ def test_clear_all_resets_cached_reports_and_runtime_state():
 
         assert app._last_report is None
         assert app._report_history == []
+        assert app._last_report_trace_id == ""
         assert app.time_sensor._delayed_tasks == {}
         assert app.time_sensor._task_fatigue_until_tick == {}
         assert app.action._nodes == {}
@@ -184,6 +188,78 @@ def test_clear_all_resets_cached_reports_and_runtime_state():
         assert app.pool._tick_counter == 0
         snapshot = app.hdb.get_memory_activation_snapshot(trace_id="after_clear")["data"]
         assert snapshot["summary"]["count"] == 0
+    finally:
+        app.close()
+
+
+def test_runtime_report_cache_is_compact_and_latest_report_reads_from_disk(tmp_path):
+    app = ObservatoryApp(
+        config_override={
+            "history_limit": 2,
+            "export_html": False,
+            "export_json": True,
+            "export_cycle_json_history": True,
+            "export_full_cycle_json": True,
+            "output_dir": str(tmp_path / "outputs"),
+        }
+    )
+    try:
+        long_text = "第一句测试内容。第二句继续扩展。" * 300
+        report = app.run_cycle(long_text)
+        trace_id = str(report.get("trace_id") or "")
+        assert trace_id
+        assert app._last_report is not None
+        cached = app._last_report
+        assert cached is not report
+        report_json_bytes = len(json.dumps(report, ensure_ascii=False).encode("utf-8"))
+        cached_json_bytes = len(json.dumps(cached, ensure_ascii=False).encode("utf-8"))
+        assert cached_json_bytes <= report_json_bytes
+        full_report_path = app.output_dir / f"{trace_id}.full.json"
+        assert full_report_path.exists()
+        latest_report = app.get_report("latest")
+        assert latest_report is not None
+        assert latest_report == json.loads(full_report_path.read_text(encoding="utf-8"))
+        trace_report = app.get_report(trace_id)
+        assert trace_report is not None
+        assert trace_report == latest_report
+    finally:
+        app.close()
+
+
+def test_runtime_report_cache_compaction_shrinks_manual_heavy_report(tmp_path):
+    app = ObservatoryApp(
+        config_override={
+            "history_limit": 2,
+            "export_html": False,
+            "export_json": False,
+            "output_dir": str(tmp_path / "outputs"),
+        }
+    )
+    try:
+        heavy_text = "heavy_report_field_" * 2000
+        heavy_report = {
+            "trace_id": "cycle_heavy_manual",
+            "tick_counter": 1,
+            "sensor": {"input_text": heavy_text},
+            "final_state": {
+                "state_snapshot": {
+                    "summary": {"active_item_count": 1},
+                    "top_items": [{"display_text": heavy_text, "flat_tokens": list("abcdef") * 400}],
+                },
+                "state_energy_summary": {"active_item_count": 1},
+            },
+            "memory_activation": {
+                "snapshot": {
+                    "summary": {"active_count": 1},
+                    "items": [{"visible_text": heavy_text, "raw": heavy_text}],
+                }
+            },
+            "timing": {},
+        }
+        compact = app._compact_report_for_runtime_cache(heavy_report)
+        assert len(json.dumps(compact, ensure_ascii=False).encode("utf-8")) < len(
+            json.dumps(heavy_report, ensure_ascii=False).encode("utf-8")
+        )
     finally:
         app.close()
 
@@ -1132,16 +1208,36 @@ def test_teacher_feedback_context_binding_projects_reward_next_tick(tmp_path):
     try:
         for text in ["ABX", "ABY", "ABZ", "ABQ", "ABR"]:
             app.run_cycle(text)
+        atomic_candidates: list[tuple[float, str]] = []
+        for item in app.pool._store.get_all():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("ref_object_type", "") or "") != "st":
+                continue
+            row = app.pool._snapshot._build_top_item_summary(item)
+            if not app._is_teacher_feedback_atomic_target(
+                target_item_id=str(item.get("id", "") or ""),
+                target_row=row,
+            ):
+                continue
+            energy = item.get("energy", {}) if isinstance(item.get("energy", {}), dict) else {}
+            total = float(energy.get("er", 0.0) or 0.0) + float(energy.get("ev", 0.0) or 0.0)
+            atomic_candidates.append((total, str(item.get("id", "") or "")))
+        atomic_candidates.sort(reverse=True)
+        assert atomic_candidates
+        target_item_id = atomic_candidates[0][1]
         reward_report = app.run_cycle(
             "ABX",
             labels={
                 "teacher_rwd": 0.9,
-                "teacher_anchor": "pool_top1_total",
+                "teacher_anchor": "specific_item",
+                "teacher_anchor_item_id": target_item_id,
                 "teacher_anchor_ref_object_types": ["st"],
                 "teacher_note": "teacher_reward_probe_round1",
             },
         )
         teacher_feedback = (reward_report.get("teacher_feedback") or {})
+        assert ((teacher_feedback.get("target") or {}).get("item_id")) == target_item_id
         assert teacher_feedback.get("primary_target_atomic") is True
         assert int(teacher_feedback.get("context_binding_candidate_count") or 0) >= 1
         assert int(teacher_feedback.get("context_binding_applied_count") or 0) >= 1
@@ -1231,10 +1327,16 @@ def test_hdb_modulation_reports_runtime_clamped_effective_ratios():
         }
     )
     try:
+        base_ev = float(app.hdb._config.get("ev_propagation_ratio", 0.0) or 0.0)
+        base_er = float(app.hdb._config.get("er_induction_ratio", 0.0) or 0.0)
+        assert base_ev > 0.0
+        assert base_er > 0.0
+        ev_scale = max(5.0, 1.25 / base_ev)
+        er_scale = max(5.0, 1.25 / base_er)
         result = app._apply_hdb_modulation_for_tick(
             modulation={
-                "ev_propagation_ratio_scale": 5.0,
-                "er_induction_ratio_scale": 5.0,
+                "ev_propagation_ratio_scale": ev_scale,
+                "er_induction_ratio_scale": er_scale,
             },
             trace_id="reg_hdb_modulation",
             tick_id="cycle_0001",
@@ -1242,10 +1344,10 @@ def test_hdb_modulation_reports_runtime_clamped_effective_ratios():
         applied = ((result or {}).get("applied", {}) or {})
         ev = applied.get("ev_propagation_ratio", {}) or {}
         er = applied.get("er_induction_ratio", {}) or {}
-        assert ev.get("effective") == 1.4
+        assert ev.get("effective") == round(base_ev * ev_scale, 8)
         assert ev.get("runtime_effective") == 1.0
         assert ev.get("runtime_clamped") is True
-        assert er.get("effective") == 1.1
+        assert er.get("effective") == round(base_er * er_scale, 8)
         assert er.get("runtime_effective") == 1.0
         assert er.get("runtime_clamped") is True
     finally:

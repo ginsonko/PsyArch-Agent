@@ -298,6 +298,10 @@ type AgentConfig = AnyRecord & {
   scheduled_task_limit?: number;
   scheduled_task_warn_ratio?: number;
   tool_context_top_limit?: number;
+  timeline_recall_timeout_ms?: number;
+  timeline_recall_min_score?: number;
+  timeline_recall_accumulate_threshold?: number;
+  timeline_recall_fatigue_decay?: number;
   library_enabled?: boolean;
   library_chunk_target_chars?: number;
   library_after_chunk_ticks?: number;
@@ -2540,6 +2544,10 @@ function ConfigEditor({
           <NumberInput label="单条日记最大字符" value={Number(draft.diary_entry_max_chars ?? 20000)} min={1000} max={120000} step={1000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_entry_max_chars', Number(v) || 20000)} />
           <NumberInput label="查日记返回总字符" value={Number(draft.diary_read_total_max_chars ?? 60000)} min={2000} max={240000} step={2000} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'diary_read_total_max_chars', Number(v) || 60000)} />
           <NumberInput label="近期工具 top 条数" description="进入 LLM 上下文的最近日记、定时任务和读书理解快捷线索数量；不足时仍应查完整列表。" value={Number(draft.tool_context_top_limit ?? 5)} min={0} max={30} step={1} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'tool_context_top_limit', Number(v) || 0)} />
+          <NumberInput label="时序回忆超时 ms" description="只给线索、不带时间参数时，最多倒序回想多久；默认 5000。" value={Number(draft.timeline_recall_timeout_ms ?? 5000)} min={200} max={60000} step={100} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'timeline_recall_timeout_ms', Number(v) || 5000)} />
+          <NumberInput label="时序回忆最低匹配分" description="只带线索回忆时，单条记忆至少达到这个分数才会进入候选。" value={Number(draft.timeline_recall_min_score ?? 0.28)} min={0} max={1.5} step={0.01} decimalScale={2} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'timeline_recall_min_score', Number(v) || 0)} />
+          <NumberInput label="时序回忆累计阈值" description="只带线索回忆时，累计匹配分超过这个值就提前停止，避免无限往前翻。" value={Number(draft.timeline_recall_accumulate_threshold ?? 1.6)} min={0.1} max={20} step={0.1} decimalScale={2} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'timeline_recall_accumulate_threshold', Number(v) || 0.1)} />
+          <NumberInput label="时序回忆疲劳衰减" description="越往更旧分片回想，匹配分乘上这个衰减系数；再次回忆时更容易捞到不同结果。" value={Number(draft.timeline_recall_fatigue_decay ?? 0.72)} min={0} max={1} step={0.01} decimalScale={2} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'timeline_recall_fatigue_decay', Number(v) || 0)} />
           <Switch label="启用定时任务工具" checked={draft.scheduled_tasks_enabled !== false} onChange={(event) => updateField<AgentConfig>(setDraftEditable, 'scheduled_tasks_enabled', event.currentTarget.checked)} />
           <NumberInput label="定时任务总数上限" value={Number(draft.scheduled_task_limit ?? 100)} min={5} max={1000} step={5} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_limit', Number(v) || 100)} />
           <NumberInput label="定时任务上限提醒比例" value={Number(draft.scheduled_task_warn_ratio ?? 0.9)} min={0.1} max={1} step={0.05} onChange={(v) => updateField<AgentConfig>(setDraftEditable, 'scheduled_task_warn_ratio', Number(v) || 0.9)} />

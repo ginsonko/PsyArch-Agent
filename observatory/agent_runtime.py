@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import copy
 import base64
+import ctypes
+import gc
 import fnmatch
 import gzip
 import difflib
@@ -49,6 +51,23 @@ except Exception:  # pragma: no cover - optional observatory metric catalog help
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _windows_trim_process_working_set() -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        handle = kernel32.GetCurrentProcess()
+        if not handle:
+            return False
+        psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
+        psapi.EmptyWorkingSet.restype = ctypes.c_int
+        return bool(psapi.EmptyWorkingSet(handle))
+    except Exception:
+        return False
 
 
 def _reply_similarity_key(value: Any) -> str:
@@ -159,6 +178,16 @@ def _diary_path() -> Path:
 
 def _scheduled_tasks_path() -> Path:
     return _outputs_dir() / "agent_scheduled_tasks.json"
+
+
+def _timeline_memory_dir() -> Path:
+    path = _outputs_dir() / "timeline_memory"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _timeline_index_path() -> Path:
+    return _timeline_memory_dir() / "index.json"
 
 
 def _library_dir() -> Path:
@@ -1954,6 +1983,14 @@ def _canonical_tool_name(name: Any) -> str:
         "book_import": "import_book",
         "导入书籍": "import_book",
         "add_book": "import_book",
+        "timeline_recall": "timeline_recall",
+        "time_recall": "timeline_recall",
+        "memory_recall": "timeline_recall",
+        "chronological_recall": "timeline_recall",
+        "回忆": "timeline_recall",
+        "时序回忆": "timeline_recall",
+        "按时间回忆": "timeline_recall",
+        "回想上午聊了什么": "timeline_recall",
         "schedule_task": "schedule_task",
         "scheduled_task": "schedule_task",
         "timer_task": "schedule_task",
@@ -3088,6 +3125,22 @@ class AgentConfig:
     scheduled_task_limit: int = 100
     scheduled_task_warn_ratio: float = 0.9
     tool_context_top_limit: int = 5
+    timeline_memory_enabled: bool = True
+    timeline_memory_shard_max_chars: int = 100000
+    timeline_memory_result_limit: int = 24
+    timeline_memory_neighbor_window: int = 1
+    timeline_recall_timeout_ms: int = 5000
+    timeline_recall_min_score: float = 0.28
+    timeline_recall_accumulate_threshold: float = 1.6
+    timeline_recall_fatigue_decay: float = 0.72
+    runtime_report_history_soft_limit: int = 12
+    runtime_memory_maintenance_interval_ms: int = 15000
+    runtime_memory_log_interval_ms: int = 60000
+    idle_memory_maintenance_interval_ms: int = 45000
+    idle_memory_hdb_cooldown_ms: int = 180000
+    idle_memory_state_snapshot_cache_clear_enabled: bool = True
+    idle_memory_working_set_trim_enabled: bool = True
+    reading_batch_full_report_limit: int = 6
     library_enabled: bool = True
     library_chunk_target_chars: int = 30
     library_after_chunk_ticks: int = 6
@@ -3098,7 +3151,7 @@ class AgentConfig:
     library_book_limit: int = 200
     mcp_enabled: bool = False
     skill_enabled: bool = True
-    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
+    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
     model_pool: list[dict[str, Any]] = field(default_factory=list)
     persona_name: str = _DEFAULT_PERSONA_NAME
     persona_text: str = _DEFAULT_PERSONA_TEXT
@@ -3269,6 +3322,22 @@ class AgentConfig:
         base.scheduled_task_limit = max(5, min(1000, _as_int(base.scheduled_task_limit, 100)))
         base.scheduled_task_warn_ratio = max(0.1, min(1.0, _as_float(base.scheduled_task_warn_ratio, 0.9)))
         base.tool_context_top_limit = max(0, min(20, _as_int(base.tool_context_top_limit, 5)))
+        base.timeline_memory_enabled = bool(base.timeline_memory_enabled)
+        base.timeline_memory_shard_max_chars = max(20000, min(500000, _as_int(base.timeline_memory_shard_max_chars, 100000)))
+        base.timeline_memory_result_limit = max(4, min(80, _as_int(base.timeline_memory_result_limit, 24)))
+        base.timeline_memory_neighbor_window = max(0, min(4, _as_int(base.timeline_memory_neighbor_window, 1)))
+        base.timeline_recall_timeout_ms = max(500, min(60000, _as_int(base.timeline_recall_timeout_ms, 5000)))
+        base.timeline_recall_min_score = max(0.0, min(1.5, _as_float(base.timeline_recall_min_score, 0.28)))
+        base.timeline_recall_accumulate_threshold = max(0.1, min(20.0, _as_float(base.timeline_recall_accumulate_threshold, 1.6)))
+        base.timeline_recall_fatigue_decay = max(0.0, min(1.0, _as_float(base.timeline_recall_fatigue_decay, 0.72)))
+        base.runtime_report_history_soft_limit = max(3, min(24, _as_int(base.runtime_report_history_soft_limit, 12)))
+        base.runtime_memory_maintenance_interval_ms = max(1000, min(600000, _as_int(base.runtime_memory_maintenance_interval_ms, 15000)))
+        base.runtime_memory_log_interval_ms = max(5000, min(3600000, _as_int(base.runtime_memory_log_interval_ms, 60000)))
+        base.idle_memory_maintenance_interval_ms = max(5000, min(3600000, _as_int(base.idle_memory_maintenance_interval_ms, 45000)))
+        base.idle_memory_hdb_cooldown_ms = max(10000, min(24 * 60 * 60 * 1000, _as_int(base.idle_memory_hdb_cooldown_ms, 180000)))
+        base.idle_memory_state_snapshot_cache_clear_enabled = bool(base.idle_memory_state_snapshot_cache_clear_enabled)
+        base.idle_memory_working_set_trim_enabled = bool(base.idle_memory_working_set_trim_enabled)
+        base.reading_batch_full_report_limit = max(2, min(24, _as_int(base.reading_batch_full_report_limit, 6)))
         base.library_enabled = bool(base.library_enabled)
         base.library_chunk_target_chars = max(10, min(800, _as_int(base.library_chunk_target_chars, 30)))
         base.library_after_chunk_ticks = max(0, min(80, _as_int(base.library_after_chunk_ticks, 6)))
@@ -3277,8 +3346,8 @@ class AgentConfig:
         base.library_review_tick_interval = max(10, min(10000, _as_int(base.library_review_tick_interval, 300)))
         base.library_review_text_chars = max(1000, min(1000000, _as_int(base.library_review_text_chars, 200000)))
         base.library_book_limit = max(1, min(1000, _as_int(base.library_book_limit, 200)))
-        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
-        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
+        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
+        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
             if builtin_tool not in base.tool_allowlist:
                 base.tool_allowlist.append(builtin_tool)
         if not isinstance(base.model_pool, list):
@@ -4148,6 +4217,29 @@ class LocalToolRegistry:
                 "input_schema": {"path": "本地文件路径", "title": "可选标题", "text": "也可直接传文本内容", "summary": "可选简介", "tags": ["可选标签"]},
             },
             {
+                "name": "timeline_recall",
+                "label": "时序回忆",
+                "enabled": self._allowed("timeline_recall"),
+                "description": "按时间差、目标时间和线索文本显式检索对话/想法时序记忆。适合回答“上午聊了什么”“几分钟前约了什么”“还记得刚才说到哪了吗”这类问题；可与 AP 回忆并行使用做交叉核对。",
+                "input_schema": {
+                    "time_offset_ms": "可选，距现在多久前；也可用 minutes_ago / hours_ago / days_ago",
+                    "target_time_ms": "可选，直接指定目标时间戳（毫秒或秒）",
+                    "minutes_ago": "可选，多少分钟前",
+                    "hours_ago": "可选，多少小时前",
+                    "days_ago": "可选，多少天前",
+                    "window_ms": "可选，围绕目标时间额外展开多大时间窗",
+                    "clues": ["可选，线索词列表；也可用 clue / query / text 传字符串。只传线索不传时间时，会从最近时序分片开始倒序回想。"],
+                    "timeout_ms": "可选，只传线索时的最大回忆时长；默认走配置，一般 5000ms",
+                    "min_score": "可选，单条记忆进入结果的最低匹配分数",
+                    "accumulate_threshold": "可选，只传线索时累计匹配分达到这个阈值就提前停止",
+                    "fatigue_decay": "可选，只传线索时越往更旧分片回想，匹配分衰减系数越低，便于下一次捞到不同结果",
+                    "shard_id": "可选，直接查看某个时序分片",
+                    "neighbor_offset": "可选，-1 看前一个分片，1 看后一个分片",
+                    "include_adjacent": "可选，是否附带相邻分片摘要",
+                    "limit": "可选，最多返回多少条匹配",
+                },
+            },
+            {
                 "name": "ap_tick_report",
                 "label": "AP 近期 tick 报告",
                 "enabled": self._allowed("ap_tick_report"),
@@ -4260,6 +4352,8 @@ class LocalToolRegistry:
                 )
             elif tool_name == "import_book":
                 output = self.runtime.import_book(args, source=source)
+            elif tool_name == "timeline_recall":
+                output = self._tool_timeline_recall(args)
             elif tool_name == "ap_tick_report":
                 output = self._tool_ap_tick_report(args)
             elif tool_name == "ap_recall":
@@ -4743,6 +4837,9 @@ class LocalToolRegistry:
 
     def _tool_ap_recall(self, args: dict[str, Any]) -> dict[str, Any]:
         return self.runtime.run_ap_recall(args, source="tool_ap_recall")
+
+    def _tool_timeline_recall(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.runtime.timeline_recall(args, source="tool_timeline_recall")
 
     def _tool_web_search(self, args: dict[str, Any]) -> dict[str, Any]:
         query = _clean_text(args.get("query") or args.get("q") or "", max_chars=300)
@@ -5284,7 +5381,13 @@ class AgentRuntime:
         self._last_status_compact: dict[str, Any] = {}
         self._last_prompt_section_budgets: dict[str, Any] = {}
         self._last_output_maintenance_ms = 0
+        self._last_runtime_memory_health: dict[str, Any] = {}
+        self._last_runtime_memory_maintenance_ms = 0
+        self._last_runtime_memory_log_ms = 0
+        self._last_idle_memory_maintenance_ms = 0
+        self._last_idle_hdb_memory_maintenance_ms = 0
         _trim_output_files()
+        self._trim_runtime_report_history_if_needed()
         self._refresh_compact_status_cache()
 
     def set_app_lock(self, lock: Any) -> None:
@@ -5300,6 +5403,7 @@ class AgentRuntime:
         if lock is None:
             report = self.app.run_cycle(text=text, labels=labels)
             run_done_ms = _now_ms()
+            self._trim_runtime_report_history_if_needed()
             self._remember_report_snapshot(report, source="run_cycle")
             snapshot_done_ms = _now_ms()
             self._annotate_agent_cycle_timing(
@@ -5309,12 +5413,14 @@ class AgentRuntime:
                 snapshot_ms=max(0, snapshot_done_ms - run_done_ms),
                 total_ms=max(0, snapshot_done_ms - start_ms),
             )
+            self._post_cycle_memory_maintenance(source=str(_as_dict(labels).get("source") or "run_cycle"))
             return report
         with lock:
             wait_ms = max(0, _now_ms() - wait_started_ms)
             run_started_ms = _now_ms()
             report = self.app.run_cycle(text=text, labels=labels)
             run_done_ms = _now_ms()
+            self._trim_runtime_report_history_if_needed()
             self._remember_report_snapshot(report, source="run_cycle")
             snapshot_done_ms = _now_ms()
             self._annotate_agent_cycle_timing(
@@ -5324,6 +5430,7 @@ class AgentRuntime:
                 snapshot_ms=max(0, snapshot_done_ms - run_done_ms),
                 total_ms=max(0, snapshot_done_ms - start_ms),
             )
+            self._post_cycle_memory_maintenance(source=str(_as_dict(labels).get("source") or "run_cycle"))
             return report
 
     def _annotate_agent_cycle_timing(
@@ -5353,6 +5460,337 @@ class AgentRuntime:
         steps["agent_run_cycle_wall_ms"] = run_ms
         steps["agent_snapshot_wall_ms"] = snapshot_ms
         steps["agent_cycle_total_wall_ms"] = total_ms
+
+    def _trim_runtime_report_history_if_needed(self) -> None:
+        app = self.app
+        try:
+            history = getattr(app, "_report_history", None)
+            soft_limit = max(3, int(self.config.runtime_report_history_soft_limit or 12))
+            if isinstance(history, list) and len(history) > soft_limit:
+                app._report_history = history[-soft_limit:]
+        except Exception:
+            return
+
+    def _app_runtime_cache_health(self) -> dict[str, Any]:
+        app = self.app
+        exact_rebind_cache = getattr(app, "_runtime_residual_exact_rebind_cache", None)
+        projection_fatigue = getattr(app, "_projection_fatigue", None)
+        teacher_alias_cache = getattr(app, "_teacher_local_feedback_alias_cache", None)
+        pending_external_chunks = getattr(app, "_pending_external_text_chunks", None)
+        runtime_pool_summary_cache = getattr(app, "_runtime_pool_item_summary_cache", None)
+        state_snapshot_cache = None
+        try:
+            state_snapshot_cache = getattr(getattr(app, "pool", None), "_snapshot", None)
+            state_snapshot_cache = getattr(state_snapshot_cache, "_item_summary_cache", None)
+        except Exception:
+            state_snapshot_cache = None
+        hdb_structure_shared_cache = None
+        try:
+            hdb_structure_shared_cache = getattr(getattr(app, "hdb", None), "_structure_store", None)
+            hdb_structure_shared_cache = getattr(hdb_structure_shared_cache, "_shared_runtime_cache", None)
+        except Exception:
+            hdb_structure_shared_cache = None
+        return {
+            "exact_rebind_cache_count": len(exact_rebind_cache) if isinstance(exact_rebind_cache, dict) else 0,
+            "projection_fatigue_count": len(projection_fatigue) if isinstance(projection_fatigue, dict) else 0,
+            "teacher_alias_cache_count": len(teacher_alias_cache) if isinstance(teacher_alias_cache, list) else 0,
+            "pending_external_chunk_count": len(pending_external_chunks) if isinstance(pending_external_chunks, list) else 0,
+            "runtime_pool_summary_cache_count": len(runtime_pool_summary_cache) if isinstance(runtime_pool_summary_cache, dict) else 0,
+            "state_snapshot_item_summary_cache_count": len(state_snapshot_cache) if isinstance(state_snapshot_cache, dict) else 0,
+            "hdb_shared_runtime_cache_namespace_count": len(hdb_structure_shared_cache) if isinstance(hdb_structure_shared_cache, dict) else 0,
+            "hdb_shared_runtime_cache_entry_count": sum(len(bucket) for bucket in hdb_structure_shared_cache.values() if isinstance(bucket, dict)) if isinstance(hdb_structure_shared_cache, dict) else 0,
+        }
+
+    def _trim_app_runtime_caches_if_needed(self) -> dict[str, int]:
+        app = self.app
+        trimmed = {
+            "exact_rebind_cache_trimmed": 0,
+            "projection_fatigue_trimmed": 0,
+            "runtime_pool_summary_cache_trimmed": 0,
+            "state_snapshot_item_summary_cache_cleared": 0,
+        }
+        try:
+            exact_rebind_cache = getattr(app, "_runtime_residual_exact_rebind_cache", None)
+            if isinstance(exact_rebind_cache, dict) and len(exact_rebind_cache) > 4096:
+                keep_items = list(exact_rebind_cache.items())[-2048:]
+                trimmed["exact_rebind_cache_trimmed"] = max(0, len(exact_rebind_cache) - len(keep_items))
+                setattr(app, "_runtime_residual_exact_rebind_cache", dict(keep_items))
+        except Exception:
+            pass
+        try:
+            projection_fatigue = getattr(app, "_projection_fatigue", None)
+            if isinstance(projection_fatigue, dict):
+                cleanup = getattr(app, "_cleanup_projection_fatigue_if_needed", None)
+                if callable(cleanup):
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
+                projection_fatigue = getattr(app, "_projection_fatigue", None)
+                if isinstance(projection_fatigue, dict) and len(projection_fatigue) > 8192:
+                    current_tick = 0
+                    current_tick_getter = getattr(app, "_projection_fatigue_current_tick", None)
+                    if callable(current_tick_getter):
+                        try:
+                            current_tick = max(0, int(current_tick_getter()))
+                        except Exception:
+                            current_tick = 0
+                    rows: list[tuple[int, str, Any]] = []
+                    for key, value in projection_fatigue.items():
+                        tick_value = _as_int(value.get("tick"), 0) if isinstance(value, dict) else 0
+                        rows.append((tick_value, str(key), value))
+                    rows.sort(key=lambda item: item[0], reverse=True)
+                    kept: dict[str, Any] = {}
+                    dropped = 0
+                    max_age = 2048
+                    for tick_value, key, value in rows:
+                        if current_tick and tick_value and current_tick - tick_value > max_age:
+                            dropped += 1
+                            continue
+                        if len(kept) >= 4096:
+                            dropped += 1
+                            continue
+                        kept[key] = value
+                    trimmed["projection_fatigue_trimmed"] = max(0, dropped)
+                    setattr(app, "_projection_fatigue", kept)
+        except Exception:
+            pass
+        try:
+            runtime_pool_summary_cache = getattr(app, "_runtime_pool_item_summary_cache", None)
+            if isinstance(runtime_pool_summary_cache, dict) and len(runtime_pool_summary_cache) > 4096:
+                keep_items = list(runtime_pool_summary_cache.items())[-2048:]
+                trimmed["runtime_pool_summary_cache_trimmed"] = max(0, len(runtime_pool_summary_cache) - len(keep_items))
+                setattr(app, "_runtime_pool_item_summary_cache", dict(keep_items))
+        except Exception:
+            pass
+        try:
+            snapshot_engine = getattr(getattr(app, "pool", None), "_snapshot", None)
+            cache = getattr(snapshot_engine, "_item_summary_cache", None)
+            if isinstance(cache, dict) and len(cache) > 8192:
+                clear = getattr(snapshot_engine, "clear_item_summary_cache", None)
+                if callable(clear):
+                    trimmed["state_snapshot_item_summary_cache_cleared"] = len(cache)
+                    clear()
+        except Exception:
+            pass
+        return trimmed
+
+    def _run_windows_working_set_trim(self) -> bool:
+        try:
+            if not bool(self.config.idle_memory_working_set_trim_enabled):
+                return False
+        except Exception:
+            return False
+        return _windows_trim_process_working_set()
+
+    def _perform_idle_memory_maintenance(
+        self,
+        *,
+        source: str = "",
+        should_abort: Callable[[], bool] | None = None,
+        include_hdb_runtime_reset: bool = False,
+    ) -> dict[str, Any]:
+        def aborted() -> bool:
+            if callable(should_abort):
+                try:
+                    return bool(should_abort())
+                except Exception:
+                    return False
+            return False
+
+        result = {
+            "ran": False,
+            "aborted": False,
+            "gc_collected": False,
+            "trimmed": {},
+            "hdb_runtime_reset": {},
+            "state_snapshot_cache_cleared": False,
+            "working_set_trimmed": False,
+            "health_before": {},
+            "health_after": {},
+            "wall_ms": 0,
+            "source": source or "idle",
+        }
+        started_ms = _now_ms()
+        if aborted():
+            result["aborted"] = True
+            return result
+        result["health_before"] = self._runtime_memory_health()
+        self._trim_runtime_report_history_if_needed()
+        if aborted():
+            result["aborted"] = True
+            result["wall_ms"] = max(0, _now_ms() - started_ms)
+            return result
+        try:
+            gc.collect()
+            result["gc_collected"] = True
+        except Exception:
+            result["gc_collected"] = False
+        trimmed = self._trim_app_runtime_caches_if_needed()
+        result["trimmed"] = dict(trimmed)
+        result["state_snapshot_cache_cleared"] = bool(_as_int(trimmed.get("state_snapshot_item_summary_cache_cleared"), 0) > 0)
+        if aborted():
+            result["aborted"] = True
+            result["health_after"] = self._runtime_memory_health()
+            result["wall_ms"] = max(0, _now_ms() - started_ms)
+            return result
+        if include_hdb_runtime_reset:
+            try:
+                hdb = getattr(self.app, "hdb", None)
+                if hdb is not None and hasattr(hdb, "_reset_runtime_state"):
+                    result["hdb_runtime_reset"] = dict(hdb._reset_runtime_state() or {})
+            except Exception as exc:
+                result["hdb_runtime_reset"] = {"error": str(exc)}
+        if aborted():
+            result["aborted"] = True
+            result["health_after"] = self._runtime_memory_health()
+            result["wall_ms"] = max(0, _now_ms() - started_ms)
+            return result
+        result["working_set_trimmed"] = self._run_windows_working_set_trim()
+        result["health_after"] = self._runtime_memory_health()
+        result["ran"] = True
+        result["wall_ms"] = max(0, _now_ms() - started_ms)
+        return result
+
+    def maybe_run_idle_memory_maintenance(
+        self,
+        *,
+        source: str = "",
+        should_abort: Callable[[], bool] | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        def aborted() -> bool:
+            if callable(should_abort):
+                try:
+                    return bool(should_abort())
+                except Exception:
+                    return False
+            return False
+
+        if aborted():
+            return {"ran": False, "aborted": True, "reason": "abort_before_idle_maintenance", "source": source or "idle"}
+        now_ms = _now_ms()
+        interval_ms = max(1000, int(self.config.idle_memory_maintenance_interval_ms or 45000))
+        hdb_cooldown_ms = max(interval_ms, int(self.config.idle_memory_hdb_cooldown_ms or 180000))
+        if not force and now_ms - int(self._last_idle_memory_maintenance_ms or 0) < interval_ms:
+            return {"ran": False, "aborted": False, "reason": "idle_memory_interval_wait", "source": source or "idle"}
+        include_hdb_runtime_reset = force or (now_ms - int(self._last_idle_hdb_memory_maintenance_ms or 0) >= hdb_cooldown_ms)
+        result = self._perform_idle_memory_maintenance(
+            source=source,
+            should_abort=should_abort,
+            include_hdb_runtime_reset=include_hdb_runtime_reset,
+        )
+        if result.get("ran"):
+            self._last_idle_memory_maintenance_ms = now_ms
+            if include_hdb_runtime_reset:
+                self._last_idle_hdb_memory_maintenance_ms = now_ms
+            if (
+                any(_as_int(value, 0) > 0 for value in _as_dict(result.get("trimmed")).values())
+                or bool(_as_dict(result.get("hdb_runtime_reset")))
+                or bool(result.get("working_set_trimmed"))
+            ):
+                try:
+                    self.record_system_log(
+                        {
+                            "event": "runtime_idle_memory_maintenance",
+                            "task": "闲时内存维护",
+                            "stage": source or "idle",
+                            "summary": "已在闲时执行一次可中断的内存整理。",
+                            "detail": json.dumps(result, ensure_ascii=False),
+                            "progress": 100,
+                        }
+                    )
+                except Exception:
+                    pass
+        return result
+
+    def _runtime_memory_health(self) -> dict[str, Any]:
+        app = self.app
+        report_history = getattr(app, "_report_history", None)
+        state_messages = len([row for row in _as_list(self.state.get("messages")) if isinstance(row, dict)])
+        state_thoughts = len([row for row in _as_list(self.state.get("thoughts")) if isinstance(row, dict)])
+        state_turns = len([row for row in _as_list(self.state.get("turns")) if isinstance(row, dict)])
+        pool_items = 0
+        hdb_recent = 0
+        try:
+            last_report = _as_dict(getattr(app, "_last_report", {}))
+            final_state = _as_dict(last_report.get("final_state"))
+            summary = _as_dict(final_state.get("state_energy_summary") or _as_dict(final_state.get("state_snapshot")).get("summary"))
+            pool_items = max(0, _as_int(summary.get("active_item_count"), 0))
+        except Exception:
+            pool_items = 0
+        try:
+            memory_activation = _as_dict(_as_dict(getattr(app, "_last_report", {})).get("memory_activation"))
+            snapshot = _as_dict(memory_activation.get("snapshot"))
+            hdb_recent = max(
+                0,
+                _as_int(
+                    _as_dict(snapshot.get("summary")).get("active_count", snapshot.get("item_count", 0)),
+                    0,
+                ),
+            )
+        except Exception:
+            hdb_recent = 0
+        return {
+            "state_messages": state_messages,
+            "state_thoughts": state_thoughts,
+            "state_turns": state_turns,
+            "report_history_count": len(report_history) if isinstance(report_history, list) else 0,
+            "pool_active_item_count": pool_items,
+            "recent_memory_activation_count": hdb_recent,
+            "state_file_bytes": _as_int(_file_info(_state_path()).get("bytes"), 0),
+            "events_file_bytes": _as_int(_file_info(_events_path()).get("bytes"), 0),
+            **self._app_runtime_cache_health(),
+        }
+
+    def _post_cycle_memory_maintenance(self, *, source: str = "") -> None:
+        self._trim_runtime_report_history_if_needed()
+        now_ms = _now_ms()
+        maintenance_interval_ms = max(1000, int(self.config.runtime_memory_maintenance_interval_ms or 15000))
+        log_interval_ms = max(5000, int(self.config.runtime_memory_log_interval_ms or 60000))
+        should_collect_gc = now_ms - int(self._last_runtime_memory_maintenance_ms or 0) >= maintenance_interval_ms
+        if should_collect_gc:
+            try:
+                gc.collect()
+            except Exception:
+                pass
+            trimmed = self._trim_app_runtime_caches_if_needed()
+            self._last_runtime_memory_maintenance_ms = now_ms
+        else:
+            trimmed = {
+                "exact_rebind_cache_trimmed": 0,
+                "projection_fatigue_trimmed": 0,
+                "runtime_pool_summary_cache_trimmed": 0,
+                "state_snapshot_item_summary_cache_cleared": 0,
+            }
+        health = self._runtime_memory_health()
+        self._last_runtime_memory_health = dict(health)
+        needs_log = (
+            _as_int(health.get("report_history_count"), 0) >= max(3, int(self.config.runtime_report_history_soft_limit or 12))
+            or _as_int(health.get("state_file_bytes"), 0) > (2 * 1024 * 1024)
+            or _as_int(health.get("events_file_bytes"), 0) > (4 * 1024 * 1024)
+            or _as_int(health.get("exact_rebind_cache_count"), 0) > 4096
+            or _as_int(health.get("projection_fatigue_count"), 0) > 8192
+            or _as_int(health.get("runtime_pool_summary_cache_count"), 0) > 4096
+            or _as_int(health.get("state_snapshot_item_summary_cache_count"), 0) > 8192
+            or _as_int(health.get("hdb_shared_runtime_cache_entry_count"), 0) > 16384
+            or _as_int(trimmed.get("exact_rebind_cache_trimmed"), 0) > 0
+            or _as_int(trimmed.get("projection_fatigue_trimmed"), 0) > 0
+            or _as_int(trimmed.get("runtime_pool_summary_cache_trimmed"), 0) > 0
+            or _as_int(trimmed.get("state_snapshot_item_summary_cache_cleared"), 0) > 0
+        )
+        if needs_log and now_ms - int(self._last_runtime_memory_log_ms or 0) >= log_interval_ms:
+            self._last_runtime_memory_log_ms = now_ms
+            self.record_system_log(
+                {
+                    "event": "runtime_memory_maintenance",
+                    "task": "内存维护",
+                    "stage": source or "agent_runtime",
+                    "summary": "已执行一次轻量运行内存维护。",
+                    "detail": json.dumps({**health, **trimmed, "gc_collected": bool(should_collect_gc)}, ensure_ascii=False),
+                    "progress": 100,
+                }
+            )
 
     def _merge_pending_teacher_feedback(self, labels: dict[str, Any] | None) -> dict[str, Any] | None:
         pending = self._pending_teacher_feedback_labels
@@ -5725,6 +6163,17 @@ class AgentRuntime:
             if isinstance(self._last_status_compact, dict) and self._last_status_compact:
                 self._last_status_compact["messages"] = self._compact_messages(self.state.get("messages", [])[-24:])
                 self._last_status_compact["session"] = self._compact_status()["session"]
+        self._timeline_append_record(
+            self._timeline_build_record(
+                kind="external_input",
+                role=str(row.get("role") or "user"),
+                text=row.get("text") or "",
+                ts=_as_int(row.get("created_at_ms"), _now_ms()),
+                conversation_id=row.get("conversation_id") or "",
+                adapter_label=row.get("adapter_label") or "",
+                meta={"source": row.get("source") or "", "attachment_count": len(attachments)},
+            )
+        )
         self.record_event(
             {
                 "event": "external_input_absorbed",
@@ -6004,7 +6453,24 @@ class AgentRuntime:
             sections.append("最近书籍段落理解（快捷线索，可用 read_book reviews/original 深挖）：\n" + (json.dumps(compact_reviews, ensure_ascii=False) if compact_reviews else "暂无"))
         except Exception as exc:
             sections.append(f"最近书籍段落理解读取失败：{exc}")
-        sections.append("使用说明：这些 top 信息只是最近线索，适合快速拿 id 继续查日记、取消/更新定时任务、继续读书或查看段落理解；如果没有命中，不要硬猜，应调用 read_diary / schedule_task list / browse_library 查询完整列表。")
+        try:
+            timeline = self.timeline_recall({"limit": limit, "include_adjacent": False}, source="tool_top_context")
+            compact_timeline = []
+            for row in _as_list(timeline.get("records"))[:limit]:
+                item = _as_dict(row)
+                compact_timeline.append(
+                    {
+                        "id": item.get("id"),
+                        "ts": item.get("ts"),
+                        "role": item.get("role"),
+                        "kind": item.get("kind"),
+                        "preview": _short(item.get("preview") or item.get("summary") or "", 120),
+                    }
+                )
+            sections.append("最近时序记忆线索（适合接着问上午/刚才/之前聊了什么）：\n" + (json.dumps(compact_timeline, ensure_ascii=False) if compact_timeline else "暂无"))
+        except Exception as exc:
+            sections.append(f"最近时序记忆线索读取失败：{exc}")
+        sections.append("使用说明：这些 top 信息只是最近线索，适合快速拿 id 继续查日记、取消/更新定时任务、继续读书、查看段落理解或接着做时序回忆；如果没有命中，不要硬猜，应调用 read_diary / schedule_task list / browse_library / timeline_recall 查询完整结果。")
         return "\n\n".join(sections)
 
     def _recent_outbound_reply_ledger(self, *, limit: int = 12) -> list[dict[str, Any]]:
@@ -6499,6 +6965,466 @@ class AgentRuntime:
         if cleaned.get("mood_hint"):
             cleaned["mood_hint"] = _sanitize_object_display_text(cleaned.get("mood_hint"), max_chars=260)
         return cleaned
+
+    def _timeline_load_index(self) -> dict[str, Any]:
+        raw = _safe_read_json(_timeline_index_path(), {"shards": [], "updated_at_ms": 0})
+        if not isinstance(raw, dict):
+            raw = {"shards": [], "updated_at_ms": 0}
+        shards = [row for row in _as_list(raw.get("shards")) if isinstance(row, dict)]
+        clean_shards: list[dict[str, Any]] = []
+        for row in shards:
+            shard_id = _slug_id(row.get("id") or f"timeline_{len(clean_shards) + 1}", fallback=f"timeline_{len(clean_shards) + 1}")
+            clean_shards.append(
+                {
+                    "id": shard_id,
+                    "path": _clean_text(row.get("path") or f"{shard_id}.json", max_chars=240) or f"{shard_id}.json",
+                    "start_ms": max(0, _as_int(row.get("start_ms"), 0)),
+                    "end_ms": max(0, _as_int(row.get("end_ms"), 0)),
+                    "char_count": max(0, _as_int(row.get("char_count"), 0)),
+                    "record_count": max(0, _as_int(row.get("record_count"), 0)),
+                    "prev_id": _clean_text(row.get("prev_id") or "", max_chars=120),
+                    "next_id": _clean_text(row.get("next_id") or "", max_chars=120),
+                    "created_at_ms": max(0, _as_int(row.get("created_at_ms"), 0)),
+                    "updated_at_ms": max(0, _as_int(row.get("updated_at_ms"), 0)),
+                }
+            )
+        raw["shards"] = clean_shards
+        raw["updated_at_ms"] = max(0, _as_int(raw.get("updated_at_ms"), 0))
+        return raw
+
+    def _timeline_save_index(self, payload: dict[str, Any]) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        data["updated_at_ms"] = _now_ms()
+        _safe_write_json(_timeline_index_path(), data)
+
+    def _timeline_shard_path(self, shard: dict[str, Any]) -> Path:
+        shard = shard if isinstance(shard, dict) else {}
+        filename = _clean_text(shard.get("path") or "", max_chars=240)
+        if not filename:
+            filename = f"{_slug_id(shard.get('id') or 'timeline', fallback='timeline')}.json"
+        return _timeline_memory_dir() / Path(filename).name
+
+    def _timeline_load_shard(self, shard: dict[str, Any]) -> dict[str, Any]:
+        path = self._timeline_shard_path(shard)
+        raw = _safe_read_json(path, {"records": []})
+        if not isinstance(raw, dict):
+            raw = {"records": []}
+        raw["records"] = [row for row in _as_list(raw.get("records")) if isinstance(row, dict)]
+        return raw
+
+    def _timeline_save_shard(self, shard: dict[str, Any], payload: dict[str, Any]) -> None:
+        _safe_write_json(self._timeline_shard_path(shard), payload)
+
+    def _timeline_new_shard(self, *, prev_id: str = "") -> dict[str, Any]:
+        now = _now_ms()
+        shard_id = f"timeline_{now}_{hashlib.sha1(str(now).encode('utf-8', errors='ignore')).hexdigest()[:6]}"
+        return {
+            "id": shard_id,
+            "path": f"{shard_id}.json",
+            "start_ms": 0,
+            "end_ms": 0,
+            "char_count": 0,
+            "record_count": 0,
+            "prev_id": _clean_text(prev_id, max_chars=120),
+            "next_id": "",
+            "created_at_ms": now,
+            "updated_at_ms": now,
+        }
+
+    def _timeline_compact_record(self, record: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+        row = record if isinstance(record, dict) else {}
+        compact = {
+            "id": _clean_text(row.get("id") or "", max_chars=120),
+            "ts": max(0, _as_int(row.get("ts"), 0)),
+            "role": _clean_text(row.get("role") or "", max_chars=60),
+            "kind": _clean_text(row.get("kind") or "", max_chars=60),
+            "conversation_id": _clean_text(row.get("conversation_id") or "", max_chars=120),
+            "adapter_label": _clean_text(row.get("adapter_label") or "", max_chars=120),
+            "summary": _short(row.get("summary") or row.get("text") or "", 220),
+            "preview": _short(row.get("text") or "", 280),
+            "score": round(_as_float(row.get("score"), 0.0), 4),
+        }
+        if detail:
+            compact["text"] = _clean_multiline_text(row.get("text") or "", max_chars=4000)
+            compact["meta"] = _as_dict(row.get("meta"))
+        return compact
+
+    def _timeline_build_record(
+        self,
+        *,
+        kind: str,
+        role: str,
+        text: Any,
+        ts: int | None = None,
+        conversation_id: Any = "",
+        adapter_label: Any = "",
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_text = _clean_multiline_text(text, max_chars=6000)
+        when = max(0, int(ts or _now_ms()))
+        digest_base = f"{kind}|{role}|{when}|{clean_text[:200]}"
+        return {
+            "id": f"mem_{hashlib.sha1(digest_base.encode('utf-8', errors='ignore')).hexdigest()[:16]}",
+            "kind": _clean_text(kind, max_chars=60),
+            "role": _clean_text(role, max_chars=60),
+            "ts": when,
+            "conversation_id": _clean_text(conversation_id, max_chars=120),
+            "adapter_label": _clean_text(adapter_label, max_chars=160),
+            "text": clean_text,
+            "summary": _short(clean_text, 320),
+            "char_count": len(clean_text),
+            "meta": _as_dict(meta),
+        }
+
+    def _timeline_append_record(self, record: dict[str, Any]) -> None:
+        if not bool(self.config.timeline_memory_enabled):
+            return
+        row = record if isinstance(record, dict) else {}
+        text = _clean_multiline_text(row.get("text") or "", max_chars=6000)
+        if not text:
+            return
+        with self._state_lock:
+            index = self._timeline_load_index()
+            shards = [item for item in _as_list(index.get("shards")) if isinstance(item, dict)]
+            max_chars = max(20000, int(self.config.timeline_memory_shard_max_chars or 100000))
+            shard = copy.deepcopy(shards[-1]) if shards else self._timeline_new_shard()
+            shard_payload = self._timeline_load_shard(shard)
+            records = [item for item in _as_list(shard_payload.get("records")) if isinstance(item, dict)]
+            if records and any(str(item.get("id") or "") == str(row.get("id") or "") for item in records[-12:]):
+                return
+            projected_chars = sum(len(_clean_multiline_text(item.get("text") or "", max_chars=8000)) for item in records[-24:]) + len(text)
+            if records and projected_chars > max_chars:
+                previous_id = str(shard.get("id") or "")
+                shard["updated_at_ms"] = _now_ms()
+                shards[-1] = shard
+                new_shard = self._timeline_new_shard(prev_id=previous_id)
+                shard["next_id"] = str(new_shard.get("id") or "")
+                shards[-1] = shard
+                shards.append(new_shard)
+                self._timeline_save_shard(shard, {"records": records})
+                shard = copy.deepcopy(new_shard)
+                records = []
+            records.append(copy.deepcopy(row))
+            shard["start_ms"] = min([_as_int(item.get("ts"), 0) for item in records if _as_int(item.get("ts"), 0) > 0] or [_as_int(row.get("ts"), _now_ms())])
+            shard["end_ms"] = max([_as_int(item.get("ts"), 0) for item in records] or [_as_int(row.get("ts"), _now_ms())])
+            shard["record_count"] = len(records)
+            shard["char_count"] = sum(len(_clean_multiline_text(item.get("text") or "", max_chars=8000)) for item in records[-128:])
+            shard["updated_at_ms"] = _now_ms()
+            if not shards:
+                shards = [shard]
+            else:
+                if str(shards[-1].get("id") or "") == str(shard.get("id") or ""):
+                    shards[-1] = shard
+                else:
+                    replaced = False
+                    for idx, item in enumerate(shards):
+                        if str(item.get("id") or "") == str(shard.get("id") or ""):
+                            shards[idx] = shard
+                            replaced = True
+                            break
+                    if not replaced:
+                        shards.append(shard)
+            self._timeline_save_shard(shard, {"records": records})
+            index["shards"] = shards
+            self._timeline_save_index(index)
+
+    def _timeline_neighbor(self, index: dict[str, Any], shard_id: str, offset: int) -> dict[str, Any]:
+        shards = [item for item in _as_list(index.get("shards")) if isinstance(item, dict)]
+        for idx, shard in enumerate(shards):
+            if str(shard.get("id") or "") == str(shard_id or ""):
+                target = idx + int(offset or 0)
+                if 0 <= target < len(shards):
+                    return copy.deepcopy(shards[target])
+                break
+        return {}
+
+    def _timeline_target_time_ms(self, args: dict[str, Any]) -> int:
+        now = _now_ms()
+        target = _as_int(args.get("target_time_ms"), 0)
+        if target <= 0:
+            target = _as_int(args.get("time_ms"), 0)
+        if target > 0 and target < 10_000_000_000:
+            target *= 1000
+        if target > 0:
+            return target
+        offset_ms = _as_int(args.get("time_offset_ms"), 0)
+        if offset_ms <= 0:
+            minutes_ago = _as_float(args.get("minutes_ago"), 0.0)
+            hours_ago = _as_float(args.get("hours_ago"), 0.0)
+            days_ago = _as_float(args.get("days_ago"), 0.0)
+            offset_ms = int(minutes_ago * 60_000 + hours_ago * 3_600_000 + days_ago * 86_400_000)
+        if offset_ms <= 0:
+            return 0
+        return max(0, now - max(0, offset_ms))
+
+    def _timeline_clues(self, args: dict[str, Any]) -> list[str]:
+        clues = _optional_string_list(args.get("clues"))
+        if not clues:
+            raw = args.get("clue") or args.get("query") or args.get("text") or ""
+            clues = [part.strip() for part in re.split(r"[,，、\s]+", str(raw or "")) if part.strip()]
+        return [_clean_text(item, max_chars=80) for item in clues if _clean_text(item, max_chars=80)][:12]
+
+    def _timeline_score_record(self, record: dict[str, Any], *, clues: list[str], target_ms: int, window_ms: int) -> float:
+        row = record if isinstance(record, dict) else {}
+        text = _plain_compact_text(row.get("text") or row.get("summary") or "", max_chars=5000)
+        clue_score = 0.0
+        if clues:
+            for clue in clues:
+                clue_key = _plain_compact_text(clue, max_chars=160)
+                if clue_key and clue_key in text:
+                    clue_score += 1.0
+                elif clue_key:
+                    clue_score += difflib.SequenceMatcher(None, clue_key, text[: max(len(clue_key), 1) * 12]).ratio() * 0.35
+            clue_score /= max(1, len(clues))
+        ts = _as_int(row.get("ts"), 0)
+        time_score = 0.0
+        if target_ms > 0 and ts > 0:
+            distance = abs(ts - target_ms)
+            denom = max(60_000, window_ms or 3_600_000)
+            time_score = max(0.0, 1.0 - (distance / float(denom * 2)))
+        elif not clues:
+            time_score = 0.4
+        if not clues:
+            return round(time_score, 6)
+        return round(clue_score * 0.72 + time_score * 0.28, 6)
+
+    def _timeline_recent_shard_recall(
+        self,
+        *,
+        shards: list[dict[str, Any]],
+        clues: list[str],
+        limit: int,
+        timeout_ms: int,
+        min_score: float,
+        accumulate_threshold: float,
+        fatigue_decay: float,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        started_ms = _now_ms()
+        ordered_shards = sorted(
+            [copy.deepcopy(item) for item in shards if isinstance(item, dict)],
+            key=lambda row: (
+                _as_int(row.get("end_ms"), 0),
+                _as_int(row.get("start_ms"), 0),
+                _as_int(row.get("updated_at_ms"), 0),
+            ),
+            reverse=True,
+        )
+        shard_summaries: list[dict[str, Any]] = []
+        accepted: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        scanned_shards = 0
+        scanned_records = 0
+        accumulated_score = 0.0
+        stop_reason = "all_shards_scanned"
+        current_multiplier = 1.0
+        per_shard_top_limit = max(limit * 2, 6)
+        for shard in ordered_shards:
+            if _now_ms() - started_ms >= timeout_ms:
+                stop_reason = "timeout"
+                break
+            scanned_shards += 1
+            payload = self._timeline_load_shard(shard)
+            shard_records = [item for item in _as_list(payload.get("records")) if isinstance(item, dict)]
+            scored_rows: list[dict[str, Any]] = []
+            for record in reversed(shard_records):
+                if _now_ms() - started_ms >= timeout_ms:
+                    stop_reason = "timeout"
+                    break
+                scanned_records += 1
+                scored = copy.deepcopy(record)
+                base_score = self._timeline_score_record(scored, clues=clues, target_ms=0, window_ms=0)
+                effective_score = round(base_score * current_multiplier, 6)
+                if effective_score < min_score:
+                    continue
+                scored["score"] = effective_score
+                scored["_base_score"] = round(base_score, 6)
+                scored["_fatigue_multiplier"] = round(current_multiplier, 6)
+                scored_rows.append(scored)
+            scored_rows.sort(key=lambda row: (_as_float(row.get("score"), 0.0), _as_int(row.get("ts"), 0)), reverse=True)
+            selected_for_shard = 0
+            for scored in scored_rows:
+                record_id = str(scored.get("id") or "")
+                if record_id and record_id in seen_ids:
+                    continue
+                if record_id:
+                    seen_ids.add(record_id)
+                accepted.append(scored)
+                accumulated_score += _as_float(scored.get("score"), 0.0)
+                selected_for_shard += 1
+                if len(accepted) >= limit and accumulated_score >= accumulate_threshold:
+                    stop_reason = "score_threshold_reached"
+                    break
+                if selected_for_shard >= per_shard_top_limit:
+                    break
+            shard_summaries.append(
+                {
+                    "id": shard.get("id"),
+                    "start_ms": shard.get("start_ms"),
+                    "end_ms": shard.get("end_ms"),
+                    "record_count": shard.get("record_count"),
+                    "char_count": shard.get("char_count"),
+                    "prev_id": shard.get("prev_id") or "",
+                    "next_id": shard.get("next_id") or "",
+                    "matched_count": selected_for_shard,
+                }
+            )
+            if stop_reason != "all_shards_scanned":
+                break
+            current_multiplier *= fatigue_decay
+            if current_multiplier <= 0.0:
+                current_multiplier = 0.0
+        accepted.sort(key=lambda row: (_as_float(row.get("score"), 0.0), _as_int(row.get("ts"), 0)), reverse=True)
+        return accepted[:limit], shard_summaries, {
+            "stop_reason": stop_reason,
+            "scanned_shards": scanned_shards,
+            "scanned_records": scanned_records,
+            "accumulated_score": round(accumulated_score, 6),
+            "timeout_ms": timeout_ms,
+            "min_score": round(min_score, 6),
+            "accumulate_threshold": round(accumulate_threshold, 6),
+            "fatigue_decay": round(fatigue_decay, 6),
+        }
+
+    def timeline_recall(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        if not bool(self.config.timeline_memory_enabled):
+            return {
+                "ok": False,
+                "mode": "timeline_recall",
+                "error": "timeline_memory_disabled",
+                "summary": "时序回忆当前未启用。",
+            }
+        index = self._timeline_load_index()
+        shards = [item for item in _as_list(index.get("shards")) if isinstance(item, dict)]
+        if not shards:
+            return {
+                "ok": True,
+                "mode": "timeline_recall",
+                "records": [],
+                "shards": [],
+                "summary": "时序回忆档案还是空的，当前还没有可检索的对话/想法记录。",
+            }
+        limit = max(1, min(80, _as_int(args.get("limit"), self.config.timeline_memory_result_limit)))
+        clues = self._timeline_clues(args)
+        target_ms = self._timeline_target_time_ms(args)
+        window_ms = max(60_000, _as_int(args.get("window_ms"), 90 * 60 * 1000))
+        timeout_ms = max(200, min(60000, _as_int(args.get("timeout_ms"), self.config.timeline_recall_timeout_ms)))
+        min_score = max(0.0, min(2.0, _as_float(args.get("min_score"), self.config.timeline_recall_min_score)))
+        accumulate_threshold = max(min_score, _as_float(args.get("accumulate_threshold"), self.config.timeline_recall_accumulate_threshold))
+        fatigue_decay = max(0.0, min(1.0, _as_float(args.get("fatigue_decay"), self.config.timeline_recall_fatigue_decay)))
+        shard_id = _clean_text(args.get("shard_id") or "", max_chars=120)
+        neighbor_offset = max(-3, min(3, _as_int(args.get("neighbor_offset"), 0)))
+        include_adjacent = args.get("include_adjacent", True) is not False
+        recall_mode = "time_window" if target_ms else ("clue_recent_reverse" if clues else "full_timeline")
+        selected_shards: list[dict[str, Any]] = []
+        if shard_id:
+            match = next((copy.deepcopy(item) for item in shards if str(item.get("id") or "") == shard_id), {})
+            if match:
+                selected_shards.append(match)
+                if neighbor_offset:
+                    neighbor = self._timeline_neighbor(index, shard_id, neighbor_offset)
+                    if neighbor:
+                        selected_shards.append(neighbor)
+        else:
+            for shard in shards:
+                shard_start = _as_int(shard.get("start_ms"), 0)
+                shard_end = _as_int(shard.get("end_ms"), 0)
+                if not target_ms:
+                    selected_shards.append(copy.deepcopy(shard))
+                    continue
+                if shard_start <= target_ms <= shard_end or abs(shard_start - target_ms) <= window_ms or abs(shard_end - target_ms) <= window_ms:
+                    selected_shards.append(copy.deepcopy(shard))
+            if not selected_shards:
+                nearest = sorted(
+                    shards,
+                    key=lambda row: min(
+                        abs(_as_int(row.get("start_ms"), target_ms) - target_ms),
+                        abs(_as_int(row.get("end_ms"), target_ms) - target_ms),
+                    ),
+                )[:1]
+                selected_shards = [copy.deepcopy(item) for item in nearest if isinstance(item, dict)]
+            if include_adjacent and target_ms:
+                neighbor_window = max(0, int(self.config.timeline_memory_neighbor_window or 1))
+                expanded: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for shard in selected_shards:
+                    sid = str(shard.get("id") or "")
+                    for offset in range(-neighbor_window, neighbor_window + 1):
+                        candidate = shard if offset == 0 else self._timeline_neighbor(index, sid, offset)
+                        candidate_id = str(candidate.get("id") or "")
+                        if candidate and candidate_id and candidate_id not in seen_ids:
+                            expanded.append(copy.deepcopy(candidate))
+                            seen_ids.add(candidate_id)
+                if expanded:
+                    selected_shards = expanded
+
+        records: list[dict[str, Any]] = []
+        shard_summaries: list[dict[str, Any]] = []
+        search_meta: dict[str, Any] = {}
+        if clues and not target_ms and not shard_id:
+            records, shard_summaries, search_meta = self._timeline_recent_shard_recall(
+                shards=selected_shards,
+                clues=clues,
+                limit=limit,
+                timeout_ms=timeout_ms,
+                min_score=min_score,
+                accumulate_threshold=accumulate_threshold,
+                fatigue_decay=fatigue_decay,
+            )
+        else:
+            for shard in selected_shards[: max(1, limit)]:
+                payload = self._timeline_load_shard(shard)
+                shard_records = [item for item in _as_list(payload.get("records")) if isinstance(item, dict)]
+                for record in shard_records:
+                    scored = copy.deepcopy(record)
+                    scored["score"] = self._timeline_score_record(scored, clues=clues, target_ms=target_ms, window_ms=window_ms)
+                    records.append(scored)
+                shard_summaries.append(
+                    {
+                        "id": shard.get("id"),
+                        "start_ms": shard.get("start_ms"),
+                        "end_ms": shard.get("end_ms"),
+                        "record_count": shard.get("record_count"),
+                        "char_count": shard.get("char_count"),
+                        "prev_id": shard.get("prev_id") or "",
+                        "next_id": shard.get("next_id") or "",
+                    }
+                )
+            if clues:
+                records.sort(key=lambda row: (_as_float(row.get("score"), 0.0), _as_int(row.get("ts"), 0)), reverse=True)
+                if not target_ms:
+                    records = [row for row in records if _as_float(row.get("score"), 0.0) >= min_score]
+            else:
+                records.sort(key=lambda row: _as_int(row.get("ts"), 0))
+
+        selected_records = records[:limit]
+        public_records = [self._timeline_compact_record(row, detail=True) for row in selected_records]
+        if not public_records:
+            if clues and not target_ms:
+                summary = "按线索从最近时序记忆开始倒序回想后，暂时没捞到超过门槛的结果；可以换更具体的线索，或补一个大概时间再查。"
+            else:
+                summary = "按这组时间和线索还没翻到足够像的时序记忆；可以换更近/更远的时间差，或补一两个更具体的线索词再查。"
+        elif clues:
+            if not target_ms:
+                summary = f"按线索从最近时序记忆开始倒序回想，捞到 {len(public_records)} 条较相关记录；如果还不够稳，可以补时间参数或继续翻更早分片。"
+            else:
+                summary = f"按时间和线索回忆到 {len(public_records)} 条高相关记录，可结合 AP 回忆再交叉核对。"
+        else:
+            summary = f"回看了目标时间附近的 {len(public_records)} 条时序记录。"
+        self.record_event({"event": "timeline_recall", "source": source, "record_count": len(public_records), "clue_count": len(clues), "target_ms": target_ms})
+        return {
+            "ok": True,
+            "mode": "timeline_recall",
+            "recall_mode": recall_mode,
+            "target_time_ms": target_ms,
+            "window_ms": window_ms,
+            "clues": clues,
+            "records": public_records,
+            "shards": shard_summaries,
+            "search_meta": search_meta,
+            "summary": summary,
+            "usage_hint": "如果这批记录仍不够，可改用更具体的线索词；只给线索而不给时间时，会从最近分片开始倒序回想；也可补 minutes_ago / hours_ago 缩小范围，或用 shard_id / neighbor_offset 继续翻相邻分片。",
+        }
 
     def record_event(self, payload: dict[str, Any]) -> None:
         row = dict(payload or {})
@@ -7945,6 +8871,54 @@ try {
             )
         return digest
 
+    def _report_digest_row(self, report: dict[str, Any], *, step: int = 0) -> dict[str, Any]:
+        report = report if isinstance(report, dict) else {}
+        packet: dict[str, Any] = {}
+        try:
+            packet = self.build_prompt_packet(reports=[report])
+        except Exception:
+            packet = {}
+        summary = _as_dict(packet.get("summary"))
+        action = _as_dict(packet.get("action"))
+        emotion = _as_dict(packet.get("emotion"))
+        cfs_rows = []
+        for item in _as_list(packet.get("cognitive_feelings"))[:8]:
+            row = _as_dict(item)
+            name = _clean_text(row.get("name") or row.get("label") or "", max_chars=80)
+            value = row.get("value", row.get("score"))
+            if name:
+                cfs_rows.append({"name": name, "value": round(_as_float(value, 0.0), 4)})
+        emotion_rows = []
+        for item in _as_list(emotion.get("channels") or emotion.get("nt_channels") or emotion.get("items"))[:8]:
+            row = _as_dict(item)
+            name = _clean_text(row.get("name") or row.get("label") or row.get("id") or "", max_chars=80)
+            value = row.get("value", row.get("score", row.get("level")))
+            if name:
+                emotion_rows.append({"name": name, "value": round(_as_float(value, 0.0), 4)})
+        top_actions = []
+        for item in _as_list(action.get("top_actions"))[:5]:
+            row = _as_dict(item)
+            label = _clean_text(row.get("label") or row.get("display") or row.get("id") or row.get("action_id") or "", max_chars=100)
+            if label:
+                top_actions.append({"label": label, "drive": round(_as_float(row.get("drive"), 0.0), 4)})
+        return {
+            "step": max(1, int(step or len(_as_list(packet.get("recent_reports"))) or 1)),
+            "tick": packet.get("tick_counter") or report.get("tick_counter"),
+            "mood": _sanitize_llm_visible_text(summary.get("mood_hint") or "", max_chars=220),
+            "energy": {
+                "er": round(_as_float(summary.get("total_er"), 0.0), 4),
+                "ev": round(_as_float(summary.get("total_ev"), 0.0), 4),
+                "cp": round(_as_float(summary.get("total_cp"), 0.0), 4),
+            },
+            "top_objects": _llm_object_hints(_as_list(packet.get("dominant_objects")), limit=6),
+            "cognitive_feelings": cfs_rows,
+            "nt_channels": emotion_rows,
+            "top_actions": top_actions,
+        }
+
+    def _library_report_digest_from_rows(self, rows: list[dict[str, Any]], *, max_rows: int = 16) -> list[dict[str, Any]]:
+        return [copy.deepcopy(item) for item in [row for row in rows if isinstance(row, dict)][-max(1, int(max_rows or 16)) :]]
+
     def _recent_library_review_context(self, book: dict[str, Any], *, limit: int = 3) -> list[dict[str, Any]]:
         rows = []
         for review in _as_list(_as_dict(book).get("reviews"))[-max(0, int(limit or 0)) :]:
@@ -8029,11 +9003,11 @@ try {
             max_chars=18000,
         )
 
-    def _fallback_library_review_text(self, book: dict[str, Any], chunk: dict[str, Any], reports: list[dict[str, Any]], reason: str = "") -> str:
+    def _fallback_library_review_text(self, book: dict[str, Any], chunk: dict[str, Any], report_rows: list[dict[str, Any]], reason: str = "") -> str:
         text = str(chunk.get("text") or "")
         start = _as_int(chunk.get("start"), 0)
         end = _as_int(chunk.get("end"), start)
-        digest = self._library_report_digest(reports, max_rows=4)
+        digest = self._library_report_digest_from_rows(report_rows, max_rows=4)
         hint_lines = []
         for row in digest[-3:]:
             mood = _clean_text(row.get("mood") or "", max_chars=160)
@@ -8049,13 +9023,13 @@ try {
             parts.append(f"这条理解由本地兜底生成，原因：{_short(reason, 180)}")
         return _clean_multiline_text("\n\n".join(parts), max_chars=6000)
 
-    def _make_library_review(self, book: dict[str, Any], chunk: dict[str, Any], reports: list[dict[str, Any]]) -> dict[str, Any]:
+    def _make_library_review(self, book: dict[str, Any], chunk: dict[str, Any], report_rows: list[dict[str, Any]]) -> dict[str, Any]:
         text = str(chunk.get("text") or "")
         start = _as_int(chunk.get("start"), 0)
         end = _as_int(chunk.get("end"), start)
         book_title = str(book.get("title") or "书籍")
         model = _clean_text(self.config.library_review_model or self.config.model or "", max_chars=160)
-        digest = self._library_report_digest(reports, max_rows=18)
+        digest = self._library_report_digest_from_rows(report_rows, max_rows=18)
         recent_reviews = self._recent_library_review_context(book, limit=3)
         chunk_count = max(1, len(_as_list(chunk.get("chunks"))))
         style_context = self._library_review_style_context_text()
@@ -8111,7 +9085,7 @@ try {
             status = {"ok": False, "error": str(exc), "reason": "library_review_exception"}
         generated_understanding = bool(status.get("ok") and raw.strip() and understanding)
         if not understanding:
-            understanding = self._fallback_library_review_text(book, chunk, reports, reason=str(status.get("reason") or status.get("error") or "llm_empty"))
+            understanding = self._fallback_library_review_text(book, chunk, report_rows, reason=str(status.get("reason") or status.get("error") or "llm_empty"))
         llm_generated = generated_understanding
         understanding = _clean_multiline_text(understanding, max_chars=60000)
         return {
@@ -8124,7 +9098,7 @@ try {
             "summary": understanding,
             "understanding": understanding,
             "chunk_count": chunk_count,
-            "ap_tick_count": len(reports),
+            "ap_tick_count": len(report_rows),
             "ap_tick_digest": digest[-18:],
             "llm_generated": llm_generated,
             "model": model,
@@ -8208,7 +9182,12 @@ try {
             }
             self._refresh_compact_status_cache()
 
-        def interrupted(stage: str, chunks: list[dict[str, Any]], reports: list[dict[str, Any]]) -> dict[str, Any] | None:
+        def remember_report(report: dict[str, Any], *, step: int) -> None:
+            if not isinstance(report, dict):
+                return
+            report_rows.append(self._report_digest_row(report, step=step))
+
+        def interrupted(stage: str, chunks: list[dict[str, Any]], tick_count: int) -> dict[str, Any] | None:
             try:
                 should_interrupt = callable(interrupt_checker) and bool(interrupt_checker())
             except Exception:
@@ -8227,7 +9206,7 @@ try {
                     "summary": f"阅读《{book_title}》被外界输入或停止请求打断，未生成段落理解。",
                     "book_id": book_id,
                     "book_title": book_title,
-                    "progress_current": len(reports),
+                    "progress_current": tick_count,
                     "progress_total": review_tick_target,
                     "chunk_count": len(chunks),
                 }
@@ -8251,7 +9230,7 @@ try {
                 "interrupted": True,
                 "book": self._public_library_book(book, detail=True),
                 "chunk": {"range": {"start": batch.get("start"), "end": batch.get("end")}, "text": batch.get("text") or "", "done": bool(batch.get("done")), "chunk_count": len(chunks)},
-                "ap_tick_count": len(reports),
+                "ap_tick_count": tick_count,
                 "review_tick_target": review_tick_target,
                 "summary": f"阅读《{book_title}》被外界输入打断，未生成段落理解。",
             }
@@ -8299,13 +9278,14 @@ try {
             return {"ok": True, "mode": "read_book", "view": "finished", "book": self._public_library_book(book, detail=True), "summary": f"《{book_title}》已经读到末尾。"}
 
         chunks: list[dict[str, Any]] = []
-        reports: list[dict[str, Any]] = []
+        report_rows: list[dict[str, Any]] = []
+        ap_tick_count = 0
         cursor = start
         ap_error = ""
 
         try:
-            while len(reports) < review_tick_target and (not chunk_limit or len(chunks) < chunk_limit):
-                stopped = interrupted("before_ap_input", chunks, reports)
+            while ap_tick_count < review_tick_target and (not chunk_limit or len(chunks) < chunk_limit):
+                stopped = interrupted("before_ap_input", chunks, ap_tick_count)
                 if stopped:
                     return stopped
                 chunk = self._chunk_library_text(text, cursor, chunk_chars)
@@ -8318,16 +9298,16 @@ try {
                 set_active(
                     "ap_input",
                     f"正在阅读《{book_title}》片段 {len(chunks)}，范围 {chunk_start}-{chunk_end} 字。",
-                    progress=progress_percent(len(reports)),
-                    current=len(reports),
+                    progress=progress_percent(ap_tick_count),
+                    current=ap_tick_count,
                     total=review_tick_target,
                     chunk_count=len(chunks),
                 )
                 emit_progress(
                     "ap_input",
                     f"正在阅读《{book_title}》片段 {len(chunks)}，范围 {chunk_start}-{chunk_end} 字。",
-                    progress=progress_percent(len(reports)),
-                    ap_tick_count=len(reports),
+                    progress=progress_percent(ap_tick_count),
+                    ap_tick_count=ap_tick_count,
                     chunk_count=len(chunks),
                 )
                 self._record_tool_log(
@@ -8337,10 +9317,10 @@ try {
                         "task_id": task_id,
                         "status": "running",
                         "stage": "ap_input",
-                        "progress": progress_percent(len(reports)),
+                        "progress": progress_percent(ap_tick_count),
                         "summary": f"输入《{book_title}》片段 {len(chunks)}：{chunk_start}-{chunk_end} 字。",
                         "detail": _short(chunk_text, 500),
-                        "progress_current": len(reports),
+                        "progress_current": ap_tick_count,
                         "progress_total": review_tick_target,
                         "chunk_count": len(chunks),
                         "book_id": book_id,
@@ -8354,16 +9334,21 @@ try {
                     "range": {"start": chunk_start, "end": chunk_end},
                     "batch_start": start,
                     "chunk_index": len(chunks),
+                    "single_tick_input": True,
                 }
-                reports.append(self._run_app_cycle(text=f"[读书]《{book_title}》片段 {chunk_start}-{chunk_end}：{chunk_text}", labels=labels))
+                report = self._run_app_cycle(text=f"[读书]《{book_title}》片段 {chunk_start}-{chunk_end}：{chunk_text}", labels=labels)
+                ap_tick_count += 1
+                remember_report(report, step=ap_tick_count)
                 cursor = chunk_end
-                stopped = interrupted("after_ap_input", chunks, reports)
+                stopped = interrupted("after_ap_input", chunks, ap_tick_count)
                 if stopped:
                     return stopped
 
                 for index in range(tick_each_chunk):
-                    reports.append(self._run_app_cycle(text=None, labels={"source": "library_read_empty_tick", "book_id": book_id, "chunk_index": len(chunks)}))
-                    current_tick = len(reports)
+                    report = self._run_app_cycle(text=None, labels={"source": "library_read_empty_tick", "book_id": book_id, "chunk_index": len(chunks)})
+                    ap_tick_count += 1
+                    remember_report(report, step=ap_tick_count)
+                    current_tick = ap_tick_count
                     progress = progress_percent(current_tick)
                     set_active(
                         "empty_ticks",
@@ -8397,9 +9382,11 @@ try {
                                 "book_title": book_title,
                             }
                         )
-                    stopped = interrupted("empty_ticks", chunks, reports)
+                    stopped = interrupted("empty_ticks", chunks, ap_tick_count)
                     if stopped:
                         return stopped
+                    if ap_tick_count >= review_tick_target:
+                        break
                 if bool(chunk.get("done")) or cursor >= len(text):
                     break
         except Exception as exc:
@@ -8412,12 +9399,12 @@ try {
                     "task_id": task_id,
                     "status": "running",
                     "stage": "ap_tick_error",
-                    "progress": progress_percent(len(reports)),
+                    "progress": progress_percent(ap_tick_count),
                     "summary": f"阅读《{book_title}》时 AP tick 报错；若已有阅读片段，仍会尝试保存段落理解。",
                     "error": ap_error,
                     "book_id": book_id,
                     "book_title": book_title,
-                    "progress_current": len(reports),
+                    "progress_current": ap_tick_count,
                     "progress_total": review_tick_target,
                     "chunk_count": len(chunks),
                 }
@@ -8440,11 +9427,11 @@ try {
             "review",
             f"正在生成《{book_title}》{batch_start}-{batch_end} 字这一批次的段落理解。",
             progress=86,
-            current=len(reports),
+            current=ap_tick_count,
             total=review_tick_target,
             chunk_count=len(chunks),
         )
-        emit_progress("review", f"正在生成《{book_title}》这一批次的段落理解。", progress=86, ap_tick_count=len(reports), chunk_count=len(chunks))
+        emit_progress("review", f"正在生成《{book_title}》这一批次的段落理解。", progress=86, ap_tick_count=ap_tick_count, chunk_count=len(chunks))
         self._record_tool_log(
             {
                 "event": "tool_read_book_review_started",
@@ -8454,18 +9441,18 @@ try {
                 "stage": "review",
                 "progress": 86,
                 "summary": f"开始生成《{book_title}》{batch_start}-{batch_end} 字这一批次的段落理解。",
-                "progress_current": len(reports),
+                "progress_current": ap_tick_count,
                 "progress_total": review_tick_target,
                 "chunk_count": len(chunks),
                 "book_id": book_id,
                 "book_title": book_title,
             }
         )
-        stopped = interrupted("before_review", chunks, reports)
+        stopped = interrupted("before_review", chunks, ap_tick_count)
         if stopped:
             return stopped
 
-        review = self._make_library_review(book, batch_chunk, reports)
+        review = self._make_library_review(book, batch_chunk, report_rows)
         self._record_tool_log(
             {
                 "event": "tool_read_book_review_completed",
@@ -8476,7 +9463,7 @@ try {
                 "progress": 92,
                 "summary": f"《{book_title}》本批次段落理解已生成。",
                 "detail": _short(review.get("summary") or "", 1200),
-                "progress_current": len(reports),
+                "progress_current": ap_tick_count,
                 "progress_total": review_tick_target,
                 "chunk_count": len(chunks),
                 "book_id": book_id,
@@ -8484,14 +9471,15 @@ try {
                 "review_id": str(review.get("id") or ""),
             }
         )
-        emit_progress("review_done", f"《{book_title}》本批次段落理解已生成。", progress=92, ap_tick_count=len(reports), chunk_count=len(chunks), review_id=str(review.get("id") or ""))
+        emit_progress("review_done", f"《{book_title}》本批次段落理解已生成。", progress=92, ap_tick_count=ap_tick_count, chunk_count=len(chunks), review_id=str(review.get("id") or ""))
 
         try:
             review_digest_report = self._run_app_cycle(
                 text=f"[读书理解]《{book_title}》{batch_start}-{batch_end}：{_clean_multiline_text(review.get('summary') or '', max_chars=4000)}",
-                labels={"source": "library_review_digest", "book_id": book_id, "review_id": review.get("id")},
+                labels={"source": "library_review_digest", "book_id": book_id, "review_id": review.get("id"), "single_tick_input": True},
             )
-            reports.append(review_digest_report)
+            ap_tick_count += 1
+            remember_report(review_digest_report, step=ap_tick_count)
         except Exception as exc:
             self._record_tool_log(
                 {
@@ -8516,11 +9504,11 @@ try {
                 if str(row.get("id") or "") == book_id:
                     row["cursor"] = batch_end
                     row["read_chars"] = max(_as_int(row.get("read_chars"), 0), batch_end)
-                    row["read_tick_count"] = _as_int(row.get("read_tick_count"), 0) + len(reports)
+                    row["read_tick_count"] = _as_int(row.get("read_tick_count"), 0) + ap_tick_count
                     row["last_read_at_ms"] = _now_ms()
                     row["updated_at_ms"] = _now_ms()
                     row["status"] = "finished" if bool(batch_chunk.get("done")) else "reading"
-                    review["ap_tick_count"] = len(reports)
+                    review["ap_tick_count"] = ap_tick_count
                     review["chunk_count"] = len(chunks)
                     review["review_tick_target"] = review_tick_target
                     row_reviews = [r for r in _as_list(row.get("reviews")) if isinstance(r, dict)]
@@ -8536,7 +9524,7 @@ try {
                 "event": "library_book_read",
                 "id": book_id,
                 "range": review.get("range"),
-                "ticks": len(reports),
+                "ticks": ap_tick_count,
                 "chunks": len(chunks),
                 "review_tick_target": review_tick_target,
                 "source": source,
@@ -8548,8 +9536,8 @@ try {
             "status": "completed",
             "stage": "done",
             "progress": 100,
-            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {len(reports)} 个 AP tick，保存 1 条段落理解。",
-            "progress_current": len(reports),
+            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {ap_tick_count} 个 AP tick，保存 1 条段落理解。",
+            "progress_current": ap_tick_count,
             "progress_total": review_tick_target,
             "chunk_count": len(chunks),
             "book_id": book_id,
@@ -8557,7 +9545,7 @@ try {
             "updated_at_ms": _now_ms(),
         }
         self._refresh_compact_status_cache()
-        emit_progress("done", f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。", progress=100, ap_tick_count=len(reports), chunk_count=len(chunks), review_id=str(review.get("id") or ""))
+        emit_progress("done", f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。", progress=100, ap_tick_count=ap_tick_count, chunk_count=len(chunks), review_id=str(review.get("id") or ""))
         self._record_tool_log(
             {
                 "event": "tool_read_book_completed",
@@ -8568,7 +9556,7 @@ try {
                 "progress": 100,
                 "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。",
                 "detail": _short(review.get("summary") or "", 900),
-                "progress_current": len(reports),
+                "progress_current": ap_tick_count,
                 "progress_total": review_tick_target,
                 "chunk_count": len(chunks),
                 "book_id": book_id,
@@ -8589,9 +9577,9 @@ try {
                 "chunks": batch_chunk.get("chunks") or [],
             },
             "review": self._public_library_review(review, detail=True),
-            "ap_tick_count": len(reports),
+            "ap_tick_count": ap_tick_count,
             "review_tick_target": review_tick_target,
-            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {len(reports)} 个 AP tick，并记录 1 条段落理解。",
+            "summary": f"读完《{book_title}》{batch_start}-{batch_end} 字，累计 {ap_tick_count} 个 AP tick，并记录 1 条段落理解。",
         }
 
     def read_book(
@@ -17481,6 +18469,17 @@ try {
         }
         if not internal_mode and not skip_user_message_append:
             self.state["messages"].append(user_msg)
+            self._timeline_append_record(
+                self._timeline_build_record(
+                    kind="turn_input",
+                    role=str(user_msg.get("role") or "user"),
+                    text=user_msg.get("text") or "",
+                    ts=_as_int(user_msg.get("created_at_ms"), _now_ms()),
+                    conversation_id=user_msg.get("conversation_id") or "",
+                    adapter_label=user_msg.get("adapter_label") or "",
+                    meta={"turn_id": turn_id, "source": source_kind, "attachment_count": len(attachments)},
+                )
+            )
         agency_state = self._background_agency_state()
         if not internal_mode:
             agency_state["pending_tool_chain"] = False
@@ -18188,6 +19187,21 @@ try {
                     if isinstance(row, dict)
                 ]
             self.state["thoughts"].append(thought_row)
+            self._timeline_append_record(
+                self._timeline_build_record(
+                    kind="thought",
+                    role="thought",
+                    text=thought_text or normalized.get("why") or "",
+                    ts=_as_int(thought_row.get("created_at_ms"), _now_ms()),
+                    conversation_id=conversation_id,
+                    adapter_label=adapter_label,
+                    meta={
+                        "turn_id": turn_id,
+                        "decision": normalized.get("decision") or "",
+                        "tool_calls": [str(item.get("name") or item.get("tool") or "") for item in _as_list(tool_calls) if isinstance(item, dict)][:6],
+                    },
+                )
+            )
             visible_thought_count += 1
             if not internal_mode:
                 agency_state["pending_tool_chain"] = bool(tool_calls)
@@ -18365,6 +19379,23 @@ try {
                 if created_replies:
                     replies.extend(created_replies)
                     self.state["messages"].extend(created_replies)
+                    for reply in created_replies:
+                        self._timeline_append_record(
+                            self._timeline_build_record(
+                                kind="assistant_reply",
+                                role=str(reply.get("role") or "assistant"),
+                                text=reply.get("text") or "",
+                                ts=_as_int(reply.get("created_at_ms"), _now_ms()),
+                                conversation_id=reply.get("conversation_id") or "",
+                                adapter_label=reply.get("adapter_label") or "",
+                                meta={
+                                    "turn_id": turn_id,
+                                    "action_type": reply.get("action_type") or "reply",
+                                    "mention_count": len(_as_list(reply.get("mentions"))),
+                                    "attachment_count": len(_as_list(reply.get("attachments"))),
+                                },
+                            )
+                        )
                 adapter_dispatch_results: list[dict[str, Any]] = []
                 for reply in created_replies:
                     dispatch_result = dispatch_reply(reply)
@@ -19003,10 +20034,25 @@ try {
         if detail not in {"brief", "medium", "detailed", "full"}:
             detail = "medium"
         repeat_every = max(5, min(12, _as_int(args.get("repeat_every_ticks"), 7)))
+        target_ms = self._timeline_target_time_ms(args)
+        offset_ms = max(0, _now_ms() - target_ms) if target_ms > 0 else 0
+        offset_hint = ""
+        if offset_ms > 0:
+            minutes = round(offset_ms / 60000.0, 2)
+            if minutes < 120:
+                offset_hint = f"约 {minutes} 分钟前"
+            else:
+                offset_hint = f"约 {round(offset_ms / 3600000.0, 2)} 小时前"
         keyword_text = "，".join(keywords)
+        clue_parts = []
+        if offset_hint:
+            clue_parts.append(f"目标时间：{offset_hint}")
+        if keyword_text:
+            clue_parts.append(f"线索：{keyword_text}")
+        clue_text = "；".join(part for part in clue_parts if part).strip("；") or keyword_text
         reports: list[dict[str, Any]] = []
         recall_prompt = _clean_text(
-            f"回忆线索：{keyword_text}。请让相关长期记忆、情绪线索和状态对象自然浮上来。",
+            f"回忆线索：{clue_text}。请让相关长期记忆、时间附近的片段、情绪线索和状态对象自然浮上来。",
             max_chars=800,
         )
         for index in range(ticks):
@@ -19042,6 +20088,8 @@ try {
             "ok": True,
             "mode": "ap_recall",
             "keywords": keywords,
+            "target_time_ms": target_ms,
+            "time_offset_ms": offset_ms,
             "depth": depth,
             "ticks_run": ticks,
             "repeat_every_ticks": repeat_every,
@@ -20963,6 +22011,10 @@ try {
                         "创建定时任务必须写清 summary、prompt、trigger。trigger 常用格式：{\"type\":\"once\",\"at\":\"2026-05-10 21:30\"}；{\"type\":\"interval\",\"interval_minutes\":30}；{\"type\":\"daily\",\"time\":\"08:00\"}；{\"type\":\"weekly\",\"weekdays\":[7],\"time\":\"08:00\"}；{\"type\":\"workday\",\"time\":\"09:00\"}。",
                         "如果发现循环任务太频繁、提示词太含糊、已经完成或可能造成重复打扰，可以 tool_call schedule_task 取消、更新或删除后重建。接近任务数量上限时，工具结果会提醒你管理任务数量。",
                         "定时任务只负责到点注入提示，不代表任务已经完成。触发后要像处理普通用户消息一样继续思考：需要查资料就先 tool_call，需要发消息就 reply/actions，不适合回复就 sleep。",
+                        "timeline_recall：用于显式按时间和文本线索回忆近期对话、自己想法和已经发生过的互动。遇到“上午我们聊了什么”“你还记得刚才说到哪了吗”“几分钟前你答应了什么”“昨天我让你记住什么来着”这类问题时，如果当前上下文不够，应优先 tool_call timeline_recall。",
+                        "timeline_recall 既可以带时间，也可以只带线索。只传 clues / clue / query 而不传时间时，工具会从最近时序分片开始倒序回想：先捞近期最像的记忆，再按匹配累计分、超时和疲劳机制决定是否继续翻更早分片。",
+                        "timeline_recall 常用参数：{\"minutes_ago\":30,\"clues\":[\"睡觉提醒\",\"晋中\"]}；{\"hours_ago\":6,\"clue\":\"上午 聊了什么\"}；{\"time_offset_ms\":21600000,\"query\":\"约定\"}；只给线索的例子：{\"clues\":[\"晋中\",\"天气\"]}、{\"query\":\"答应 约定 提醒\"}。如果第一轮结果太散，可以根据返回的 shard_id / 线索 preview 再次调用，或改用更具体的 clues。",
+                        "ap_recall 和 timeline_recall 可以并行互证：timeline_recall 更擅长按时间顺序找真实对话/想法文本，ap_recall 更擅长从 AP 里捞出当时残留的高能记忆、情绪和关联对象。需要更稳时，先 timeline_recall 找文本，再 ap_recall 用其中的关键词做深回忆。",
                         "browse_library / read_book / import_book：图书馆工具。用户要求导入书、让你读书、评价文档/小说，或你空闲且主观能动性允许继续探索时可以使用。先 browse_library 看书籍 id；read_book 默认从书签继续读一个阅读批次：连续把多个短片段输入 AP、每段后跑空 tick，直到累计达到配置里的段落回顾 tick 间隔、书末或被打断；未被打断时会调用段落理解模型生成一条可读总结，再把理解保存到书籍信息并作为工具反馈返回给你；mode=reviews 可查看自己的段落理解，mode=original 可按 range 查看原文，mode=stop 可暂停阅读。",
                         "读书不是必须一口气读完。一次 read_book 读的是一个可中断的阅读批次，而不是整本书；工具反馈里的 review.summary/understanding 是这一批次已经消化出的段落理解。收到它后，你应判断下一步是继续读下一批次、回答用户、记录日记，还是 sleep，不要默认无限 continue_thinking。",
                         "外界输入优先级更高；如果阅读过程中被用户打断，read_book 会返回 interrupted=true 且不会保存本段理解。看到这种反馈时，先处理用户消息，并知道自己之前的阅读可以之后从书签继续。",
@@ -21049,6 +22101,9 @@ try {
                         "正例 5b：用户说“明早 9 点提醒我交日报”。Thought 可以 tool_call schedule_task，args={\"operation\":\"create\",\"summary\":\"提醒用户交日报\",\"prompt\":\"提醒银子交日报，并询问是否需要我一起整理。\",\"trigger\":{\"type\":\"once\",\"at\":\"2026-05-11 09:00\"}}。如果自然语言时间不确定，必须改成明确日期时间。",
                         "正例 5c：用户说“以后每周日早上 8 点叫我复盘项目”。Thought 可以 tool_call schedule_task，args={\"operation\":\"create\",\"summary\":\"每周项目复盘提醒\",\"prompt\":\"提醒银子做项目复盘；如果他愿意，就先查日记和近期任务，再帮他整理复盘提纲。\",\"trigger\":{\"type\":\"weekly\",\"weekdays\":[7],\"time\":\"08:00\"}}。",
                         "正例 5d：工具返回“任务接近上限”。如果当前任务里有过期或重复项，可以下一段 tool_call schedule_task，args={\"commands\":[{\"operation\":\"cancel\",\"ids\":[\"task_a\",\"task_b\"]},{\"operation\":\"create\",\"summary\":\"合并后的提醒\",\"prompt\":\"...\",\"trigger\":{\"type\":\"daily\",\"time\":\"09:00\"}}]}。",
+                        "正例 5e：用户问“你还记得上午我们聊了什么吗”。如果当前上下文里没有可靠内容，Thought 先 tool_call timeline_recall，args={\"hours_ago\":6,\"clue\":\"上午 聊了什么\"}；若返回几条候选记录，再按 preview/shard 继续细化，必要时再 tool_call ap_recall 做交叉回忆，然后再 reply。",
+                        "正例 5f：用户问“你还记得刚才答应我什么吗”。如果像约定/提醒/地点这种事当前包里已经不全，Thought 可以先 timeline_recall，args={\"minutes_ago\":20,\"clues\":[\"答应\",\"约定\",\"提醒\"]}；如果返回记录里包含明确承诺，再引用这些真实记录组织自然回复，而不是凭感觉补写。",
+                        "正例 5g：用户问“你还记得我是哪的人吗”。如果当前上下文里没有现成答案，也想不起来具体时间，Thought 可以直接 tool_call timeline_recall，args={\"clues\":[\"晋中\",\"哪的人\",\"天气\"]}。这会从最近分片开始倒序回想；如果捞到相关记录，再结合日记/AP 回忆组织回复。",
                         "正例 3：已回复后用户又插入新问题。下一段 thought 应处理新问题，不要把它当重复。",
                         "正例 4：已回复后发现自己说错事实。可以第二次 reply 纠错，并在 why 说明是纠错或撤回。",
                         "正例 5：用户问“你有真正的内心吗？现在有什么感觉？” Thought #1 reply 已经回答了“如果说我有内心，它像安静灯光，此刻有期待”。Thought #2 没有新输入，应 thought“我已经把当前感觉说出来了，再换一个灯光比喻只会重复，我先停住。” decision=sleep。",
