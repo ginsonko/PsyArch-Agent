@@ -3152,7 +3152,7 @@ body {
 
 .agent-profile-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: stretch;
 }
@@ -3193,6 +3193,12 @@ body {
 .agent-profile-row em {
   font-size: 11px;
   font-style: normal;
+}
+
+.agent-profile-row-actions {
+  display: grid;
+  gap: 4px;
+  align-content: start;
 }
 
 .agent-readiness-row {
@@ -4063,6 +4069,236 @@ body {
 .pa-stage-list {
   display: grid;
   gap: 7px;
+}
+
+.agent-mission-card {
+  background:
+    linear-gradient(135deg, rgba(177, 151, 252, 0.12), transparent 56%),
+    var(--ap-bg-card);
+}
+
+.agent-mission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 92%, #b197fc 4%);
+}
+
+.agent-mission-row.is-complete {
+  border-color: rgba(32, 201, 151, 0.32);
+  background: color-mix(in srgb, var(--ap-bg-elevated) 88%, #20c997 7%);
+}
+
+.agent-mission-row-main,
+.agent-mission-row-side {
+  min-width: 0;
+}
+
+.agent-mission-row-main {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-mission-row-main > .mantine-Group-root {
+  min-width: 0;
+}
+
+.agent-mission-row-side {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.agent-progress-card {
+  background:
+    linear-gradient(135deg, rgba(250, 176, 5, 0.1), transparent 58%),
+    var(--ap-bg-card);
+}
+
+.agent-progress-bar {
+  position: relative;
+  overflow: hidden;
+  height: 34px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ap-border-soft);
+  background: color-mix(in srgb, var(--ap-bg-elevated) 92%, #fab005 4%);
+}
+
+.agent-progress-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  background: linear-gradient(90deg, rgba(250, 176, 5, 0.88), rgba(177, 151, 252, 0.86));
+  opacity: 0.9;
+}
+
+.agent-progress-bar > span {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-progress-metric {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 92%, #fab005 3%);
+  display: grid;
+  gap: 4px;
+}
+
+.agent-progress-metric small {
+  color: var(--ap-text-muted);
+}
+
+.agent-progress-metric strong {
+  font-size: 15px;
+}
+
+.agent-progress-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-progress-loadout {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.agent-progress-loadout-block {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-progress-loadout-block > small {
+  color: var(--ap-text-muted);
+}
+
+.agent-progress-badge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.agent-progress-badge-toggle {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 94%, #4dabf7 3%);
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-progress-badge-toggle strong {
+  font-size: 12px;
+}
+
+.agent-progress-badge-toggle small {
+  color: var(--ap-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.agent-progress-badge-toggle.is-equipped,
+.agent-progress-chip.is-equipped {
+  border-color: color-mix(in srgb, #fab005 60%, var(--ap-border-soft));
+  background: color-mix(in srgb, var(--ap-bg-elevated) 88%, #fab005 10%);
+  box-shadow: 0 0 0 1px rgba(250, 176, 5, 0.14);
+}
+
+.agent-progress-badge-toggle.is-blocked {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.agent-progress-empty {
+  padding: 8px 10px;
+  border: 1px dashed var(--ap-border-soft);
+  border-radius: 8px;
+  color: var(--ap-text-muted);
+  font-size: 12px;
+}
+
+.agent-progress-chip,
+.agent-progress-achievement {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 94%, #4dabf7 3%);
+  display: grid;
+  gap: 4px;
+}
+
+.agent-progress-chip strong,
+.agent-progress-achievement strong {
+  font-size: 12px;
+}
+
+.agent-progress-chip small,
+.agent-progress-achievement small {
+  color: var(--ap-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.agent-progress-achievements {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-progress-achievement-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-progress-achievement-toggle {
+  padding: 10px 12px;
+  border: 1px solid var(--ap-border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 94%, #b197fc 4%);
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-progress-achievement-toggle small {
+  color: var(--ap-text-muted);
+}
+
+.agent-progress-achievement-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.agent-progress-achievement.is-unlocked {
+  border-color: color-mix(in srgb, #40c057 46%, var(--ap-border-soft));
+  background: color-mix(in srgb, var(--ap-bg-elevated) 90%, #40c057 8%);
+}
+
+.agent-progress-achievement.is-locked {
+  filter: grayscale(1);
+  opacity: 0.6;
+  background: color-mix(in srgb, var(--ap-bg-elevated) 96%, #868e96 2%);
 }
 
 .pa-decision-panel {

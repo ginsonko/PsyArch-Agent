@@ -32,7 +32,7 @@ from typing import Any
 import traceback
 
 from ._app import ObservatoryApp
-from .agent_runtime import AgentRuntime
+from .agent_runtime import AgentRuntime, _as_dict, _as_int, _now_ms
 from . import experiment as exp
 from .experiment.runner import apply_experiment_default_app_overrides
 
@@ -481,6 +481,8 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             "last_idle_memory_maintenance_at_ms": 0,
             "last_idle_memory_maintenance_wall_ms": 0,
             "last_idle_memory_maintenance_result": {},
+            "last_visible_tick_counter": 0,
+            "last_visible_packet_at_ms": 0,
         }
         # Background experiment jobs (in-memory, non-persistent).
         self.experiment_jobs: dict[str, dict[str, Any]] = {}
@@ -1647,7 +1649,46 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 state["last_stage"] = ""
                 state["last_stage_label"] = ""
                 state["last_result"] = {}
-            return state
+            elif isinstance(last_result, dict) and last_result:
+                compact_result = dict(last_result)
+                compact_result["ap_packet"] = _as_dict(last_result.get("ap_packet"))
+                compact_result["thought_result"] = None
+                compact_result["recent_reports"] = []
+                state["last_result"] = compact_result
+            foreground_pending = self._agent_foreground_is_pending()
+            state["foreground_pending"] = foreground_pending
+            state["foreground_priority_reason"] = str(self.agent_foreground_priority_reason or "")
+        if bool(state.get("running")):
+            try:
+                live_status = self.agent_runtime.status_compact_cached()
+                live_packet = _as_dict(_as_dict(live_status).get("ap_packet"))
+            except Exception:
+                live_packet = {}
+            if live_packet:
+                last_result = state.get("last_result") if isinstance(state.get("last_result"), dict) else {}
+                merged_result = dict(last_result)
+                merged_result["ap_packet"] = live_packet
+                merged_result["recent_reports"] = []
+                merged_result["updated_at_ms"] = int(time.time() * 1000)
+                live_tick_counter = _as_int(live_packet.get("tick_counter"), 0)
+                state["last_visible_tick_counter"] = live_tick_counter
+                state["last_visible_packet_at_ms"] = _as_int(live_packet.get("generated_at_ms"), _now_ms())
+                current_stage = str(state.get("last_stage") or merged_result.get("stage") or "").strip().lower()
+                if not current_stage or current_stage == "stopping":
+                    merged_result["stage"] = "background_running"
+                if not str(merged_result.get("stage_label") or "").strip() or current_stage == "stopping":
+                    merged_result["stage_label"] = "??????????"
+                previous_tick_counter = _as_int(_as_dict(last_result.get("ap_packet")).get("tick_counter"), 0)
+                if (
+                    current_stage.startswith("background_paused_")
+                    and live_tick_counter > previous_tick_counter
+                    and max(0, int(time.time() * 1000) - _as_int(state.get("last_step_at_ms"), 0)) > 1500
+                ):
+                    merged_result["stage"] = "background_running"
+                    merged_result["reason"] = "background_running_with_live_tick_progress"
+                    merged_result["stage_label"] = "??????????"
+                state["last_result"] = merged_result
+        return state
 
     def start_agent_background(self) -> dict[str, Any]:
         with self.agent_background_lock:
@@ -1659,6 +1700,21 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     "running": True,
                     "started_at_ms": int(time.time() * 1000),
                     "stopped_at_ms": 0,
+                    "last_step_at_ms": 0,
+                    "last_stage": "background_starting",
+                    "last_stage_label": "??????????",
+                    "last_result": {
+                        "ok": True,
+                        "mode": str(getattr(self.agent_runtime.config, "sleep_mode", "full_silent") or "full_silent"),
+                        "triggered": False,
+                        "reason": "background_starting",
+                        "stage": "background_starting",
+                        "stage_label": "??????????",
+                        "latency_ms": 0,
+                        "updated_at_ms": int(time.time() * 1000),
+                        "ap_packet": _as_dict(self.agent_runtime.status_compact_cached().get("ap_packet")),
+                        "recent_reports": [],
+                    },
                     "last_error": "",
                     "thought_check_count": 0,
                 }
@@ -2113,7 +2169,14 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 if mode == "full_silent":
                     report = {}
                 else:
-                    report = self.app.run_cycle(text=None, labels={"source": "agent_background"})
+                    report = self.app.run_cycle(
+                        text=None,
+                        labels={
+                            "source": "agent_background",
+                            "background_runtime_compact": True,
+                            "skip_observatory_exports": True,
+                        },
+                    )
             finally:
                 self.app_lock.release()
             if background_stop_requested():
@@ -2531,6 +2594,14 @@ def _build_handler():
                     return
                 if parsed.path == "/api/agent/config/profiles":
                     payload = self.server.agent_runtime.config_profiles()
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/persona-history":
+                    payload = self.server.agent_runtime.persona_history_public()
+                    self._send_json({"success": True, "data": payload})
+                    return
+                if parsed.path == "/api/agent/user-progress":
+                    payload = self.server.agent_runtime.user_progress_public()
                     self._send_json({"success": True, "data": payload})
                     return
                 if parsed.path == "/api/agent/summary":
@@ -3236,6 +3307,22 @@ def _build_handler():
                     result = self.server.agent_runtime.delete_config_profile(payload)
                     self._send_json({"success": True, "data": result})
                     return
+                if parsed.path == "/api/agent/persona-history/save":
+                    result = self.server.agent_runtime.save_persona_history(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/persona-history/apply":
+                    result = self.server.agent_runtime.apply_persona_history(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/persona-history/delete":
+                    result = self.server.agent_runtime.delete_persona_history(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
+                if parsed.path == "/api/agent/user-progress/loadout":
+                    result = self.server.agent_runtime.update_user_progress_loadout(payload if isinstance(payload, dict) else {})
+                    self._send_json({"success": True, "data": result})
+                    return
                 if parsed.path == "/api/agent/message":
                     result = self.server.submit_agent_turn(payload if isinstance(payload, dict) else {})
                     self._send_json({"success": True, "data": result})
@@ -3300,6 +3387,12 @@ def _build_handler():
                     self._send_json({"success": True, "data": result})
                     return
                 if parsed.path == "/api/agent/library/read":
+                    mark_foreground = getattr(self.server, "_mark_agent_foreground_pending", None)
+                    if callable(mark_foreground):
+                        try:
+                            mark_foreground("agent_library_read", hold_ms=90_000)
+                        except Exception:
+                            pass
                     apply_experiment_default_app_overrides(
                         self.server.app,
                         source="agent_api_library_read",

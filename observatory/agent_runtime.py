@@ -425,6 +425,14 @@ def _profiles_path() -> Path:
     return _outputs_dir() / "agent_config_profiles.json"
 
 
+def _persona_history_path() -> Path:
+    return _outputs_dir() / "agent_persona_history.json"
+
+
+def _user_progress_path() -> Path:
+    return _outputs_dir() / "agent_user_progress.json"
+
+
 def _handoff_path() -> Path:
     return _outputs_dir() / "agent_handoff_report.json"
 
@@ -3176,6 +3184,8 @@ class AgentConfig:
     input_chunking_enabled: bool = True
     input_chunk_soft_limit: int = 10
     input_chunk_hard_limit: int = 30
+    library_review_timeout_sec: int = 45
+    library_review_retry_count: int = 0
     keep_full_debug: bool = False
 
     def __post_init__(self) -> None:
@@ -3338,6 +3348,8 @@ class AgentConfig:
         base.idle_memory_state_snapshot_cache_clear_enabled = bool(base.idle_memory_state_snapshot_cache_clear_enabled)
         base.idle_memory_working_set_trim_enabled = bool(base.idle_memory_working_set_trim_enabled)
         base.reading_batch_full_report_limit = max(2, min(24, _as_int(base.reading_batch_full_report_limit, 6)))
+        base.library_review_timeout_sec = max(10, min(300, _as_int(base.library_review_timeout_sec, 45)))
+        base.library_review_retry_count = max(0, min(2, _as_int(base.library_review_retry_count, 0)))
         base.library_enabled = bool(base.library_enabled)
         base.library_chunk_target_chars = max(10, min(800, _as_int(base.library_chunk_target_chars, 30)))
         base.library_after_chunk_ticks = max(0, min(80, _as_int(base.library_after_chunk_ticks, 6)))
@@ -4389,6 +4401,7 @@ class LocalToolRegistry:
             "latency_ms": max(0, _now_ms() - started),
         }
         result["summary"] = _safe_tool_feedback_text(result, max_chars=260)
+        self.runtime._mark_tool_progress(tool_name, ok=bool(result.get("ok")), source=source)
         self.runtime.record_event(
             {
                 "event": "tool_executed",
@@ -5367,6 +5380,8 @@ class AgentRuntime:
         self._diary_lock = threading.RLock()
         self._scheduled_tasks_lock = threading.RLock()
         self._library_lock = threading.RLock()
+        self._persona_history_lock = threading.RLock()
+        self._user_progress_lock = threading.RLock()
         self._runtime_package_lock = threading.RLock()
         self._pending_external_inputs: list[dict[str, Any]] = []
         self._pending_teacher_feedback_labels: list[dict[str, Any]] = []
@@ -5386,25 +5401,43 @@ class AgentRuntime:
         self._last_runtime_memory_log_ms = 0
         self._last_idle_memory_maintenance_ms = 0
         self._last_idle_hdb_memory_maintenance_ms = 0
+        self._persona_history_cache = self._load_persona_history()
+        self._user_progress_cache = self._load_user_progress()
         _trim_output_files()
         self._trim_runtime_report_history_if_needed()
+        self._refresh_user_progress_dynamic_state(reason="startup")
         self._refresh_compact_status_cache()
 
     def set_app_lock(self, lock: Any) -> None:
         self.app_lock = lock
 
-    def _run_app_cycle(self, *, text: Any = None, labels: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _run_app_cycle(
+        self,
+        *,
+        text: Any = None,
+        labels: dict[str, Any] | None = None,
+        history_mode: str = "full",
+    ) -> dict[str, Any]:
         lock = self.app_lock
         start_ms = _now_ms()
         wait_started_ms = start_ms
         run_started_ms = start_ms
         wait_ms = 0
         labels = self._merge_pending_teacher_feedback(labels)
+        history_mode = str(history_mode or "full").strip().lower() or "full"
+
+        def _capture_cycle_history(report: dict[str, Any], *, source: str) -> None:
+            self._trim_runtime_report_history_if_needed()
+            if history_mode == "compact":
+                packet = self._build_prompt_packet_from_report(report, reports=[report])
+                self._refresh_compact_status_cache(packet)
+                return
+            self._remember_report_snapshot(report, source=source)
+
         if lock is None:
             report = self.app.run_cycle(text=text, labels=labels)
             run_done_ms = _now_ms()
-            self._trim_runtime_report_history_if_needed()
-            self._remember_report_snapshot(report, source="run_cycle")
+            _capture_cycle_history(report, source="run_cycle")
             snapshot_done_ms = _now_ms()
             self._annotate_agent_cycle_timing(
                 report,
@@ -5420,8 +5453,7 @@ class AgentRuntime:
             run_started_ms = _now_ms()
             report = self.app.run_cycle(text=text, labels=labels)
             run_done_ms = _now_ms()
-            self._trim_runtime_report_history_if_needed()
-            self._remember_report_snapshot(report, source="run_cycle")
+            _capture_cycle_history(report, source="run_cycle")
             snapshot_done_ms = _now_ms()
             self._annotate_agent_cycle_timing(
                 report,
@@ -5508,6 +5540,7 @@ class AgentRuntime:
             "projection_fatigue_trimmed": 0,
             "runtime_pool_summary_cache_trimmed": 0,
             "state_snapshot_item_summary_cache_cleared": 0,
+            "hdb_shared_runtime_cache_cleared": 0,
         }
         try:
             exact_rebind_cache = getattr(app, "_runtime_residual_exact_rebind_cache", None)
@@ -5566,11 +5599,25 @@ class AgentRuntime:
         try:
             snapshot_engine = getattr(getattr(app, "pool", None), "_snapshot", None)
             cache = getattr(snapshot_engine, "_item_summary_cache", None)
-            if isinstance(cache, dict) and len(cache) > 8192:
+            if isinstance(cache, dict) and len(cache) >= 8192:
                 clear = getattr(snapshot_engine, "clear_item_summary_cache", None)
                 if callable(clear):
                     trimmed["state_snapshot_item_summary_cache_cleared"] = len(cache)
                     clear()
+        except Exception:
+            pass
+        try:
+            hdb = getattr(app, "hdb", None)
+            structure_store = getattr(hdb, "_structure_store", None)
+            shared_cache = getattr(structure_store, "_shared_runtime_cache", None)
+            if isinstance(shared_cache, dict):
+                entry_count = sum(len(bucket) for bucket in shared_cache.values() if isinstance(bucket, dict))
+                if entry_count >= 4096 and hasattr(hdb, "_reset_runtime_state"):
+                    result = dict(hdb._reset_runtime_state() or {})
+                    trimmed["hdb_shared_runtime_cache_cleared"] = _as_int(
+                        _as_dict(result.get("shared_runtime_cache")).get("entry_count"),
+                        entry_count,
+                    )
         except Exception:
             pass
         return trimmed
@@ -5621,9 +5668,19 @@ class AgentRuntime:
             result["aborted"] = True
             result["wall_ms"] = max(0, _now_ms() - started_ms)
             return result
+        health_before = _as_dict(result.get("health_before"))
+        heavy_snapshot_cache = _as_int(health_before.get("state_snapshot_item_summary_cache_count"), 0) >= 8192
+        heavy_hdb_cache = _as_int(health_before.get("hdb_shared_runtime_cache_entry_count"), 0) >= 4096
+        heavy_runtime_pressure = (
+            heavy_snapshot_cache
+            or heavy_hdb_cache
+            or _as_int(health_before.get("report_history_count"), 0) >= max(24, int(self.config.runtime_report_history_soft_limit or 12) * 2)
+            or _as_int(health_before.get("state_file_bytes"), 0) >= 8 * 1024 * 1024
+        )
         try:
-            gc.collect()
-            result["gc_collected"] = True
+            if heavy_runtime_pressure:
+                gc.collect()
+                result["gc_collected"] = True
         except Exception:
             result["gc_collected"] = False
         trimmed = self._trim_app_runtime_caches_if_needed()
@@ -5646,7 +5703,7 @@ class AgentRuntime:
             result["health_after"] = self._runtime_memory_health()
             result["wall_ms"] = max(0, _now_ms() - started_ms)
             return result
-        result["working_set_trimmed"] = self._run_windows_working_set_trim()
+        result["working_set_trimmed"] = bool(heavy_runtime_pressure) and self._run_windows_working_set_trim()
         result["health_after"] = self._runtime_memory_health()
         result["ran"] = True
         result["wall_ms"] = max(0, _now_ms() - started_ms)
@@ -6711,6 +6768,7 @@ class AgentRuntime:
         started_ms = _now_ms()
         self._trim_state()
         self.state["updated_at_ms"] = _now_ms()
+        self._refresh_user_progress_dynamic_state(reason="save")
         self._refresh_compact_status_cache()
         _safe_write_json_compact(_state_path(), self.state)
         if started_ms - int(getattr(self, "_last_output_maintenance_ms", 0) or 0) > 60_000:
@@ -6718,12 +6776,68 @@ class AgentRuntime:
             self._last_output_maintenance_ms = started_ms
         self._last_save_wall_ms = max(0, _now_ms() - started_ms)
 
+    def _packet_ui_signal_score(self, packet: dict[str, Any] | None) -> int:
+        packet = packet if isinstance(packet, dict) else {}
+        if not packet:
+            return 0
+        summary = _as_dict(packet.get("summary"))
+        score = 0
+        score += len(_as_list(packet.get("dominant_objects"))) * 4
+        score += len(_as_list(packet.get("object_cloud"))) * 5
+        score += len(_as_list(packet.get("top_memory"))) * 3
+        score += len(_as_list(packet.get("top_structure"))) * 2
+        score += len(_as_list(packet.get("top_action"))) * 2
+        score += len(_as_list(packet.get("cognitive_feelings")))
+        score += min(8, len(str(packet.get("prompt_text") or "").strip()) // 40)
+        if _as_int(packet.get("tick_counter"), 0) > 0:
+            score += 1
+        if _as_int(summary.get("active_item_count"), 0) > 0:
+            score += 2
+        if str(summary.get("mood_hint") or "").strip():
+            score += 1
+        return score
+
+    def _packet_needs_live_ui_fallback(self, packet: dict[str, Any] | None) -> bool:
+        packet = packet if isinstance(packet, dict) else {}
+        if not packet:
+            return True
+        summary = _as_dict(packet.get("summary"))
+        tick_counter = _as_int(packet.get("tick_counter"), 0)
+        active_count = _as_int(summary.get("active_item_count"), 0)
+        visible_count = (
+            len(_as_list(packet.get("dominant_objects")))
+            + len(_as_list(packet.get("object_cloud")))
+            + len(_as_list(packet.get("top_memory")))
+        )
+        prompt_text = str(packet.get("prompt_text") or "").strip()
+        if visible_count > 0 or prompt_text:
+            return False
+        return tick_counter > 0 or active_count > 0 or bool(summary)
+
+    def _prefer_richer_live_packet_for_ui(self, packet: dict[str, Any] | None) -> dict[str, Any]:
+        base_packet = copy.deepcopy(packet if isinstance(packet, dict) else {})
+        if not self._packet_needs_live_ui_fallback(base_packet):
+            return base_packet
+        try:
+            live_packet = self.build_prompt_packet(reports=[])
+        except Exception:
+            return base_packet
+        if not isinstance(live_packet, dict) or not live_packet:
+            return base_packet
+        base_tick = _as_int(base_packet.get("tick_counter"), 0)
+        live_tick = _as_int(live_packet.get("tick_counter"), 0)
+        if base_tick > 0 and live_tick > 0 and live_tick < base_tick:
+            return base_packet
+        if self._packet_ui_signal_score(live_packet) <= self._packet_ui_signal_score(base_packet):
+            return base_packet
+        return copy.deepcopy(live_packet)
+
     def _snapshot_to_compact_packet(self, snapshot: dict[str, Any] | None) -> dict[str, Any]:
         snapshot = snapshot if isinstance(snapshot, dict) else {}
         dominant_objects = _as_list(snapshot.get("dominant_objects"))[:16]
         top_memory = _as_list(snapshot.get("top_memory"))[:8]
         summary = self._sanitize_packet_summary(_as_dict(snapshot.get("summary")))
-        return {
+        compact_packet = {
             "generated_at_ms": snapshot.get("created_at_ms") or self.state.get("updated_at_ms") or _now_ms(),
             "tick_counter": snapshot.get("tick_counter", 0),
             "session_id": self.state.get("session_id"),
@@ -6749,16 +6863,77 @@ class AgentRuntime:
             "metrics": _as_dict(snapshot.get("metrics")),
             "prompt_text": _short(_sanitize_llm_visible_text(summary.get("mood_hint", ""), max_chars=240), 240),
         }
+        richer_packet = self._prefer_richer_live_packet_for_ui(compact_packet)
+        if self._packet_ui_signal_score(richer_packet) > self._packet_ui_signal_score(compact_packet):
+            return self._compact_packet_for_status(richer_packet)
+        return compact_packet
+
+    def _compact_live_packet_for_ui(self, packet: dict[str, Any] | None) -> dict[str, Any]:
+        packet = self._prefer_richer_live_packet_for_ui(packet)
+        if not packet:
+            return {}
+        compact = self._compact_packet_for_status(packet)
+        compact["generated_at_ms"] = packet.get("generated_at_ms") or compact.get("generated_at_ms") or _now_ms()
+        compact["recent_reports"] = []
+        # UI 实时轮询只需要轻量观测数据；recent_reports / memory.recent 等会显著放大包体。
+        compact["recent_reports"] = []
+        memory = _as_dict(compact.get("memory"))
+        compact["memory"] = {
+            "top_runtime_memory": _fast_public_object_rows(
+                _as_list(memory.get("top_runtime_memory")),
+                limit=6,
+            ),
+            "activation_count": _as_int(memory.get("activation_count"), 0),
+            "feedback_count": _as_int(memory.get("feedback_count"), 0),
+            "recent": [],
+        }
+        compact["prompt_text"] = _short(_sanitize_llm_visible_text(compact.get("prompt_text", ""), max_chars=240), 240)
+        compact["timing"] = _as_dict(compact.get("timing"))
+        compact["attention"] = _as_dict(compact.get("attention"))
+        compact["maintenance"] = _as_dict(compact.get("maintenance"))
+        compact["metrics"] = _as_dict(compact.get("metrics"))
+        return compact
+
+    def _snapshot_has_live_packet_data(self, snapshot: dict[str, Any] | None) -> bool:
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        if not snapshot:
+            return False
+        if any(snapshot.get(key) not in (None, "", [], {}) for key in ("dominant_objects", "object_cloud", "top_memory", "cognitive_feelings")):
+            return True
+        if _as_int(snapshot.get("tick_counter"), 0) > 0:
+            return True
+        summary = _as_dict(snapshot.get("summary"))
+        if summary and any(summary.get(key) not in (None, "", [], {}) for key in ("active_item_count", "mood_hint", "total_er", "total_ev", "total_cp")):
+            return True
+        if _as_dict(snapshot.get("emotion")) or _as_dict(snapshot.get("action")) or _as_dict(snapshot.get("attention")):
+            return True
+        return False
+
+    def _latest_snapshot_for_compact(self) -> dict[str, Any]:
+        snapshots = _as_list(self.state.get("snapshots"))
+        for item in reversed(snapshots):
+            if isinstance(item, dict) and self._snapshot_has_live_packet_data(item):
+                return item
+        return {}
 
     def _build_compact_status_payload(self, packet_compact: dict[str, Any] | None = None) -> dict[str, Any]:
         packet_compact = copy.deepcopy(packet_compact if isinstance(packet_compact, dict) else {})
+        summary = _as_dict(packet_compact.get("summary"))
+        if not str(packet_compact.get("prompt_text") or "").strip() and str(summary.get("mood_hint") or "").strip():
+            packet_compact["prompt_text"] = _short(_sanitize_llm_visible_text(summary.get("mood_hint"), max_chars=240), 240)
         return {
             "config": self.get_config_public(),
             "session": self._compact_status()["session"],
+            "user_progress": self.user_progress_public(),
+            "persona_history": {"count": len(self._persona_history_cache)},
             "messages": self._compact_messages(self.state.get("messages", [])[-24:]),
             "thoughts": self._compact_thoughts(self.state.get("thoughts", [])[-8:]),
             "turns": self._compact_turns(self.state.get("turns", [])[-16:]),
-            "snapshots": [self._compact_snapshot_for_status(item) for item in _as_list(self.state.get("snapshots"))[-12:] if isinstance(item, dict)],
+            "snapshots": [
+                self._compact_snapshot_for_status(item)
+                for item in _as_list(self.state.get("snapshots"))
+                if isinstance(item, dict) and self._snapshot_has_live_packet_data(item)
+            ][-12:],
             "ap_packet": packet_compact,
             "paths": {
                 "config": str(_config_path()),
@@ -6800,15 +6975,27 @@ class AgentRuntime:
 
     def _refresh_compact_status_cache(self, packet: dict[str, Any] | None = None) -> dict[str, Any]:
         if isinstance(packet, dict) and packet:
-            compact_packet = self._compact_packet_for_status(packet)
+            compact_packet = self._compact_live_packet_for_ui(packet)
         elif isinstance(self._last_compact_packet, dict) and self._last_compact_packet:
-            compact_packet = copy.deepcopy(self._last_compact_packet)
+            compact_packet = self._compact_live_packet_for_ui(self._last_compact_packet)
         else:
-            snapshots = _as_list(self.state.get("snapshots"))
-            compact_packet = self._snapshot_to_compact_packet(snapshots[-1] if snapshots and isinstance(snapshots[-1], dict) else {})
+            compact_packet = self._snapshot_to_compact_packet(self._latest_snapshot_for_compact())
         self._last_compact_packet = copy.deepcopy(compact_packet)
         self._last_status_compact = self._build_compact_status_payload(compact_packet)
         return copy.deepcopy(self._last_status_compact)
+
+    def _refresh_compact_packet_cache(self, packet: dict[str, Any] | None = None) -> dict[str, Any]:
+        if isinstance(packet, dict) and packet:
+            compact_packet = self._compact_live_packet_for_ui(packet)
+        elif isinstance(self._last_compact_packet, dict) and self._last_compact_packet:
+            compact_packet = self._compact_live_packet_for_ui(self._last_compact_packet)
+        else:
+            compact_packet = self._snapshot_to_compact_packet(self._latest_snapshot_for_compact())
+        self._last_compact_packet = copy.deepcopy(compact_packet)
+        if isinstance(self._last_status_compact, dict) and self._last_status_compact:
+            self._last_status_compact["ap_packet"] = copy.deepcopy(compact_packet)
+            self._last_status_compact["compact"] = True
+        return copy.deepcopy(compact_packet)
 
     def status_compact_cached(self) -> dict[str, Any]:
         config_changed = self._maybe_reload_config_from_disk()
@@ -6909,7 +7096,206 @@ class AgentRuntime:
             cleaned["actions"] = actions
         cleaned["ap_packet"] = self._compact_prompt_packet_for_history(_as_dict(cleaned.get("ap_packet")))
         cleaned["quality"] = _as_dict(cleaned.get("quality"))
+        if cleaned.get("thought_runtime") is not None:
+            cleaned["thought_runtime"] = self._compact_thought_runtime(_as_dict(cleaned.get("thought_runtime")))
         return cleaned
+
+    def _compact_runtime_text_rows(
+        self,
+        rows: list[Any],
+        *,
+        limit: int,
+        text_chars: int = 180,
+        include_target: bool = False,
+        include_status: bool = False,
+    ) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        for item in _as_list(rows)[-max(1, limit):]:
+            if not isinstance(item, dict):
+                continue
+            row: dict[str, Any] = {
+                "id": _clean_text(item.get("id") or "", max_chars=120),
+                "text": _sanitize_llm_visible_text(item.get("text"), max_chars=text_chars),
+                "source": _clean_text(item.get("source") or "", max_chars=80),
+                "conversation_id": _clean_text(item.get("conversation_id") or "", max_chars=120),
+                "created_at_ms": item.get("created_at_ms"),
+            }
+            if include_target:
+                row["reply_target"] = self._compact_reply_target(_as_dict(item.get("reply_target")))
+                row["adapter_label"] = _clean_text(item.get("adapter_label") or "", max_chars=120)
+                row["mentions"] = self._normalize_mentions(item.get("mentions"))[:4]
+                row["attachment_count"] = len(_as_list(item.get("attachments")))
+            if include_status:
+                status = _as_dict(item.get("adapter_dispatch"))
+                if status:
+                    row["adapter_dispatch"] = {
+                        "ok": status.get("ok"),
+                        "reason": _clean_text(status.get("reason") or status.get("error") or "", max_chars=120),
+                    }
+            compacted.append(row)
+        return compacted
+
+    def _compact_tool_runtime_results(self, rows: list[Any], *, limit: int = 4) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        for item in _as_list(rows)[:max(1, limit)]:
+            if not isinstance(item, dict):
+                continue
+            compacted.append(
+                {
+                    "tool": _canonical_tool_name(item.get("tool") or item.get("name")),
+                    "ok": bool(item.get("ok")),
+                    "summary": _safe_tool_feedback_text(item, max_chars=200),
+                }
+            )
+        return compacted
+
+    def _compact_thought_runtime(self, runtime: dict[str, Any]) -> dict[str, Any]:
+        runtime = runtime if isinstance(runtime, dict) else {}
+        if not runtime:
+            return {}
+        adapter_context = _as_dict(runtime.get("adapter_context"))
+        group_continuity_gate = _as_dict(adapter_context.get("group_continuity_gate"))
+        return {
+            "current_thought_index": _as_int(runtime.get("current_thought_index"), 0),
+            "soft_window_index": _as_int(runtime.get("soft_window_index"), runtime.get("current_thought_index", 0)),
+            "soft_window_limit": _as_int(runtime.get("soft_window_limit"), 0),
+            "near_soft_limit": bool(runtime.get("near_soft_limit")),
+            "hard_step_limit": _as_int(runtime.get("hard_step_limit"), 0),
+            "reset_count": _as_int(runtime.get("reset_count"), 0),
+            "reset_limit": _as_int(runtime.get("reset_limit"), 0),
+            "visible_reply_count_this_turn": _as_int(runtime.get("visible_reply_count_this_turn"), 0),
+            "tool_result_count_this_turn": _as_int(runtime.get("tool_result_count_this_turn"), 0),
+            "llm_wait_tick_credit": _as_int(runtime.get("llm_wait_tick_credit"), 0),
+            "pre_llm_tick_budget": _as_int(runtime.get("pre_llm_tick_budget"), 0),
+            "post_thought_tick_budget": _as_int(runtime.get("post_thought_tick_budget"), 0),
+            "pending_external_input_count": _as_int(runtime.get("pending_external_input_count"), 0),
+            "new_external_input_since_last_llm": bool(runtime.get("new_external_input_since_last_llm")),
+            "new_external_input_since_last_reply": bool(runtime.get("new_external_input_since_last_reply")),
+            "new_tool_context_since_last_reply": bool(runtime.get("new_tool_context_since_last_reply")),
+            "post_reply_self_check": bool(runtime.get("post_reply_self_check")),
+            "reply_does_not_end_turn": bool(runtime.get("reply_does_not_end_turn")),
+            "has_pending_tool_context": bool(runtime.get("has_pending_tool_context")),
+            "internal_mode": bool(runtime.get("internal_mode")),
+            "same_turn_timeline": _clean_text(runtime.get("same_turn_timeline") or "", max_chars=1800),
+            "adapter_context": {
+                "active_conversation_id": _clean_text(adapter_context.get("active_conversation_id") or "", max_chars=120),
+                "active_target_label": _clean_text(adapter_context.get("active_target_label") or "", max_chars=160),
+                "initial_reply_target": self._compact_reply_target(_as_dict(adapter_context.get("initial_reply_target"))),
+                "short_context_isolation_enabled": bool(adapter_context.get("short_context_isolation_enabled")),
+                "default_reply_target_rule": _clean_text(adapter_context.get("default_reply_target_rule") or "", max_chars=220),
+                "group_continuity_gate": {
+                    "confidence": _as_float(group_continuity_gate.get("confidence"), 0.0),
+                    "reason": _clean_text(group_continuity_gate.get("reason") or "", max_chars=180),
+                },
+            },
+            "prior_thoughts_this_turn": [
+                {
+                    "id": _clean_text(item.get("id") or "", max_chars=120),
+                    "text": _sanitize_llm_visible_text(item.get("text"), max_chars=220),
+                    "decision": _clean_text(item.get("decision") or "", max_chars=40),
+                    "why": _sanitize_llm_visible_text(item.get("why"), max_chars=160),
+                    "tool_calls": [
+                        _canonical_tool_name(call.get("name") or call.get("tool"))
+                        for call in _as_list(item.get("tool_calls"))[:3]
+                        if isinstance(call, dict)
+                    ],
+                    "tool_results": self._compact_tool_runtime_results(_as_list(item.get("tool_results")), limit=2),
+                    "created_at_ms": item.get("created_at_ms"),
+                }
+                for item in _as_list(runtime.get("prior_thoughts_this_turn"))[-8:]
+                if isinstance(item, dict)
+            ],
+            "prior_replies_this_turn": self._compact_runtime_text_rows(
+                _as_list(runtime.get("prior_replies_this_turn")),
+                limit=6,
+                text_chars=240,
+                include_target=True,
+                include_status=True,
+            ),
+            "external_inputs_this_turn": self._compact_runtime_text_rows(
+                _as_list(runtime.get("external_inputs_this_turn")),
+                limit=6,
+                text_chars=180,
+                include_target=True,
+            ),
+            "other_adapter_contexts": [
+                {
+                    "conversation_id": _clean_text(item.get("conversation_id") or "", max_chars=120),
+                    "target_label": _clean_text(item.get("target_label") or item.get("active_target_label") or "", max_chars=160),
+                    "message_type": _clean_text(item.get("message_type") or "", max_chars=40),
+                    "updated_at_ms": item.get("updated_at_ms"),
+                }
+                for item in _as_list(runtime.get("other_adapter_contexts"))[-6:]
+                if isinstance(item, dict)
+            ],
+            "recent_outbound_reply_ledger": [
+                {
+                    "target_label": _clean_text(item.get("target_label") or "", max_chars=160),
+                    "message_type": _clean_text(item.get("message_type") or "", max_chars=40),
+                    "text": _sanitize_llm_visible_text(item.get("text"), max_chars=220),
+                    "ok": bool(item.get("ok")),
+                    "ts": item.get("ts"),
+                }
+                for item in _as_list(runtime.get("recent_outbound_reply_ledger"))[-6:]
+                if isinstance(item, dict)
+            ],
+            "reply_action_results_this_turn": self._compact_tool_runtime_results(
+                _as_list(runtime.get("reply_action_results_this_turn")),
+                limit=4,
+            ),
+        }
+
+    def _library_tick_memory_checkpoint(
+        self,
+        *,
+        task_id: str,
+        book_id: str,
+        book_title: str,
+        ap_tick_count: int,
+        review_tick_target: int,
+        chunk_count: int,
+        reason: str,
+        force_idle: bool = False,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        self._post_cycle_memory_maintenance(source=f"library_read:{reason}")
+        idle_result = self.maybe_run_idle_memory_maintenance(
+            source=f"library_read:{reason}",
+            should_abort=should_abort,
+            force=force_idle,
+        )
+        health = dict(self._last_runtime_memory_health if isinstance(self._last_runtime_memory_health, dict) else self._runtime_memory_health())
+        if force_idle or bool(idle_result.get("ran")):
+            self._record_tool_log(
+                {
+                    "event": "tool_read_book_memory_checkpoint",
+                    "task": "读书",
+                    "task_id": task_id,
+                    "status": "running",
+                    "stage": "memory_maintenance",
+                    "progress": max(0, min(100, int((ap_tick_count / max(1, review_tick_target)) * 100))),
+                    "summary": f"阅读《{book_title}》时执行内存整理，累计 tick {ap_tick_count}/{review_tick_target}。",
+                    "detail": _short(json.dumps({"health": health, "idle": idle_result}, ensure_ascii=False), 1200),
+                    "book_id": book_id,
+                    "book_title": book_title,
+                    "progress_current": ap_tick_count,
+                    "progress_total": review_tick_target,
+                    "chunk_count": chunk_count,
+                }
+        )
+        return {"health": health, "idle": idle_result}
+
+    def _library_checkpoint_due(self, source: str, ap_tick_count: int, review_tick_target: int, *, force_idle: bool = False) -> bool:
+        if ap_tick_count <= 0:
+            return False
+        if force_idle:
+            return True
+        source_text = str(source or "").strip().lower()
+        if source_text in {"after_review", "review_digest"}:
+            return True
+        if ap_tick_count >= review_tick_target:
+            return True
+        return (ap_tick_count % 30) == 0
 
     def _sanitize_state_turn(self, row: dict[str, Any]) -> dict[str, Any]:
         cleaned = dict(row)
@@ -7559,6 +7945,823 @@ class AgentRuntime:
             )
         return profiles
 
+    def _load_persona_history(self) -> list[dict[str, Any]]:
+        raw = _safe_read_json(_persona_history_path(), {"records": []})
+        rows = raw.get("records") if isinstance(raw, dict) else raw
+        if not isinstance(rows, list):
+            return []
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        now = _now_ms()
+        for idx, item in enumerate(rows):
+            if not isinstance(item, dict):
+                continue
+            persona_name = _clean_text(item.get("persona_name") or item.get("name") or "", max_chars=120)
+            persona_text = _clean_text(item.get("persona_text") or item.get("text") or "", max_chars=8000)
+            diary_seed = _clean_text(item.get("diary_seed") or "", max_chars=3000)
+            system_note = _clean_text(item.get("system_note") or "", max_chars=2400)
+            if not any((persona_name, persona_text, diary_seed, system_note)):
+                continue
+            record_id = _slug_id(item.get("id") or persona_name or f"persona_{idx + 1}", fallback=f"persona_{idx + 1}")
+            if record_id in seen:
+                suffix = 2
+                base_id = record_id
+                while f"{base_id}_{suffix}" in seen:
+                    suffix += 1
+                record_id = f"{base_id}_{suffix}"
+            seen.add(record_id)
+            created_at_ms = _as_int(item.get("created_at_ms"), now)
+            updated_at_ms = _as_int(item.get("updated_at_ms"), created_at_ms)
+            records.append(
+                {
+                    "id": record_id,
+                    "name": _clean_text(item.get("name") or persona_name or record_id, max_chars=120),
+                    "persona_name": persona_name or _clean_text(item.get("name") or "未命名人设", max_chars=120),
+                    "persona_text": persona_text,
+                    "diary_seed": diary_seed,
+                    "system_note": system_note,
+                    "note": _clean_text(item.get("note") or "", max_chars=500),
+                    "created_at_ms": created_at_ms,
+                    "updated_at_ms": updated_at_ms,
+                    "last_applied_at_ms": _as_int(item.get("last_applied_at_ms"), 0),
+                    "use_count": max(0, _as_int(item.get("use_count"), 0)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                    "is_default": bool(item.get("is_default", False)),
+                }
+            )
+        records.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
+        return records[:120]
+
+    def _write_persona_history(self, rows: list[dict[str, Any]]) -> None:
+        safe_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            persona_name = _clean_text(item.get("persona_name") or item.get("name") or "", max_chars=120)
+            persona_text = _clean_text(item.get("persona_text") or item.get("text") or "", max_chars=8000)
+            diary_seed = _clean_text(item.get("diary_seed") or "", max_chars=3000)
+            system_note = _clean_text(item.get("system_note") or "", max_chars=2400)
+            if not any((persona_name, persona_text, diary_seed, system_note)):
+                continue
+            record_id = _slug_id(item.get("id") or persona_name or f"persona_{len(safe_rows) + 1}", fallback=f"persona_{len(safe_rows) + 1}")
+            if record_id in seen:
+                suffix = 2
+                base_id = record_id
+                while f"{base_id}_{suffix}" in seen:
+                    suffix += 1
+                record_id = f"{base_id}_{suffix}"
+            seen.add(record_id)
+            safe_rows.append(
+                {
+                    "id": record_id,
+                    "name": _clean_text(item.get("name") or persona_name or record_id, max_chars=120),
+                    "persona_name": persona_name or _clean_text(item.get("name") or "未命名人设", max_chars=120),
+                    "persona_text": persona_text,
+                    "diary_seed": diary_seed,
+                    "system_note": system_note,
+                    "note": _clean_text(item.get("note") or "", max_chars=500),
+                    "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+                    "updated_at_ms": _as_int(item.get("updated_at_ms"), _now_ms()),
+                    "last_applied_at_ms": _as_int(item.get("last_applied_at_ms"), 0),
+                    "use_count": max(0, _as_int(item.get("use_count"), 0)),
+                    "source": _clean_text(item.get("source") or "", max_chars=120),
+                    "is_default": bool(item.get("is_default", False)),
+                }
+            )
+        safe_rows.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
+        _safe_write_json(_persona_history_path(), {"version": 1, "updated_at_ms": _now_ms(), "records": safe_rows[:120]})
+        self._persona_history_cache = safe_rows[:120]
+
+    def _default_user_progress_payload(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "xp": 0,
+            "level": 1,
+            "current_title_id": "初来乍到",
+            "equipped_badge_ids": [],
+            "titles": [{"id": "初来乍到", "name": "初来乍到", "unlocked_at_ms": _now_ms()}],
+            "badges": [],
+            "achievements": [],
+            "mission_claims": [],
+            "daily_claim_days": {},
+            "mission_state": {},
+            "tool_usage_counts": {},
+            "tool_first_use": {},
+            "first_chat_at_ms": 0,
+            "config_saved_at_ms": 0,
+            "daily_chat": {"day": "", "count": 0, "completed": False, "last_chat_at_ms": 0},
+            "daily_streak": {"current": 0, "best": 0, "last_day": "", "last_reward_day": ""},
+            "stats": {
+                "chat_days": 0,
+                "chat_count": 0,
+                "persona_save_count": 0,
+                "mission_completed_count": 0,
+                "tool_category_count": 0,
+            },
+            "updated_at_ms": _now_ms(),
+        }
+
+    def _load_user_progress(self) -> dict[str, Any]:
+        payload = _safe_read_json(_user_progress_path(), self._default_user_progress_payload())
+        if not isinstance(payload, dict):
+            payload = self._default_user_progress_payload()
+        base = self._default_user_progress_payload()
+        merged = {**base, **payload}
+        merged["titles"] = [row for row in _as_list(merged.get("titles")) if isinstance(row, dict)] or base["titles"]
+        merged["badges"] = [row for row in _as_list(merged.get("badges")) if isinstance(row, dict)]
+        merged["achievements"] = [row for row in _as_list(merged.get("achievements")) if isinstance(row, dict)]
+        merged["mission_claims"] = [str(item).strip() for item in _as_list(merged.get("mission_claims")) if str(item).strip()]
+        merged["daily_claim_days"] = {str(k): str(v).strip() for k, v in _as_dict(merged.get("daily_claim_days")).items() if str(k).strip() and str(v).strip()}
+        merged["mission_state"] = _as_dict(merged.get("mission_state"))
+        merged["tool_usage_counts"] = {str(k): max(0, _as_int(v, 0)) for k, v in _as_dict(merged.get("tool_usage_counts")).items()}
+        merged["tool_first_use"] = {str(k): max(0, _as_int(v, 0)) for k, v in _as_dict(merged.get("tool_first_use")).items()}
+        merged["stats"] = {**_as_dict(base.get("stats")), **_as_dict(merged.get("stats"))}
+        merged["daily_chat"] = {**_as_dict(base.get("daily_chat")), **_as_dict(merged.get("daily_chat"))}
+        merged["daily_streak"] = {**_as_dict(base.get("daily_streak")), **_as_dict(merged.get("daily_streak"))}
+        merged["xp"] = max(0, _as_int(merged.get("xp"), 0))
+        merged["level"] = max(1, _as_int(merged.get("level"), 1))
+        merged["current_title_id"] = _clean_text(merged.get("current_title_id") or "初来乍到", max_chars=80) or "初来乍到"
+        merged["equipped_badge_ids"] = [
+            _clean_text(item, max_chars=80)
+            for item in _as_list(merged.get("equipped_badge_ids"))
+            if _clean_text(item, max_chars=80)
+        ][:5]
+        merged["first_chat_at_ms"] = max(0, _as_int(merged.get("first_chat_at_ms"), 0))
+        merged["config_saved_at_ms"] = max(0, _as_int(merged.get("config_saved_at_ms"), 0))
+        merged["updated_at_ms"] = max(0, _as_int(merged.get("updated_at_ms"), _now_ms()))
+        return merged
+
+    def _write_user_progress(self, payload: dict[str, Any]) -> None:
+        clean = self._load_user_progress()
+        clean.update(_as_dict(payload))
+        clean["updated_at_ms"] = _now_ms()
+        _safe_write_json(_user_progress_path(), clean)
+        self._user_progress_cache = clean
+
+    def _current_day_key(self, ts_ms: int | None = None) -> str:
+        ts_ms = _as_int(ts_ms, _now_ms())
+        try:
+            return time.strftime("%Y-%m-%d", time.localtime(ts_ms / 1000))
+        except Exception:
+            return ""
+
+    def _level_from_xp(self, xp: int) -> int:
+        xp = max(0, int(xp or 0))
+        return max(1, 1 + xp // 100)
+
+    def _tool_mission_catalog(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "tool_diary_once", "tool": "write_diary", "label": "触发一次日记本", "detail": "让 PA 帮你记下一条重要信息。", "xp": 40, "kind": "side"},
+            {"id": "tool_schedule_once", "tool": "schedule_task", "label": "触发一次定时任务", "detail": "创建、查看或取消一次提醒。", "xp": 40, "kind": "side"},
+            {"id": "tool_read_book_once", "tool": "read_book", "label": "触发一次读书工具", "detail": "让 PA 读一段图书馆内容。", "xp": 50, "kind": "side"},
+            {"id": "tool_recall_once", "tool": "timeline_recall", "label": "触发一次回忆任务", "detail": "让 PA 按时间或线索回忆。", "xp": 45, "kind": "side"},
+            {"id": "tool_weather_once", "tool": "weather", "label": "查询一次天气", "detail": "让 PA 帮你查一次天气。", "xp": 30, "kind": "side"},
+        ]
+
+    def _mission_catalog(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "main_base_url", "label": "填写 URL", "kind": "main", "xp": 20, "detail": "在配置里填写可用的 Base URL。"},
+            {"id": "main_api_key", "label": "填写 Key", "kind": "main", "xp": 20, "detail": "在配置里填写 API Key。"},
+            {"id": "main_model", "label": "填写模型", "kind": "main", "xp": 20, "detail": "填写主模型名称并保存。"},
+            {"id": "main_config_saved", "label": "保存配置", "kind": "main", "xp": 25, "detail": "至少完成一次成功的配置保存。"},
+            {"id": "main_first_chat", "label": "进行第一次对话", "kind": "main", "xp": 40, "detail": "在主页发送第一条对话，让 AP 真正跑起来。"},
+            {"id": "side_persona_saved", "label": "修改并保存人设", "kind": "side", "xp": 35, "detail": "保存一个非默认的人设记录。"},
+            {"id": "daily_chat_once", "label": "每日对话", "kind": "daily", "xp": 12, "detail": "每天至少和 PA 聊一次。"},
+            *self._tool_mission_catalog(),
+        ]
+
+    def _day_key_to_epoch(self, day_key: str) -> int:
+        text = str(day_key or "").strip()
+        if not text:
+            return 0
+        try:
+            return int(time.mktime(time.strptime(text, "%Y-%m-%d")))
+        except Exception:
+            return 0
+
+    def _is_consecutive_day(self, previous_day: str, current_day: str) -> bool:
+        prev_epoch = self._day_key_to_epoch(previous_day)
+        current_epoch = self._day_key_to_epoch(current_day)
+        if prev_epoch <= 0 or current_epoch <= 0 or current_epoch <= prev_epoch:
+            return False
+        return int((current_epoch - prev_epoch) // 86400) == 1
+
+    def _xp_floor_for_level(self, level: int) -> int:
+        return max(0, (max(1, _as_int(level, 1)) - 1) * 100)
+
+    def _xp_next_for_level(self, level: int) -> int:
+        return max(100, max(1, _as_int(level, 1)) * 100)
+
+    def _ensure_progress_collectible(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        item_id: str,
+        name: str,
+        detail: str = "",
+        now_ms: int | None = None,
+    ) -> bool:
+        normalized_id = _clean_text(item_id, max_chars=120)
+        if not normalized_id:
+            return False
+        for item in rows:
+            if str(item.get("id") or "") == normalized_id:
+                if detail and not str(item.get("detail") or "").strip():
+                    item["detail"] = _clean_text(detail, max_chars=240)
+                if name and not str(item.get("name") or "").strip():
+                    item["name"] = _clean_text(name, max_chars=120)
+                return False
+        rows.append(
+            {
+                "id": normalized_id,
+                "name": _clean_text(name or normalized_id, max_chars=120) or normalized_id,
+                "detail": _clean_text(detail, max_chars=240),
+                "unlocked_at_ms": max(0, _as_int(now_ms, _now_ms())),
+            }
+        )
+        return True
+
+    def _sync_user_progress_rewards(self, progress: dict[str, Any]) -> None:
+        now = _now_ms()
+        stats = _as_dict(progress.get("stats"))
+        mission_state = _as_dict(progress.get("mission_state"))
+        level = max(1, _as_int(progress.get("level"), 1))
+        xp = max(0, _as_int(progress.get("xp"), 0))
+        tool_category_count = max(0, _as_int(stats.get("tool_category_count"), 0))
+        persona_save_count = max(0, _as_int(stats.get("persona_save_count"), 0))
+        chat_count = max(0, _as_int(stats.get("chat_count"), 0))
+        streak = _as_dict(progress.get("daily_streak"))
+        streak_current = max(0, _as_int(streak.get("current"), 0))
+        streak_best = max(0, _as_int(streak.get("best"), 0))
+        completed_main = sum(1 for row in mission_state.values() if isinstance(row, dict) and str(row.get("kind") or "") == "main" and bool(row.get("completed")))
+        completed_side = sum(1 for row in mission_state.values() if isinstance(row, dict) and str(row.get("kind") or "") == "side" and bool(row.get("completed")))
+        completed_total = sum(1 for row in mission_state.values() if isinstance(row, dict) and bool(row.get("completed")))
+        titles = [row for row in _as_list(progress.get("titles")) if isinstance(row, dict)]
+        badges = [row for row in _as_list(progress.get("badges")) if isinstance(row, dict)]
+        achievements = [row for row in _as_list(progress.get("achievements")) if isinstance(row, dict)]
+        unlocked_titles: list[str] = []
+        new_unlocks: list[dict[str, Any]] = []
+
+        def title(item_id: str, name: str, detail: str, condition: bool) -> None:
+            if not condition:
+                return
+            if self._ensure_progress_collectible(titles, item_id=item_id, name=name, detail=detail, now_ms=now):
+                new_unlocks.append({"type": "title", "id": item_id, "name": name})
+            unlocked_titles.append(item_id)
+
+        def badge(item_id: str, name: str, detail: str, condition: bool) -> None:
+            if condition and self._ensure_progress_collectible(badges, item_id=item_id, name=name, detail=detail, now_ms=now):
+                new_unlocks.append({"type": "badge", "id": item_id, "name": name})
+
+        def achievement(item_id: str, name: str, detail: str, condition: bool) -> None:
+            if condition and self._ensure_progress_collectible(achievements, item_id=item_id, name=name, detail=detail, now_ms=now):
+                new_unlocks.append({"type": "achievement", "id": item_id, "name": name})
+
+        title("初来乍到", "初来乍到", "第一次把 PA 跑起来时获得。", True)
+        title("开机见习生", "开机见习生", "完成主要配置并真正和 PA 开始对话。", completed_main >= 5)
+        title("人设调音师", "人设调音师", "至少保存过一条非默认历史人设。", persona_save_count >= 1)
+        title("工具探险家", "工具探险家", "尝试过三类以上工具。", tool_category_count >= 3)
+        title("长线协作者", "长线协作者", "主线和支线任务都已经开始成体系推进。", completed_total >= 8)
+        title("节律守望者", "节律守望者", "连续多天回来和 PA 保持交流。", streak_best >= 3)
+        title("共鸣老友", "共鸣老友", "经验值达到较高等级，说明你已经和 PA 长期相处了一段时间。", level >= 10 or xp >= 900)
+
+        badge("首次开口", "首次开口", "完成第一次对话。", bool(_as_dict(mission_state.get("main_first_chat")).get("completed")))
+        badge("配置完成", "配置完成", "URL / Key / 模型和保存配置都已经完成。", completed_main >= 4)
+        badge("人设收藏家", "人设收藏家", "历史人设记录达到 2 条。", persona_save_count >= 2)
+        badge("工具开箱", "工具开箱", "至少触发过一类工具。", tool_category_count >= 1)
+        badge("多工具联动", "多工具联动", "至少触发过三类工具。", tool_category_count >= 3)
+        badge("日记执笔者", "日记执笔者", "成功触发过日记本工具。", bool(_as_dict(mission_state.get("tool_diary_once")).get("completed")))
+        badge("定时提醒员", "定时提醒员", "成功触发过定时任务工具。", bool(_as_dict(mission_state.get("tool_schedule_once")).get("completed")))
+        badge("图书馆漫游者", "图书馆漫游者", "成功触发过读书工具。", bool(_as_dict(mission_state.get("tool_read_book_once")).get("completed")))
+        badge("回忆打捞者", "回忆打捞者", "成功触发过回忆工具。", bool(_as_dict(mission_state.get("tool_recall_once")).get("completed")))
+        badge("晴雨先知", "晴雨先知", "成功触发过天气工具。", bool(_as_dict(mission_state.get("tool_weather_once")).get("completed")))
+
+        achievement_catalog = [
+            {
+                "id": "新手毕业",
+                "name": "新手毕业",
+                "detail": "所有主线新手任务全部完成。",
+                "condition": completed_main >= 5,
+            },
+            {
+                "id": "功能巡礼",
+                "name": "功能巡礼",
+                "detail": "五类核心工具都已经体验过。",
+                "condition": tool_category_count >= 5,
+            },
+            {
+                "id": "稳定交流",
+                "name": "稳定交流",
+                "detail": "累计完成至少 12 次对话。",
+                "condition": chat_count >= 12,
+            },
+            {
+                "id": "连续打卡三天",
+                "name": "连续打卡三天",
+                "detail": "连续 3 天至少完成一次每日对话。",
+                "condition": streak_best >= 3,
+            },
+            {
+                "id": "连续打卡七天",
+                "name": "连续打卡七天",
+                "detail": "连续 7 天至少完成一次每日对话。",
+                "condition": streak_best >= 7,
+            },
+            {
+                "id": "本地养成启动",
+                "name": "本地养成启动",
+                "detail": "经验值达到 300，说明这套本地成长系统已经真正开始运转。",
+                "condition": xp >= 300,
+            },
+        ]
+        for item in achievement_catalog:
+            achievement(str(item.get("id") or ""), str(item.get("name") or ""), str(item.get("detail") or ""), bool(item.get("condition")))
+
+        progress["titles"] = titles
+        progress["badges"] = badges
+        progress["achievements"] = achievements
+        progress["achievement_catalog"] = [
+            {
+                "id": str(item.get("id") or ""),
+                "name": str(item.get("name") or item.get("id") or ""),
+                "detail": str(item.get("detail") or ""),
+            }
+            for item in achievement_catalog
+            if str(item.get("id") or "").strip()
+        ]
+        title_ids = {str(item.get("id") or "") for item in titles if isinstance(item, dict)}
+        current_title_id = _clean_text(progress.get("current_title_id") or "", max_chars=80)
+        if current_title_id and current_title_id in title_ids:
+            progress["current_title_id"] = current_title_id
+        elif unlocked_titles:
+            progress["current_title_id"] = unlocked_titles[-1]
+        elif not str(progress.get("current_title_id") or "").strip():
+            progress["current_title_id"] = "初来乍到"
+        badge_ids = {str(item.get("id") or "") for item in badges if isinstance(item, dict)}
+        equipped_badge_ids: list[str] = []
+        for badge_id in _as_list(progress.get("equipped_badge_ids")):
+            normalized = _clean_text(badge_id, max_chars=80)
+            if not normalized or normalized in equipped_badge_ids or normalized not in badge_ids:
+                continue
+            equipped_badge_ids.append(normalized)
+            if len(equipped_badge_ids) >= 5:
+                break
+        progress["equipped_badge_ids"] = equipped_badge_ids
+        progress["stats"] = {
+            **stats,
+            "badge_count": len(badges),
+            "achievement_count": len(achievements),
+            "title_count": len(titles),
+            "main_completed_count": completed_main,
+            "side_completed_count": completed_side,
+        }
+        if new_unlocks:
+            self.record_event({"event": "user_progress_unlocked", "items": new_unlocks})
+
+    def _persona_history_public_row(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "name": item.get("name") or item.get("persona_name"),
+            "persona_name": item.get("persona_name"),
+            "persona_text": item.get("persona_text"),
+            "diary_seed": item.get("diary_seed"),
+            "system_note": item.get("system_note"),
+            "note": item.get("note"),
+            "created_at_ms": item.get("created_at_ms"),
+            "updated_at_ms": item.get("updated_at_ms"),
+            "last_applied_at_ms": item.get("last_applied_at_ms"),
+            "use_count": item.get("use_count"),
+            "source": item.get("source"),
+            "is_default": bool(item.get("is_default")),
+            "summary": {
+                "persona_chars": len(str(item.get("persona_text") or "")),
+                "diary_seed_chars": len(str(item.get("diary_seed") or "")),
+                "system_note_chars": len(str(item.get("system_note") or "")),
+            },
+        }
+
+    def persona_history_public(self) -> dict[str, Any]:
+        with self._persona_history_lock:
+            rows = [self._persona_history_public_row(item) for item in self._persona_history_cache]
+        return {"records": rows, "path": str(_persona_history_path()), "file": _file_info(_persona_history_path())}
+
+    def _default_persona_signature(self) -> str:
+        default = AgentConfig()
+        return json.dumps(
+            {
+                "persona_name": str(default.persona_name or "").strip(),
+                "persona_text": str(default.persona_text or "").strip(),
+                "diary_seed": str(default.diary_seed or "").strip(),
+                "system_note": str(default.system_note or "").strip(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _persona_signature_from_payload(self, payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "persona_name": _clean_text(payload.get("persona_name") or "", max_chars=120),
+                "persona_text": _clean_text(payload.get("persona_text") or "", max_chars=8000),
+                "diary_seed": _clean_text(payload.get("diary_seed") or "", max_chars=3000),
+                "system_note": _clean_text(payload.get("system_note") or "", max_chars=2400),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _capture_current_persona_snapshot(self) -> dict[str, Any]:
+        return {
+            "persona_name": _clean_text(self.config.persona_name or "", max_chars=120),
+            "persona_text": _clean_text(self.config.persona_text or "", max_chars=8000),
+            "diary_seed": _clean_text(self.config.diary_seed or "", max_chars=3000),
+            "system_note": _clean_text(self.config.system_note or "", max_chars=2400),
+        }
+
+    def _save_persona_history_record_internal(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str = "",
+        auto: bool = False,
+        touch_use_count: bool = False,
+        touch_applied_at: bool = False,
+    ) -> dict[str, Any]:
+        now = _now_ms()
+        base_payload = {
+            "persona_name": _clean_text(payload.get("persona_name") or payload.get("name") or "", max_chars=120),
+            "persona_text": _clean_text(payload.get("persona_text") or payload.get("text") or "", max_chars=8000),
+            "diary_seed": _clean_text(payload.get("diary_seed") or "", max_chars=3000),
+            "system_note": _clean_text(payload.get("system_note") or "", max_chars=2400),
+        }
+        if not any(base_payload.values()):
+            raise ValueError("persona history requires persona content")
+        signature = self._persona_signature_from_payload(base_payload)
+        rows = list(self._persona_history_cache)
+        existing = next((item for item in rows if self._persona_signature_from_payload(item) == signature), None)
+        if not existing and payload.get("id"):
+            record_id = _slug_id(payload.get("id"), fallback="")
+            existing = next((item for item in rows if str(item.get("id") or "") == record_id), None)
+        if existing:
+            existing.update(
+                {
+                    "name": _clean_text(payload.get("name") or existing.get("name") or base_payload["persona_name"] or existing.get("id") or "人设记录", max_chars=120),
+                    "persona_name": base_payload["persona_name"] or existing.get("persona_name"),
+                    "persona_text": base_payload["persona_text"] or existing.get("persona_text"),
+                    "diary_seed": base_payload["diary_seed"] if payload.get("diary_seed") is not None else existing.get("diary_seed"),
+                    "system_note": base_payload["system_note"] if payload.get("system_note") is not None else existing.get("system_note"),
+                    "note": _clean_text(payload.get("note") or existing.get("note") or "", max_chars=500),
+                    "updated_at_ms": now,
+                    "source": _clean_text(source or existing.get("source") or "", max_chars=120),
+                }
+            )
+            if touch_applied_at:
+                existing["last_applied_at_ms"] = now
+            if touch_use_count:
+                existing["use_count"] = max(0, _as_int(existing.get("use_count"), 0)) + 1
+            record = existing
+        else:
+            record_id = _slug_id(payload.get("id") or base_payload["persona_name"] or f"persona_{now}", fallback=f"persona_{now}")
+            used = {str(item.get("id") or "") for item in rows}
+            if record_id in used:
+                suffix = 2
+                base_id = record_id
+                while f"{base_id}_{suffix}" in used:
+                    suffix += 1
+                record_id = f"{base_id}_{suffix}"
+            record = {
+                "id": record_id,
+                "name": _clean_text(payload.get("name") or base_payload["persona_name"] or "人设记录", max_chars=120),
+                **base_payload,
+                "note": _clean_text(payload.get("note") or "", max_chars=500),
+                "created_at_ms": now,
+                "updated_at_ms": now,
+                "last_applied_at_ms": now if touch_applied_at else 0,
+                "use_count": 1 if touch_use_count else 0,
+                "source": _clean_text(source, max_chars=120),
+                "is_default": signature == self._default_persona_signature(),
+            }
+            rows.append(record)
+        self._write_persona_history(rows)
+        if not auto:
+            self.record_event({"event": "persona_history_saved", "id": record.get("id"), "name": record.get("name"), "source": source or "manual"})
+        return self._persona_history_public_row(record)
+
+    def save_persona_history(self, payload: dict[str, Any] | None = None, *, source: str = "manual_persona_history") -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        with self._persona_history_lock:
+            record = self._save_persona_history_record_internal(payload, source=source, auto=False)
+        self._refresh_user_progress_dynamic_state(reason="persona_history_saved")
+        return {"ok": True, "record": record, "records": self.persona_history_public()["records"]}
+
+    def apply_persona_history(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        record_id = _slug_id(payload.get("id") or "", fallback="")
+        if not record_id:
+            raise ValueError("persona history id required")
+        with self._persona_history_lock:
+            row = next((item for item in self._persona_history_cache if str(item.get("id") or "") == record_id), None)
+            if not row:
+                raise ValueError(f"persona history not found: {record_id}")
+            row_public = self._save_persona_history_record_internal(row, source="apply_persona_history", auto=True, touch_use_count=True, touch_applied_at=True)
+        config = self.update_config(
+            {
+                "persona_name": row.get("persona_name") or "",
+                "persona_text": row.get("persona_text") or "",
+                "diary_seed": row.get("diary_seed") or "",
+                "system_note": row.get("system_note") or "",
+            }
+        )
+        self.record_event({"event": "persona_history_applied", "id": record_id, "name": row.get("name") or row.get("persona_name")})
+        self._refresh_user_progress_dynamic_state(reason="persona_history_applied")
+        return {"ok": True, "record": row_public, "records": self.persona_history_public()["records"], "config": config}
+
+    def delete_persona_history(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        record_id = _slug_id(payload.get("id") or "", fallback="")
+        if not record_id:
+            raise ValueError("persona history id required")
+        with self._persona_history_lock:
+            rows = [item for item in self._persona_history_cache if str(item.get("id") or "") != record_id]
+            if len(rows) == len(self._persona_history_cache):
+                raise ValueError(f"persona history not found: {record_id}")
+            self._write_persona_history(rows)
+        self.record_event({"event": "persona_history_deleted", "id": record_id})
+        self._refresh_user_progress_dynamic_state(reason="persona_history_deleted")
+        return {"ok": True, "deleted": record_id, "records": self.persona_history_public()["records"]}
+
+    def _mission_snapshot(self, mission: dict[str, Any], completed: bool, progress_current: int, progress_total: int, reward_claimed: bool) -> dict[str, Any]:
+        return {
+            "id": mission.get("id"),
+            "label": mission.get("label"),
+            "kind": mission.get("kind"),
+            "detail": mission.get("detail"),
+            "xp": mission.get("xp", 0),
+            "progress_current": progress_current,
+            "progress_total": max(1, progress_total),
+            "completed": bool(completed),
+            "reward_claimed": bool(reward_claimed),
+            "progress_text": f"{progress_current}/{max(1, progress_total)}",
+        }
+
+    def _refresh_user_progress_dynamic_state(self, *, reason: str = "") -> dict[str, Any]:
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            before = copy.deepcopy(progress)
+            mission_state = _as_dict(progress.get("mission_state"))
+            claimed = {str(item) for item in _as_list(progress.get("mission_claims"))}
+            daily_claim_days = {str(k): str(v) for k, v in _as_dict(progress.get("daily_claim_days")).items()}
+            config_saved = _as_int(progress.get("config_saved_at_ms"), 0) > 0
+            has_base_url = bool(str(self.config.base_url or "").strip())
+            has_api_key = bool(str(self.config.api_key or "").strip())
+            has_model = bool(str(self.config.model or "").strip())
+            current_day = self._current_day_key()
+            daily_chat = {**_as_dict(progress.get("daily_chat"))}
+            if str(daily_chat.get("day") or "") != current_day:
+                daily_chat = {"day": current_day, "count": 0, "completed": False, "last_chat_at_ms": _as_int(daily_chat.get("last_chat_at_ms"), 0)}
+            non_default_persona_count = 0
+            default_signature = self._default_persona_signature()
+            for item in self._persona_history_cache:
+                if self._persona_signature_from_payload(item) != default_signature:
+                    non_default_persona_count += 1
+            snapshots: list[dict[str, Any]] = []
+            tool_catalog = {str(row.get("id") or ""): str(row.get("tool") or "") for row in self._tool_mission_catalog()}
+            for mission in self._mission_catalog():
+                mission_id = str(mission.get("id") or "")
+                completed = False
+                current = 0
+                total = 1
+                if mission_id == "main_base_url":
+                    completed = has_base_url
+                    current = 1 if completed else 0
+                elif mission_id == "main_api_key":
+                    completed = has_api_key
+                    current = 1 if completed else 0
+                elif mission_id == "main_model":
+                    completed = has_model
+                    current = 1 if completed else 0
+                elif mission_id == "main_config_saved":
+                    completed = config_saved and has_base_url and has_api_key and has_model
+                    current = 1 if completed else 0
+                elif mission_id == "main_first_chat":
+                    current = min(max(0, _as_int(_as_dict(progress.get("stats")).get("chat_count"), 0)), 1)
+                    completed = current > 0 or _as_int(progress.get("first_chat_at_ms"), 0) > 0
+                elif mission_id == "side_persona_saved":
+                    completed = non_default_persona_count > 0
+                    current = min(non_default_persona_count, 1)
+                elif mission_id == "daily_chat_once":
+                    completed = bool(daily_chat.get("completed"))
+                    current = 1 if completed else 0
+                else:
+                    tool = tool_catalog.get(mission_id, "")
+                    used = _as_int(_as_dict(progress.get("tool_usage_counts")).get(str(tool)), 0)
+                    completed = used > 0
+                    current = min(used, 1)
+                reward_claimed = str(daily_claim_days.get(mission_id) or "") == current_day if str(mission.get("kind") or "") == "daily" else mission_id in claimed
+                mission_state[mission_id] = self._mission_snapshot(mission, completed, current, total, reward_claimed)
+                snapshots.append(mission_state[mission_id])
+            progress["mission_state"] = mission_state
+            progress["daily_claim_days"] = daily_claim_days
+            progress["daily_chat"] = daily_chat
+            progress["stats"] = {
+                **_as_dict(progress.get("stats")),
+                "mission_completed_count": sum(1 for item in snapshots if bool(item.get("completed"))),
+                "tool_category_count": sum(1 for value in _as_dict(progress.get("tool_usage_counts")).values() if _as_int(value, 0) > 0),
+                "persona_save_count": len(self._persona_history_cache),
+            }
+            progress["level"] = self._level_from_xp(_as_int(progress.get("xp"), 0))
+            self._sync_user_progress_rewards(progress)
+            if before != progress:
+                self._write_user_progress(progress)
+            return copy.deepcopy(progress)
+
+    def _grant_xp(self, amount: int, *, reason: str = "", mission_id: str = "") -> dict[str, Any]:
+        amount = max(0, int(amount or 0))
+        if amount <= 0:
+            return self._user_progress_cache
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            progress["xp"] = max(0, _as_int(progress.get("xp"), 0) + amount)
+            progress["level"] = self._level_from_xp(_as_int(progress.get("xp"), 0))
+            self._write_user_progress(progress)
+        self.record_system_log(
+            {
+                "event": "user_progress_xp_gained",
+                "task": "用户成长",
+                "stage": mission_id or reason or "xp",
+                "summary": f"获得 {amount} 经验值。",
+                "detail": json.dumps({"reason": reason, "mission_id": mission_id}, ensure_ascii=False),
+                "progress": 100,
+            }
+        )
+        return self._user_progress_cache
+
+    def _claim_completed_missions(self, *, source: str = "") -> dict[str, Any]:
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            claimed = {str(item) for item in _as_list(progress.get("mission_claims"))}
+            daily_claim_days = {str(k): str(v) for k, v in _as_dict(progress.get("daily_claim_days")).items()}
+            mission_state = _as_dict(progress.get("mission_state"))
+            newly_claimed: list[str] = []
+            total_xp = 0
+            current_day = self._current_day_key()
+            for mission in self._mission_catalog():
+                mission_id = str(mission.get("id") or "")
+                row = _as_dict(mission_state.get(mission_id))
+                if not row.get("completed"):
+                    continue
+                if str(mission.get("kind") or "") == "daily":
+                    if str(daily_claim_days.get(mission_id) or "") == current_day:
+                        continue
+                    daily_claim_days[mission_id] = current_day
+                    if mission_id == "daily_chat_once":
+                        streak = {**_as_dict(progress.get("daily_streak"))}
+                        streak["last_reward_day"] = current_day
+                        progress["daily_streak"] = streak
+                else:
+                    if mission_id in claimed:
+                        continue
+                    claimed.add(mission_id)
+                total_xp += _as_int(mission.get("xp"), 0)
+                newly_claimed.append(mission_id)
+                row["reward_claimed"] = True
+                mission_state[mission_id] = row
+            progress["mission_claims"] = sorted(claimed)
+            progress["daily_claim_days"] = daily_claim_days
+            progress["mission_state"] = mission_state
+            self._write_user_progress(progress)
+        if total_xp > 0:
+            self._grant_xp(total_xp, reason=source or "mission_claim", mission_id=",".join(newly_claimed))
+            self._refresh_user_progress_dynamic_state(reason="mission_claimed")
+        if newly_claimed:
+            self.record_event({"event": "user_progress_missions_claimed", "ids": newly_claimed, "xp": total_xp, "source": source})
+        return self._user_progress_cache
+
+    def _mark_chat_progress(self, *, ts_ms: int | None = None, source: str = "") -> dict[str, Any]:
+        ts_ms = _as_int(ts_ms, _now_ms())
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            stats = {**_as_dict(progress.get("stats"))}
+            stats["chat_count"] = max(0, _as_int(stats.get("chat_count"), 0)) + 1
+            if _as_int(progress.get("first_chat_at_ms"), 0) <= 0:
+                progress["first_chat_at_ms"] = ts_ms
+            day = self._current_day_key(ts_ms)
+            daily = {**_as_dict(progress.get("daily_chat"))}
+            streak = {**_as_dict(progress.get("daily_streak"))}
+            if str(daily.get("day") or "") != day:
+                daily = {"day": day, "count": 0, "completed": False, "last_chat_at_ms": 0}
+                stats["chat_days"] = max(0, _as_int(stats.get("chat_days"), 0)) + 1
+                last_day = str(streak.get("last_day") or "")
+                if self._is_consecutive_day(last_day, day):
+                    streak["current"] = max(1, _as_int(streak.get("current"), 0) + 1)
+                else:
+                    streak["current"] = 1
+                streak["best"] = max(_as_int(streak.get("best"), 0), _as_int(streak.get("current"), 0))
+                streak["last_day"] = day
+            daily["count"] = max(0, _as_int(daily.get("count"), 0)) + 1
+            daily["last_chat_at_ms"] = ts_ms
+            daily["completed"] = True
+            progress["daily_chat"] = daily
+            progress["daily_streak"] = streak
+            progress["stats"] = stats
+            self._write_user_progress(progress)
+        self._refresh_user_progress_dynamic_state(reason="chat")
+        self._claim_completed_missions(source=source or "chat")
+        return self._user_progress_cache
+
+    def _mark_tool_progress(self, tool_name: str, *, ok: bool, source: str = "") -> dict[str, Any]:
+        canonical = _canonical_tool_name(tool_name)
+        if not canonical or not ok:
+            return self._user_progress_cache
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            counts = {**_as_dict(progress.get("tool_usage_counts"))}
+            first_use = {**_as_dict(progress.get("tool_first_use"))}
+            counts[canonical] = max(0, _as_int(counts.get(canonical), 0)) + 1
+            if _as_int(first_use.get(canonical), 0) <= 0:
+                first_use[canonical] = _now_ms()
+            progress["tool_usage_counts"] = counts
+            progress["tool_first_use"] = first_use
+            self._write_user_progress(progress)
+        self._refresh_user_progress_dynamic_state(reason=f"tool:{canonical}")
+        self._claim_completed_missions(source=source or canonical)
+        return self._user_progress_cache
+
+    def user_progress_public(self) -> dict[str, Any]:
+        progress = self._refresh_user_progress_dynamic_state(reason="public_status")
+        mission_rows = list(_as_dict(progress.get("mission_state")).values())
+        mission_rows.sort(key=lambda row: (0 if str(row.get("kind") or "") == "main" else 1 if str(row.get("kind") or "") == "daily" else 2, str(row.get("id") or "")))
+        level = max(1, _as_int(progress.get("level"), 1))
+        xp = _as_int(progress.get("xp"), 0)
+        xp_floor = self._xp_floor_for_level(level)
+        xp_next = self._xp_next_for_level(level)
+        return {
+            "xp": xp,
+            "level": level,
+            "xp_floor": xp_floor,
+            "xp_next": xp_next,
+            "xp_into_level": max(0, xp - xp_floor),
+            "xp_to_next": max(0, xp_next - xp),
+            "current_title_id": progress.get("current_title_id") or "初来乍到",
+            "equipped_badge_ids": _as_list(progress.get("equipped_badge_ids"))[:5],
+            "titles": _as_list(progress.get("titles")),
+            "badges": _as_list(progress.get("badges")),
+            "achievements": _as_list(progress.get("achievements")),
+            "achievement_catalog": _as_list(progress.get("achievement_catalog")),
+            "daily_chat": _as_dict(progress.get("daily_chat")),
+            "daily_streak": _as_dict(progress.get("daily_streak")),
+            "stats": _as_dict(progress.get("stats")),
+            "missions": mission_rows,
+            "updated_at_ms": _as_int(progress.get("updated_at_ms"), 0),
+            "generated_at_ms": _now_ms(),
+            "path": str(_user_progress_path()),
+            "file": _file_info(_user_progress_path()),
+        }
+
+    def update_user_progress_loadout(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            title_ids = {str(item.get("id") or "") for item in _as_list(progress.get("titles")) if isinstance(item, dict)}
+            badge_ids = {str(item.get("id") or "") for item in _as_list(progress.get("badges")) if isinstance(item, dict)}
+
+            requested_title = _clean_text(payload.get("current_title_id") or payload.get("title_id") or "", max_chars=80)
+            if requested_title:
+                if requested_title not in title_ids:
+                    raise ValueError(f"title not unlocked: {requested_title}")
+                progress["current_title_id"] = requested_title
+
+            if "equipped_badge_ids" in payload or "badge_ids" in payload:
+                raw_badges = payload.get("equipped_badge_ids")
+                if raw_badges is None:
+                    raw_badges = payload.get("badge_ids")
+                next_badges: list[str] = []
+                for badge_id in _as_list(raw_badges):
+                    normalized = _clean_text(badge_id, max_chars=80)
+                    if not normalized or normalized in next_badges:
+                        continue
+                    if normalized not in badge_ids:
+                        raise ValueError(f"badge not unlocked: {normalized}")
+                    next_badges.append(normalized)
+                    if len(next_badges) >= 5:
+                        break
+                progress["equipped_badge_ids"] = next_badges
+
+            self._write_user_progress(progress)
+        self.record_event(
+            {
+                "event": "user_progress_loadout_updated",
+                "current_title_id": progress.get("current_title_id"),
+                "equipped_badge_ids": _as_list(progress.get("equipped_badge_ids"))[:5],
+            }
+        )
+        if isinstance(self._last_compact_packet, dict) and self._last_compact_packet:
+            self._refresh_compact_status_cache(self._last_compact_packet)
+        else:
+            self._refresh_compact_status_cache()
+        return {"ok": True, "progress": self.user_progress_public()}
+
     def _write_config_profiles(self, profiles: list[dict[str, Any]]) -> None:
         safe_rows = []
         seen: set[str] = set()
@@ -8047,6 +9250,20 @@ class AgentRuntime:
             row["text_path"] = str(item.get("text_path") or "")
         if include_text:
             row["text"] = self._read_library_text(item)[:20000]
+        return row
+
+    def _public_library_book_for_read_result(self, book: dict[str, Any], *, include_recent_review: dict[str, Any] | None = None) -> dict[str, Any]:
+        row = self._public_library_book(book, detail=False)
+        reviews = [item for item in _as_list(_as_dict(book).get("reviews")) if isinstance(item, dict)]
+        review_rows = [self._public_library_review(review, detail=False) for review in reviews[-8:]]
+        if isinstance(include_recent_review, dict):
+            recent_id = str(include_recent_review.get("id") or "")
+            if recent_id and all(str(item.get("id") or "") != recent_id for item in review_rows):
+                review_rows.append(self._public_library_review(include_recent_review, detail=False))
+        row["reviews"] = review_rows[-8:]
+        row["review_count"] = len(reviews)
+        row["text_path"] = str(_as_dict(book).get("text_path") or "")
+        row["assets"] = _as_list(_as_dict(book).get("assets"))[:24]
         return row
 
     def _read_library_text(self, book: dict[str, Any]) -> str:
@@ -8873,16 +10090,18 @@ try {
 
     def _report_digest_row(self, report: dict[str, Any], *, step: int = 0) -> dict[str, Any]:
         report = report if isinstance(report, dict) else {}
-        packet: dict[str, Any] = {}
-        try:
-            packet = self.build_prompt_packet(reports=[report])
-        except Exception:
-            packet = {}
-        summary = _as_dict(packet.get("summary"))
-        action = _as_dict(packet.get("action"))
-        emotion = _as_dict(packet.get("emotion"))
+        metrics: dict[str, Any] = {}
+        if callable(_extract_tick_metrics_for_agent):
+            try:
+                metrics = dict(_extract_tick_metrics_for_agent(report=report))
+            except Exception:
+                metrics = {}
+        summary = self._report_summary_from_metrics(report, metrics)
+        action = self._extract_action(report)
+        emotion = self._extract_emotion(report)
+        top_items = self._with_report_input_item_visible(report, self._report_top_items(report), reports=[report], summary=summary)
         cfs_rows = []
-        for item in _as_list(packet.get("cognitive_feelings"))[:8]:
+        for item in self._extract_cfs(report)[:8]:
             row = _as_dict(item)
             name = _clean_text(row.get("name") or row.get("label") or "", max_chars=80)
             value = row.get("value", row.get("score"))
@@ -8902,15 +10121,15 @@ try {
             if label:
                 top_actions.append({"label": label, "drive": round(_as_float(row.get("drive"), 0.0), 4)})
         return {
-            "step": max(1, int(step or len(_as_list(packet.get("recent_reports"))) or 1)),
-            "tick": packet.get("tick_counter") or report.get("tick_counter"),
+            "step": max(1, int(step or 1)),
+            "tick": _report_tick_counter(report) or report.get("tick_counter") or report.get("tick_number"),
             "mood": _sanitize_llm_visible_text(summary.get("mood_hint") or "", max_chars=220),
             "energy": {
                 "er": round(_as_float(summary.get("total_er"), 0.0), 4),
                 "ev": round(_as_float(summary.get("total_ev"), 0.0), 4),
                 "cp": round(_as_float(summary.get("total_cp"), 0.0), 4),
             },
-            "top_objects": _llm_object_hints(_as_list(packet.get("dominant_objects")), limit=6),
+            "top_objects": _llm_object_hints(top_items, limit=6),
             "cognitive_feelings": cfs_rows,
             "nt_channels": emotion_rows,
             "top_actions": top_actions,
@@ -9073,12 +10292,20 @@ try {
         understanding = ""
         raw = ""
         try:
-            raw, status = self.gateway.generate_text(
-                messages,
-                model=model,
-                purpose="library_review",
-                max_tokens=min(5000, max(800, int(self.config.max_completion_tokens or 5000))),
-            )
+            previous_timeout = int(self.config.timeout_sec or 120)
+            previous_retry = int(self.config.retry_count or 1)
+            self.config.timeout_sec = max(10, int(self.config.library_review_timeout_sec or previous_timeout))
+            self.config.retry_count = max(0, int(self.config.library_review_retry_count or 0))
+            try:
+                raw, status = self.gateway.generate_text(
+                    messages,
+                    model=model,
+                    purpose="library_review",
+                    max_tokens=min(5000, max(800, int(self.config.max_completion_tokens or 5000))),
+                )
+            finally:
+                self.config.timeout_sec = previous_timeout
+                self.config.retry_count = previous_retry
             if status.get("ok"):
                 understanding = _clean_multiline_text(raw, max_chars=60000)
         except Exception as exc:
@@ -9129,6 +10356,7 @@ try {
         review_tick_target = max(10, min(10000, _as_int(review_target_raw, self.config.library_review_tick_interval)))
         explicit_chunk_limit = args.get("max_chunks", args.get("chunks", args.get("paragraphs", args.get("segments"))))
         chunk_limit = max(1, min(2000, _as_int(explicit_chunk_limit, 0))) if explicit_chunk_limit is not None else 0
+        manual_lightweight_mode = str(source or "").strip().lower() in {"agent_page_library", "manual_tool"}
 
         def progress_percent(current_ticks: int, *, floor: int = 8, span: int = 74) -> int:
             ratio = min(1.0, max(0.0, current_ticks / max(1, review_tick_target)))
@@ -9186,6 +10414,22 @@ try {
             if not isinstance(report, dict):
                 return
             report_rows.append(self._report_digest_row(report, step=step))
+
+        def maybe_checkpoint(reason: str, *, force_idle: bool = False) -> None:
+            if not self._library_checkpoint_due(reason, ap_tick_count, review_tick_target, force_idle=force_idle):
+                return
+            near_end_due = ap_tick_count >= max(1, review_tick_target - max(1, tick_each_chunk + 1))
+            self._library_tick_memory_checkpoint(
+                task_id=task_id,
+                book_id=book_id,
+                book_title=book_title,
+                ap_tick_count=ap_tick_count,
+                review_tick_target=review_tick_target,
+                chunk_count=len(chunks),
+                reason=reason,
+                force_idle=force_idle or near_end_due,
+                should_abort=interrupt_checker,
+            )
 
         def interrupted(stage: str, chunks: list[dict[str, Any]], tick_count: int) -> dict[str, Any] | None:
             try:
@@ -9275,7 +10519,7 @@ try {
                     "book_title": book_title,
                 }
             )
-            return {"ok": True, "mode": "read_book", "view": "finished", "book": self._public_library_book(book, detail=True), "summary": f"《{book_title}》已经读到末尾。"}
+            return {"ok": True, "mode": "read_book", "view": "finished", "book": self._public_library_book_for_read_result(book), "summary": f"《{book_title}》已经读到末尾。"}
 
         chunks: list[dict[str, Any]] = []
         report_rows: list[dict[str, Any]] = []
@@ -9336,18 +10580,24 @@ try {
                     "chunk_index": len(chunks),
                     "single_tick_input": True,
                 }
-                report = self._run_app_cycle(text=f"[读书]《{book_title}》片段 {chunk_start}-{chunk_end}：{chunk_text}", labels=labels)
+                report = self._run_app_cycle(text=f"[读书]《{book_title}》片段 {chunk_start}-{chunk_end}：{chunk_text}", labels=labels, history_mode="compact")
                 ap_tick_count += 1
                 remember_report(report, step=ap_tick_count)
+                maybe_checkpoint("after_ap_input", force_idle=manual_lightweight_mode and (ap_tick_count % 20 == 0))
+                if (ap_tick_count % 24) == 0:
+                    gc.collect()
                 cursor = chunk_end
                 stopped = interrupted("after_ap_input", chunks, ap_tick_count)
                 if stopped:
                     return stopped
 
                 for index in range(tick_each_chunk):
-                    report = self._run_app_cycle(text=None, labels={"source": "library_read_empty_tick", "book_id": book_id, "chunk_index": len(chunks)})
+                    report = self._run_app_cycle(text=None, labels={"source": "library_read_empty_tick", "book_id": book_id, "chunk_index": len(chunks)}, history_mode="compact")
                     ap_tick_count += 1
                     remember_report(report, step=ap_tick_count)
+                    maybe_checkpoint("empty_ticks", force_idle=manual_lightweight_mode and (ap_tick_count % 20 == 0))
+                    if (ap_tick_count % 24) == 0:
+                        gc.collect()
                     current_tick = ap_tick_count
                     progress = progress_percent(current_tick)
                     set_active(
@@ -9416,7 +10666,7 @@ try {
                 "mode": "read_book",
                 "view": "read",
                 "error": "empty_read_batch" if not ap_error else "ap_tick_failed",
-                "book": self._public_library_book(book, detail=True),
+                "book": self._public_library_book_for_read_result(book),
                 "summary": f"没有读到可生成段落理解的内容。{('AP 报错：' + _short(ap_error, 180)) if ap_error else ''}",
             }
 
@@ -9453,6 +10703,8 @@ try {
             return stopped
 
         review = self._make_library_review(book, batch_chunk, report_rows)
+        maybe_checkpoint("after_review", force_idle=not manual_lightweight_mode)
+        gc.collect()
         self._record_tool_log(
             {
                 "event": "tool_read_book_review_completed",
@@ -9473,29 +10725,48 @@ try {
         )
         emit_progress("review_done", f"《{book_title}》本批次段落理解已生成。", progress=92, ap_tick_count=ap_tick_count, chunk_count=len(chunks), review_id=str(review.get("id") or ""))
 
-        try:
-            review_digest_report = self._run_app_cycle(
-                text=f"[读书理解]《{book_title}》{batch_start}-{batch_end}：{_clean_multiline_text(review.get('summary') or '', max_chars=4000)}",
-                labels={"source": "library_review_digest", "book_id": book_id, "review_id": review.get("id"), "single_tick_input": True},
-            )
-            ap_tick_count += 1
-            remember_report(review_digest_report, step=ap_tick_count)
-        except Exception as exc:
+        if manual_lightweight_mode:
             self._record_tool_log(
                 {
-                    "event": "tool_read_book_review_digest_failed",
-                    "task": "读书",
+                    "event": "tool_read_book_review_digest_skipped",
+                    "task": "??",
                     "task_id": task_id,
                     "status": "running",
                     "stage": "review_digest",
                     "progress": 94,
-                    "summary": "段落理解回灌 AP 时失败；理解文本已保留。",
-                    "error": str(exc),
+                    "summary": "????????????????????????????????????",
                     "book_id": book_id,
                     "book_title": book_title,
                     "review_id": str(review.get("id") or ""),
                 }
             )
+        else:
+            try:
+                review_digest_report = self._run_app_cycle(
+                    text=f"[????]?{book_title}?{batch_start}-{batch_end}?{_clean_multiline_text(review.get('summary') or '', max_chars=4000)}",
+                    labels={"source": "library_review_digest", "book_id": book_id, "review_id": review.get("id"), "single_tick_input": True},
+                    history_mode="compact",
+                )
+                ap_tick_count += 1
+                remember_report(review_digest_report, step=ap_tick_count)
+                maybe_checkpoint("review_digest", force_idle=True)
+                gc.collect()
+            except Exception as exc:
+                self._record_tool_log(
+                    {
+                        "event": "tool_read_book_review_digest_failed",
+                        "task": "??",
+                        "task_id": task_id,
+                        "status": "running",
+                        "stage": "review_digest",
+                        "progress": 94,
+                        "summary": "?????? AP ????????????",
+                        "error": str(exc),
+                        "book_id": book_id,
+                        "book_title": book_title,
+                        "review_id": str(review.get("id") or ""),
+                    }
+                )
 
         with self._library_lock:
             catalog = self._load_library_catalog()
@@ -9546,6 +10817,10 @@ try {
         }
         self._refresh_compact_status_cache()
         emit_progress("done", f"读完《{book_title}》{batch_start}-{batch_end} 字，并保存 1 条段落理解。", progress=100, ap_tick_count=ap_tick_count, chunk_count=len(chunks), review_id=str(review.get("id") or ""))
+        try:
+            self.maybe_run_idle_memory_maintenance(source="library_read:done", force=not manual_lightweight_mode)
+        except Exception:
+            pass
         self._record_tool_log(
             {
                 "event": "tool_read_book_completed",
@@ -9568,7 +10843,7 @@ try {
             "ok": True,
             "mode": "read_book",
             "view": "read",
-            "book": self._public_library_book(book, detail=True),
+            "book": self._public_library_book_for_read_result(book, include_recent_review=review),
             "chunk": {
                 "range": review.get("range"),
                 "text": str(batch_chunk.get("text") or ""),
@@ -9618,7 +10893,7 @@ try {
                         book = row
                         break
                 self._save_library_catalog(books)
-            return {"ok": True, "mode": "read_book", "view": "stop", "book": self._public_library_book(book, detail=True), "summary": f"已暂停阅读《{book.get('title')}》。"}
+            return {"ok": True, "mode": "read_book", "view": "stop", "book": self._public_library_book_for_read_result(book), "summary": f"已暂停阅读《{book.get('title')}》。"}
         reviews = [row for row in _as_list(book.get("reviews")) if isinstance(row, dict)]
         if mode in {"reviews", "review_list"}:
             ids = _optional_string_list(args.get("review_ids") or args.get("ids"))
@@ -9786,8 +11061,11 @@ try {
                             (_diary_path(), "agent/agent_diary.json"),
                             (_scheduled_tasks_path(), "agent/agent_scheduled_tasks.json"),
                             (_stickers_catalog_path(), "agent/agent_stickers.json"),
+                            (_persona_history_path(), "agent/agent_persona_history.json"),
+                            (_user_progress_path(), "agent/agent_user_progress.json"),
                         ):
-                            _zip_write_path(zf, src, arc)
+                            if src.exists():
+                                _zip_write_path(zf, src, arc)
                         self.record_system_log({"event": "runtime_package_export_progress", "task": "导出运行包", "task_id": task_id, "status": "running", "stage": "agent_data", "progress": 60, "summary": "已写入日记、定时任务和表情索引。"})
                     if include_library and _library_dir().exists():
                         for file_path in _library_dir().rglob("*"):
@@ -9838,10 +11116,14 @@ try {
                 ("agent/agent_diary.json", _diary_path()),
                 ("agent/agent_scheduled_tasks.json", _scheduled_tasks_path()),
                 ("agent/agent_stickers.json", _stickers_catalog_path()),
+                ("agent/agent_persona_history.json", _persona_history_path()),
+                ("agent/agent_user_progress.json", _user_progress_path()),
             ):
                 incoming = root / rel
                 if incoming.exists():
                     ops.append(self._merge_json_file_from_package(target, incoming, strategy=strategy))
+            self._persona_history_cache = self._load_persona_history()
+            self._user_progress_cache = self._load_user_progress()
             self.record_system_log({"event": "runtime_package_merge_progress", "task": "导入运行包", "task_id": task_id, "status": "running", "stage": "agent_data", "progress": 65, "summary": "已合并日记、定时任务和表情索引。"})
         if include_library and (root / "library").exists():
             incoming_catalog = root / "library" / "agent_library.json"
@@ -10633,6 +11915,7 @@ try {
 
     def update_config(self, updates: dict[str, Any]) -> dict[str, Any]:
         self._maybe_reload_config_from_disk()
+        previous_persona = self._capture_current_persona_snapshot()
         current = self.config.to_dict(public=False)
         updates = updates if isinstance(updates, dict) else {}
         for secret_key in _CONFIG_SECRET_KEYS:
@@ -10642,6 +11925,27 @@ try {
         self._apply_config(AgentConfig.from_dict(current), persist=True)
         self._last_status_compact = {}
         self._last_compact_packet = {}
+        with self._user_progress_lock:
+            progress = self._user_progress_cache if isinstance(self._user_progress_cache, dict) else self._load_user_progress()
+            stats = {**_as_dict(progress.get("stats"))}
+            stats["config_save_count"] = max(0, _as_int(stats.get("config_save_count"), 0)) + 1
+            progress["stats"] = stats
+            progress["config_saved_at_ms"] = _now_ms()
+            self._write_user_progress(progress)
+        current_persona = self._capture_current_persona_snapshot()
+        if self._persona_signature_from_payload(current_persona) != self._persona_signature_from_payload(previous_persona):
+            with self._persona_history_lock:
+                self._save_persona_history_record_internal(
+                    {
+                        **current_persona,
+                        "name": current_persona.get("persona_name") or "当前人设",
+                        "note": "来自配置保存",
+                    },
+                    source="config_save",
+                    auto=True,
+                )
+        self._refresh_user_progress_dynamic_state(reason="config_updated")
+        self._claim_completed_missions(source="config_updated")
         self.record_event({"event": "config_updated", "keys": sorted(updates.keys())})
         return self.get_config_public()
 
@@ -12763,6 +14067,8 @@ try {
         return {
             "generated_at_ms": _now_ms(),
             "session": self._compact_status()["session"],
+            "user_progress": self.user_progress_public(),
+            "persona_history": self.persona_history_public(),
             "runtime": {
                 "tick_counter": packet.get("tick_counter"),
                 "summary": packet.get("summary", {}),
@@ -19156,7 +20462,7 @@ try {
                 "ap_packet": self._compact_prompt_packet_for_history(packet),
                 "created_at_ms": _now_ms(),
                 "internal_mode": bool(internal_mode),
-                "thought_runtime": dict(thought_runtime),
+                "thought_runtime": self._compact_thought_runtime(dict(thought_runtime)),
             }
             thoughts.append(thought_row)
             if _as_list(normalized.get("targeted_replies")):
@@ -19860,7 +21166,12 @@ try {
         should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         self._maybe_reload_config_from_disk()
-        return self._run_message_flow(payload, progress=progress, on_reply=on_reply, should_stop=should_stop, internal_mode=False, visible_role="user")
+        result = self._run_message_flow(payload, progress=progress, on_reply=on_reply, should_stop=should_stop, internal_mode=False, visible_role="user")
+        try:
+            self._mark_chat_progress(ts_ms=_now_ms(), source=str(_as_dict(payload).get("source") or "send_message"))
+        except Exception:
+            pass
+        return result
 
     def run_ticks(self, count: int = 1) -> dict[str, Any]:
         count = max(1, min(80, int(count or 1)))
@@ -21078,6 +22389,8 @@ try {
         packet = self.build_prompt_packet(reports=[])
         return {
             "config": self.get_config_public(),
+            "user_progress": self.user_progress_public(),
+            "persona_history": self.persona_history_public(),
             "session": {
                 "session_id": self.state.get("session_id"),
                 "message_count": len(self.state.get("messages", [])),
@@ -21256,6 +22569,10 @@ try {
         top_structure = _top_objects(_as_list(packet.get("top_structure")), limit=10, types={"st", "structure"})
         top_action = _top_objects(_as_list(packet.get("top_action")), limit=8, types={"action_node", "action", "action::"})
         object_cloud = self._build_object_cloud(_as_list(packet.get("object_cloud")) or dominant_objects)
+        prompt_text = _sanitize_llm_visible_text(
+            packet.get("prompt_text") or summary.get("mood_hint") or "",
+            max_chars=900,
+        )
         return {
             "generated_at_ms": packet.get("generated_at_ms"),
             "tick_counter": packet.get("tick_counter"),
@@ -21285,7 +22602,7 @@ try {
             },
             "recent_reports": _as_list(packet.get("recent_reports"))[-6:],
             "timing": packet.get("timing", {}),
-            "prompt_text": _sanitize_llm_visible_text(packet.get("prompt_text", ""), max_chars=900),
+            "prompt_text": prompt_text,
         }
 
     def build_prompt_packet(self, *, reports: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -24142,12 +25459,58 @@ try {
         report = report if isinstance(report, dict) else {}
         final_state = _as_dict(report.get("final_state"))
         state_snapshot = _as_dict(final_state.get("state_snapshot") or report.get("state_snapshot"))
-        rows = _as_list(state_snapshot.get("top_items") or state_snapshot.get("items"))
-        if rows:
-            return [row for row in rows if isinstance(row, dict)]
-        attention = _as_dict(report.get("attention"))
-        rows = _as_list(attention.get("top_items"))
-        return [row for row in rows if isinstance(row, dict)]
+        candidates = (
+            state_snapshot.get("top_items"),
+            state_snapshot.get("items"),
+            report.get("top_items"),
+            report.get("items"),
+            _as_dict(report.get("attention")).get("top_items"),
+            report.get("state_top"),
+            final_state.get("state_top"),
+        )
+        for candidate in candidates:
+            rows = [row for row in _as_list(candidate) if isinstance(row, dict)]
+            if rows:
+                return rows
+        metric_candidates: list[Any] = []
+        if callable(_extract_tick_metrics_for_agent):
+            try:
+                metrics = dict(_extract_tick_metrics_for_agent(report=report))
+            except Exception:
+                metrics = {}
+            metric_candidates.extend(
+                [
+                    metrics.get("attention_top5"),
+                    metrics.get("pool_cp_top5"),
+                    metrics.get("pool_ev_top5"),
+                    metrics.get("pool_er_top5"),
+                    metrics.get("pool_cp_structure_top5"),
+                    metrics.get("pool_ev_structure_top5"),
+                    metrics.get("pool_er_structure_top5"),
+                ]
+            )
+        merged_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for candidate in metric_candidates:
+            for row in _as_list(candidate):
+                if not isinstance(row, dict):
+                    continue
+                row_id = _clean_text(
+                    row.get("id")
+                    or row.get("ref_object_id")
+                    or row.get("item_id")
+                    or row.get("display")
+                    or row.get("full_display")
+                    or "",
+                    max_chars=240,
+                )
+                if not row_id or row_id in seen:
+                    continue
+                seen.add(row_id)
+                merged_rows.append(dict(row))
+        if merged_rows:
+            return merged_rows
+        return []
 
     def _report_input_display_text(self, report: dict[str, Any] | None) -> str:
         input_queue = _as_dict(_as_dict(report).get("input_queue"))
@@ -24446,7 +25809,7 @@ try {
         }
         snapshots.append(snapshot)
         self._trim_snapshot_history()
-        self._refresh_compact_status_cache(self._snapshot_to_compact_packet(snapshot))
+        self._refresh_compact_packet_cache(self._snapshot_to_compact_packet(snapshot))
 
     def _remember_snapshot(self, packet: dict[str, Any]) -> None:
         source_report = _as_dict(packet.get("_source_report"))
@@ -24457,7 +25820,7 @@ try {
                 or ""
             )
             self._remember_report_snapshot(source_report, source=source)
-            self._refresh_compact_status_cache(packet)
+            self._refresh_compact_packet_cache(packet)
             return
         snapshots = self.state.get("snapshots")
         if not isinstance(snapshots, list):
@@ -24521,7 +25884,7 @@ try {
             }
         )
         self._trim_snapshot_history()
-        self._refresh_compact_status_cache(packet)
+        self._refresh_compact_packet_cache(packet)
 
     def _trim_state(self) -> None:
         limit = int(self.config.history_limit)

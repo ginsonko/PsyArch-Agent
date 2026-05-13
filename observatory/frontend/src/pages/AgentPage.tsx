@@ -326,6 +326,22 @@ type AgentConfig = AnyRecord & {
   input_chunk_hard_limit?: number;
 };
 
+type PersonaHistoryRecord = AnyRecord & {
+  id?: string;
+  name?: string;
+  persona_name?: string;
+  persona_text?: string;
+  diary_seed?: string;
+  system_note?: string;
+  note?: string;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+  last_applied_at_ms?: number;
+  use_count?: number;
+  is_default?: boolean;
+  summary?: AnyRecord;
+};
+
 const emptyConfig: AgentConfig = {
   enabled: true,
   _type: 'newapi_channel_conn',
@@ -966,6 +982,23 @@ function packetHasRuntimeSignal(packet: unknown): boolean {
   );
 }
 
+function packetUiSignalScore(packet: unknown): number {
+  if (!packet || typeof packet !== 'object') return 0;
+  const row = packet as AnyRecord;
+  const summary = (row.summary || {}) as AnyRecord;
+  return (
+    asArray<AnyRecord>(row.object_cloud).length * 5
+    + asArray<AnyRecord>(row.dominant_objects).length * 4
+    + asArray<AnyRecord>(row.top_memory).length * 3
+    + asArray<AnyRecord>(row.top_structure).length * 2
+    + asArray<AnyRecord>(row.top_action).length * 2
+    + asArray<AnyRecord>(row.cognitive_feelings).length
+    + Math.min(8, Math.floor(String(row.prompt_text || '').trim().length / 40))
+    + (asNumber(summary.active_item_count, 0) > 0 ? 2 : 0)
+    + (String(summary.mood_hint || '').trim() ? 1 : 0)
+  );
+}
+
 function pickFresherPacket(...packets: unknown[]): AnyRecord {
   const rows = packets.filter(packetHasRuntimeSignal) as AnyRecord[];
   if (!rows.length) return {} as AnyRecord;
@@ -974,6 +1007,10 @@ function pickFresherPacket(...packets: unknown[]): AnyRecord {
     const currentTick = packetTickCounter(current);
     if (currentTick > bestTick) return current;
     if (currentTick < bestTick) return best;
+    const bestScore = packetUiSignalScore(best);
+    const currentScore = packetUiSignalScore(current);
+    if (currentScore > bestScore) return current;
+    if (currentScore < bestScore) return best;
     return packetTimestamp(current) >= packetTimestamp(best) ? current : best;
   });
 }
@@ -2775,6 +2812,345 @@ function ConfigProfilePanel({
   );
 }
 
+function BeginnerMissionsPanel({
+  progress,
+  busy,
+  onRefresh,
+}: {
+  progress: AnyRecord | null;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const missions = asArray<AnyRecord>(progress?.missions);
+  const grouped = {
+    main: missions.filter((item) => String(item.kind || '') === 'main'),
+    daily: missions.filter((item) => String(item.kind || '') === 'daily'),
+    side: missions.filter((item) => !['main', 'daily'].includes(String(item.kind || ''))),
+  };
+  const total = missions.length || 1;
+  const done = missions.filter((item) => Boolean(item.completed)).length;
+  return (
+    <Card className="agent-readiness-card agent-mission-card" mb="md">
+      <Group justify="space-between" mb="xs">
+        <Group gap={8}>
+          <IconListDetails size={18} />
+          <Text fw={800}>新手任务</Text>
+        </Group>
+        <Group gap={6}>
+          <Badge variant="light" color={done >= total ? 'teal' : 'blue'}>{done}/{total}</Badge>
+          <ActionIcon size="sm" variant="subtle" loading={busy} aria-label="刷新新手任务" onClick={onRefresh}>
+            <IconRefresh size={15} />
+          </ActionIcon>
+        </Group>
+      </Group>
+      <Text size="xs" c="dimmed" mb="sm">
+        像任务栏一样，一步步带你把配置、首次对话和各种工具试起来。完成后会累计经验值和称号进度。
+      </Text>
+      {(['main', 'daily', 'side'] as const).map((groupKey) => {
+        const rows = grouped[groupKey];
+        if (!rows.length) return null;
+        const label = groupKey === 'main' ? '主线' : groupKey === 'daily' ? '日常' : '支线';
+        return (
+          <Stack gap={6} key={groupKey} mb="xs">
+            <Text size="xs" fw={700} c="dimmed">{label}</Text>
+            {rows.map((item) => (
+              <div key={String(item.id || item.label)} className={`agent-mission-row${item.completed ? ' is-complete' : ''}`}>
+                <div className="agent-mission-row-main">
+                  <Group gap={6} wrap="nowrap">
+                    <Badge size="xs" variant="light" color={item.completed ? 'teal' : 'yellow'}>
+                      {item.completed ? '已完成' : '进行中'}
+                    </Badge>
+                    <Text size="sm" fw={700}>{String(item.label || item.id || '-')}</Text>
+                  </Group>
+                  <Text size="xs" c="dimmed">{String(item.detail || '')}</Text>
+                </div>
+                <div className="agent-mission-row-side">
+                  <Badge variant="outline">{String(item.progress_text || '0/1')}</Badge>
+                  <Badge variant="subtle" color="grape">+{formatCount(item.xp)} XP</Badge>
+                </div>
+              </div>
+            ))}
+          </Stack>
+        );
+      })}
+    </Card>
+  );
+}
+
+function PersonaHistoryPanel({
+  records,
+  draft,
+  busy,
+  editingId,
+  onSaveCurrent,
+  onSaveAsNew,
+  onResetEditing,
+  onLoadToDraft,
+  onApply,
+  onDelete,
+}: {
+  records: PersonaHistoryRecord[];
+  draft: AgentConfig;
+  busy: boolean;
+  editingId: string;
+  onSaveCurrent: () => void;
+  onSaveAsNew: () => void;
+  onResetEditing: () => void;
+  onLoadToDraft: (record: PersonaHistoryRecord) => void;
+  onApply: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const editingRecord = records.find((item) => String(item.id || '') === editingId) || null;
+  return (
+    <div className="agent-profile-panel">
+      <Group justify="space-between" mb="xs">
+        <Text fw={800} size="sm">历史人设</Text>
+        <Badge variant="light">{records.length} 条</Badge>
+      </Group>
+      <Text size="xs" c="dimmed">
+        把你保存过的人设留在这里，随时点一下就能切换，也方便反复调试不同设定。
+      </Text>
+      {editingRecord ? (
+        <div className="agent-progress-achievement" style={{ marginTop: 12 }}>
+          <strong>{`当前正在编辑：${String(editingRecord.name || editingRecord.persona_name || editingRecord.id || '历史人设')}`}</strong>
+          <small>保存会直接更新这条历史人设；如果想保留旧版本，可以先点“另存为新记录”。</small>
+        </div>
+      ) : null}
+      <Group mt="sm" grow>
+        <Button variant="light" leftSection={<IconDeviceFloppy size={16} />} loading={busy} onClick={onSaveCurrent}>
+          {editingRecord ? '更新当前历史人设' : '保存当前草稿为历史人设'}
+        </Button>
+        {editingRecord ? (
+          <>
+            <Button variant="subtle" loading={busy} onClick={onSaveAsNew}>
+              另存为新记录
+            </Button>
+            <Button variant="subtle" color="gray" loading={busy} onClick={onResetEditing}>
+              取消编辑关联
+            </Button>
+          </>
+        ) : null}
+      </Group>
+      {records.length ? (
+        <Stack gap={6} mt="sm">
+          {records.slice(0, 8).map((record) => {
+            const id = String(record.id || '');
+            const title = String(record.name || record.persona_name || '未命名人设');
+            const detail = shortText(String(record.note || record.persona_text || ''), 110);
+            return (
+              <div key={id || title} className="agent-profile-row">
+                <button type="button" onClick={() => onLoadToDraft(record)} disabled={busy}>
+                  <span>
+                    <strong>{shortText(title, 32)}</strong>
+                    <small>{detail || '点击后会把这条人设载入到当前配置草稿，方便继续改。'}</small>
+                    <em>{`使用 ${formatCount(record.use_count)} 次 · ${record.is_default ? '默认底稿' : '自定义'}`}</em>
+                  </span>
+                  <Badge variant="outline">{formatCount(record.summary?.persona_chars)} 字</Badge>
+                </button>
+                <div className="agent-profile-row-actions">
+                  <ActionIcon variant="subtle" color="teal" aria-label="快速应用历史人设" disabled={!id || busy} onClick={() => id && onApply(id)}>
+                    <IconDeviceFloppy size={15} />
+                  </ActionIcon>
+                  <ActionIcon variant="subtle" color="red" aria-label="删除历史人设" disabled={!id || busy} onClick={() => id && onDelete(id)}>
+                    <IconEraser size={15} />
+                  </ActionIcon>
+                </div>
+              </div>
+            );
+          })}
+        </Stack>
+      ) : (
+        <div className="empty-box compact" style={{ minHeight: 120 }}>
+          还没有历史人设。先修改当前人设草稿并保存一次，这里就会出现可切换记录。
+        </div>
+      )}
+      <Divider my="sm" />
+      <Text size="xs" c="dimmed">
+        当前草稿：{draft.persona_name || '未命名'}。保存后会保留名称、人设正文、日记种子和系统注释。
+      </Text>
+    </div>
+  );
+}
+
+function UserProgressCard({
+  progress,
+  busy = false,
+  onSaveLoadout,
+}: {
+  progress: AnyRecord | null;
+  busy?: boolean;
+  onSaveLoadout?: (payload: { current_title_id?: string; equipped_badge_ids?: string[] }) => Promise<void> | void;
+}) {
+  const level = Number(progress?.level ?? 1);
+  const xp = Number(progress?.xp ?? 0);
+  const currentTitle = String(progress?.current_title_id || '初来乍到');
+  const titles = asArray<AnyRecord>(progress?.titles);
+  const badges = asArray<AnyRecord>(progress?.badges);
+  const achievements = asArray<AnyRecord>(progress?.achievements);
+  const achievementCatalogRows = asArray<AnyRecord>(progress?.achievement_catalog);
+  const equippedBadgeIds = asArray<string>(progress?.equipped_badge_ids).map((item) => String(item || ''));
+  const daily = (progress?.daily_chat || {}) as AnyRecord;
+  const streak = (progress?.daily_streak || {}) as AnyRecord;
+  const xpIntoLevel = Math.max(0, Number(progress?.xp_into_level ?? xp));
+  const xpSpan = Math.max(1, Number(progress?.xp_next ?? 100) - Number(progress?.xp_floor ?? 0));
+  const xpRatio = Math.max(0, Math.min(1, xpIntoLevel / xpSpan));
+  const recentAchievements = achievements.slice(-3).reverse();
+  const [achievementExpanded, setAchievementExpanded] = useState(false);
+  const [badgePickerExpanded, setBadgePickerExpanded] = useState(false);
+  const titleOptions = titles
+    .map((item) => ({ value: String(item.id || item.name || ''), label: String(item.name || item.id || '未命名称号') }))
+    .filter((item) => item.value);
+  const badgeMap = new Map(badges.map((item) => [String(item.id || item.name || ''), item] as const));
+  const equippedBadges = equippedBadgeIds.map((id) => badgeMap.get(id)).filter(Boolean) as AnyRecord[];
+  const unequippedBadges = badges.filter((item) => {
+    const badgeId = String(item.id || item.name || '');
+    return badgeId && !equippedBadgeIds.includes(badgeId);
+  });
+  const achievementCatalog = (achievementCatalogRows.length ? achievementCatalogRows : achievements).map((item) => ({
+    id: String(item.id || item.name || ''),
+    name: String(item.name || item.id || '未命名成就'),
+    detail: String(item.detail || ''),
+  })).filter((item) => item.id);
+  const unlockedAchievementIds = new Set(achievements.map((item) => String(item.id || '')));
+  const achievementWall = achievementCatalog.map((item) => ({
+    ...item,
+    unlocked: unlockedAchievementIds.has(item.id),
+  }));
+  const toggleBadge = async (badgeId: string) => {
+    if (!badgeId) return;
+    const next = equippedBadgeIds.includes(badgeId)
+      ? equippedBadgeIds.filter((item) => item !== badgeId)
+      : [...equippedBadgeIds, badgeId].slice(0, 5);
+    await onSaveLoadout?.({ equipped_badge_ids: next });
+  };
+  return (
+    <Card className="pa-panel agent-progress-card" mt="md">
+      <Group justify="space-between" mb="xs">
+        <Text fw={900}>用户等级 / 荣誉</Text>
+        <Badge variant="light" color="grape">{currentTitle}</Badge>
+      </Group>
+      <div className="agent-progress-bar">
+        <div className="agent-progress-bar-fill" style={{ width: `${Math.max(6, xpRatio * 100)}%` }} />
+        <span>{`Lv.${formatCount(level)} · ${formatCount(xp)} XP`}</span>
+      </div>
+      <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
+        <div className="agent-progress-metric">
+          <small>等级</small>
+          <strong>Lv.{formatCount(level)}</strong>
+        </div>
+        <div className="agent-progress-metric">
+          <small>经验</small>
+          <strong>{formatCount(xp)} XP</strong>
+        </div>
+        <div className="agent-progress-metric">
+          <small>今日对话</small>
+          <strong>{Boolean(daily.completed) ? '已完成' : '未完成'}</strong>
+        </div>
+        <div className="agent-progress-metric">
+          <small>连续天数</small>
+          <strong>{formatCount(streak.current)} 天</strong>
+        </div>
+      </SimpleGrid>
+      <Group gap={6} mt="sm">
+        <Badge variant="outline">称号 {formatCount(titles.length)}</Badge>
+        <Badge variant="outline">勋章 {formatCount(badges.length)}</Badge>
+        <Badge variant="outline">{`成就 ${formatCount(achievements.length)}/${formatCount(achievementCatalog.length || achievements.length)}`}</Badge>
+      </Group>
+      <div className="agent-progress-loadout">
+        <div className="agent-progress-loadout-block">
+          <small>当前称号</small>
+          <Select
+            size="xs"
+            data={titleOptions}
+            value={currentTitle}
+            disabled={busy || !titleOptions.length}
+            onChange={(value) => {
+              if (value && value !== currentTitle) void onSaveLoadout?.({ current_title_id: value });
+            }}
+          />
+        </div>
+        <div className="agent-progress-loadout-block">
+          <small>{`佩戴勋章 (${formatCount(equippedBadgeIds.length)}/5)`}</small>
+          <div className="agent-progress-badge-grid">
+            {equippedBadges.length ? equippedBadges.map((item) => {
+              const badgeId = String(item.id || item.name || '');
+              return (
+                <button
+                  key={badgeId}
+                  type="button"
+                  className="agent-progress-badge-toggle is-equipped"
+                  disabled={busy}
+                  onClick={() => void toggleBadge(badgeId)}
+                >
+                  <strong>{shortText(String(item.name || badgeId || '-'), 18)}</strong>
+                  <small>{shortText(String(item.detail || '点击即可卸下这枚勋章。'), 44)}</small>
+                </button>
+              );
+            }) : <div className="agent-progress-empty">暂时还没有佩戴勋章，展开下方列表即可选择。</div>}
+          </div>
+          {badges.length ? (
+            <div className="agent-progress-achievement-panel">
+              <button type="button" className="agent-progress-achievement-toggle" onClick={() => setBadgePickerExpanded((value) => !value)}>
+                <strong>{badgePickerExpanded ? '收起未佩戴勋章' : '查看未佩戴勋章'}</strong>
+                <small>{unequippedBadges.length ? `当前还有 ${formatCount(unequippedBadges.length)} 枚可选，点击后即可佩戴。` : '当前已经没有可选的未佩戴勋章了。'}</small>
+              </button>
+              {badgePickerExpanded ? (
+                <div className="agent-progress-badge-grid">
+                  {unequippedBadges.length ? unequippedBadges.map((item) => {
+                    const badgeId = String(item.id || item.name || '');
+                    const blocked = equippedBadgeIds.length >= 5;
+                    return (
+                      <button
+                        key={badgeId}
+                        type="button"
+                        className={`agent-progress-badge-toggle${blocked ? ' is-blocked' : ''}`}
+                        disabled={busy || blocked}
+                        onClick={() => void toggleBadge(badgeId)}
+                      >
+                        <strong>{shortText(String(item.name || badgeId || '-'), 18)}</strong>
+                        <small>{shortText(String(item.detail || ''), 44)}</small>
+                      </button>
+                    );
+                  }) : <div className="agent-progress-empty">全部勋章都已经处理完了。</div>}
+                </div>
+              ) : null}
+            </div>
+          ) : <div className="agent-progress-empty">还没有可佩戴勋章。</div>}
+        </div>
+      </div>
+      {recentAchievements.length ? (
+        <div className="agent-progress-achievements">
+          {recentAchievements.map((item) => (
+            <div key={String(item.id || item.name)} className="agent-progress-achievement">
+              <strong>{String(item.name || item.id || '-')}</strong>
+              <small>{shortText(String(item.detail || ''), 64)}</small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="agent-progress-achievement-panel">
+        <button type="button" className="agent-progress-achievement-toggle" onClick={() => setAchievementExpanded((value) => !value)}>
+          <strong>{achievementExpanded ? '收起成就总览' : '查看成就总览'}</strong>
+          <small>{`已完成 ${formatCount(achievements.length)} 项，未完成显示为黑白。`}</small>
+        </button>
+        {achievementExpanded ? (
+          <div className="agent-progress-achievement-wall">
+            {achievementWall.map((item) => (
+              <div key={item.id} className={`agent-progress-achievement ${item.unlocked ? 'is-unlocked' : 'is-locked'}`}>
+                <strong>{item.name}</strong>
+                <small>{item.detail}</small>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <Text size="xs" c="dimmed" mt="sm">
+        主线、支线和日常任务都会在本地累计经验值。清空运行态不会清掉这些用户成长记录。
+      </Text>
+    </Card>
+  );
+}
+
 function ReadinessPanel({ readiness, onRefresh, busy }: { readiness: AnyRecord | null; onRefresh: () => void; busy: boolean }) {
   const counts = (readiness?.counts || {}) as AnyRecord;
   const status = String(readiness?.overall || 'warn');
@@ -3875,8 +4251,12 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [attachmentPreview, setAttachmentPreview] = useState<AnyRecord | null>(null);
   const [promptPreview, setPromptPreview] = useState<AnyRecord | null>(null);
   const [configProfiles, setConfigProfiles] = useState<AnyRecord[]>([]);
+  const [personaHistory, setPersonaHistory] = useState<PersonaHistoryRecord[]>([]);
+  const [userProgress, setUserProgress] = useState<AnyRecord | null>(null);
+  const [userProgressLocalOverride, setUserProgressLocalOverride] = useState<AnyRecord | null>(null);
   const [serverConfig, setServerConfig] = useState<AgentConfig>(emptyConfig);
   const [draft, setDraft] = useState<AgentConfig>(emptyConfig);
+  const [personaHistoryEditingId, setPersonaHistoryEditingId] = useState('');
   const [slotDraft, setSlotDraft] = useState<AnyRecord>({ name: '', base_url: 'https://api.openai.com', model: '', vision_model: '', multimodal_model: '', image_generation_model: '', api_key: '', vision_api_key: '', multimodal_api_key: '', image_generation_api_key: '', enabled: true, note: '', index: '' });
   const [profileName, setProfileName] = useState('本地安全默认配置');
   const [profileNote, setProfileNote] = useState('保留当前 API Key，不在快照中复制密钥。');
@@ -3930,6 +4310,45 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const initializedRef = useRef(false);
   const draftDirtyRef = useRef(false);
   const draftInitializedRef = useRef(false);
+  const userProgressOverrideUpdatedAtRef = useRef(0);
+  const userProgressLocalOverrideRef = useRef<AnyRecord | null>(null);
+
+  const mergeUserProgressForView = (incoming: AnyRecord | null | undefined) => {
+    const base = incoming && typeof incoming === 'object' ? incoming : null;
+    const override = userProgressLocalOverrideRef.current;
+    if (!override || typeof override !== 'object') return base;
+    const incomingUpdatedAt = asNumber(base?.updated_at_ms, 0);
+    const incomingGeneratedAt = asNumber(base?.generated_at_ms, 0);
+    const overrideUpdatedAt = asNumber(override?.updated_at_ms, userProgressOverrideUpdatedAtRef.current);
+    const overrideGeneratedAt = asNumber(override?.generated_at_ms, 0);
+    const incomingLooksFreshEnough =
+      (incomingUpdatedAt > 0 && incomingUpdatedAt >= overrideUpdatedAt)
+      || (incomingGeneratedAt > 0 && overrideGeneratedAt > 0 && incomingGeneratedAt >= overrideGeneratedAt && incomingUpdatedAt >= overrideUpdatedAt);
+    if (incomingLooksFreshEnough) {
+      userProgressLocalOverrideRef.current = null;
+      setUserProgressLocalOverride(null);
+      return base;
+    }
+    return { ...(base || {}), ...override };
+  };
+
+  const refreshPersonaHistoryAndProgress = async (selectResult = false) => {
+    const [personaPayload, progressPayload] = await Promise.all([
+      api.agentPersonaHistory().catch(() => null),
+      api.agentUserProgress().catch(() => null),
+    ]);
+    if (personaPayload) {
+      const rows = asArray<PersonaHistoryRecord>(personaPayload.records);
+      setPersonaHistory(rows);
+      if (selectResult) setSelected(personaPayload);
+    }
+    if (progressPayload) {
+      const merged = mergeUserProgressForView(progressPayload);
+      setUserProgress(merged);
+      if (selectResult && !personaPayload) setSelected(merged || progressPayload);
+    }
+    return { personaPayload, progressPayload };
+  };
 
   const setBusyScope = (scope: BusyScope, value: boolean) => {
     setBusyScopes((prev) => {
@@ -4043,6 +4462,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         if (payload) {
           setStatus(payload);
           setServerConfig((payload?.config || {}) as AgentConfig);
+          if (payload?.user_progress) setUserProgress(mergeUserProgressForView(payload.user_progress));
+          if (payload?.persona_history?.records) setPersonaHistory(asArray<PersonaHistoryRecord>(payload.persona_history.records));
           if (!draftInitializedRef.current) {
             const nextConfig = { ...emptyConfig, ...(payload?.config || {}) } as AgentConfig;
             setDraft(nextConfig);
@@ -4111,7 +4532,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         refreshSnapshotHistory().catch(() => undefined);
       }
       if (!silent) {
-        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+        const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload, personaPayload, progressPayload] = await Promise.all([
           api.agentDiagnostics().catch(() => null),
           api.agentReadiness().catch(() => null),
           api.agentAcceptance().catch(() => null),
@@ -4151,6 +4572,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
           api.agentReplyActionAudit().catch(() => null),
           api.agentMultimodalReadiness().catch(() => null),
           api.agentConfigProfiles().catch(() => null),
+          api.agentPersonaHistory().catch(() => null),
+          api.agentUserProgress().catch(() => null),
         ]);
         if (diag) setDiagnostics(diag);
         if (readinessPayload) setReadiness(readinessPayload);
@@ -4207,6 +4630,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         if (replyActionAuditPayload) setReplyActionAudit(replyActionAuditPayload);
         if (multimodalPayload) setMultimodalReadiness(multimodalPayload);
         if (profilePayload) setConfigProfiles(asArray<AnyRecord>(profilePayload.profiles));
+        if (personaPayload) setPersonaHistory(asArray<PersonaHistoryRecord>(personaPayload.records));
+        if (progressPayload) setUserProgress(mergeUserProgressForView(progressPayload));
       }
     } finally {
       if (!silent) {
@@ -4252,6 +4677,34 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     const timer = window.setInterval(() => refresh(true).catch(() => undefined), Math.max(350, Number(refreshMs) || 1200));
     return () => window.clearInterval(timer);
   }, [autoRefresh, refreshMs, agentTab, adapterLogView, llmApiLogView, systemLogView, toolLogView]);
+
+  useEffect(() => {
+    const backgroundRunning = Boolean(background?.running);
+    const hasLiveForegroundJob = Boolean(activeJob?.job_id) && !isTerminalAgentJob(activeJob);
+    if (hasLiveForegroundJob) return undefined;
+    if (!backgroundRunning) return undefined;
+    const interval = Math.max(500, Math.min(4000, Number(refreshMs) || 1200));
+    const timer = window.setInterval(async () => {
+      try {
+        const bg = await api.agentBackgroundStatus().catch(() => null);
+        if (!bg) return;
+        setBackground(bg);
+        const packetNext = ((bg?.last_result || {}) as AnyRecord).ap_packet || {};
+        if (Object.keys(packetNext).length) {
+          setStatus((prev) => {
+            const next = { ...(prev || {}) } as AnyRecord;
+            next.ap_packet = packetNext;
+            next.session = next.session || {};
+            next.config = next.config || serverConfig;
+            return next;
+          });
+        }
+      } catch {
+        return;
+      }
+    }, interval);
+    return () => window.clearInterval(timer);
+  }, [background?.running, activeJob?.job_id, activeJob?.status, refreshMs, serverConfig]);
 
   useEffect(() => {
     writeAgentUiPrefs({
@@ -4375,12 +4828,13 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         setServerConfig(refreshedConfig);
         setDraft(refreshedConfig);
       }
+      await refreshPersonaHistoryAndProgress().catch(() => undefined);
     });
   }
 
   async function refreshDiagnostics() {
     await withBusy('diag', async () => {
-      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload] = await Promise.all([
+      const [diag, readinessPayload, acceptancePayload, safetyPayload, logPlanPayload, morningReviewPayload, eventPayload, adapterEventPayload, llmApiEventPayload, systemEventPayload, outboxPayload, experimentPayload, scenarioPayload, wakePayload, wakeMatrixPayload, wakePolicyPayload, napcatGuidePayload, selftestPayload, morningPayload, bgPayload, toolPayload, stickerPayload, diaryPayload, scheduledPayload, libraryPayload, runtimePackagePayload, toolMatrixPayload, protocolPayload, integrationPayload, modelPayload, modelReadyPayload, modelExportPayload, promptContractPayload, activationRoadmapPayload, thoughtContinuityPayload, cognitiveTimelinePayload, replyActionAuditPayload, multimodalPayload, profilePayload, personaPayload, progressPayload] = await Promise.all([
         api.agentDiagnostics(),
         api.agentReadiness(),
         api.agentAcceptance(),
@@ -4420,6 +4874,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
         api.agentReplyActionAudit(),
         api.agentMultimodalReadiness(),
         api.agentConfigProfiles(),
+        api.agentPersonaHistory().catch(() => null),
+        api.agentUserProgress().catch(() => null),
       ]);
       setDiagnostics(diag);
       setReadiness(readinessPayload);
@@ -4468,6 +4924,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       setReplyActionAudit(replyActionAuditPayload);
       setMultimodalReadiness(multimodalPayload);
       setConfigProfiles(asArray<AnyRecord>(profilePayload.profiles));
+      if (personaPayload) setPersonaHistory(asArray<PersonaHistoryRecord>(personaPayload.records));
+      if (progressPayload) setUserProgress(mergeUserProgressForView(progressPayload));
       setSelected(diag);
     });
   }
@@ -4974,6 +5432,103 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       setConfigProfiles(asArray<AnyRecord>(result.profiles));
       setSelected(result);
       await refreshDiagnostics().catch(() => undefined);
+    });
+  }
+
+  function loadPersonaRecordToDraft(record: PersonaHistoryRecord) {
+    const nextDraft = {
+      ...draft,
+      persona_name: String(record.persona_name || record.name || ''),
+      persona_text: String(record.persona_text || ''),
+      diary_seed: String(record.diary_seed || ''),
+      system_note: String(record.system_note || ''),
+    } as AgentConfig;
+    setPersonaHistoryEditingId(String(record.id || ''));
+    draftDirtyRef.current = true;
+    setDraftDirty(true);
+    setDraft(nextDraft);
+    setSelected({ event: 'persona_history_loaded_to_draft', record });
+  }
+
+  async function savePersonaHistory(forceNew = false) {
+    await withBusy('config', async () => {
+      const result = await api.agentSavePersonaHistory({
+        id: forceNew ? '' : personaHistoryEditingId,
+        name: String(draft.persona_name || '').trim() || '当前人设',
+        persona_name: String(draft.persona_name || '').trim(),
+        persona_text: String(draft.persona_text || '').trim(),
+        diary_seed: String(draft.diary_seed || '').trim(),
+        system_note: String(draft.system_note || '').trim(),
+        note: forceNew ? '来自配置页另存为新记录' : '来自配置页手动保存',
+      });
+      setPersonaHistory(asArray<PersonaHistoryRecord>(result.records));
+      setPersonaHistoryEditingId(String(result?.record?.id || (forceNew ? '' : personaHistoryEditingId) || ''));
+      setSelected(result.record || result);
+      await refreshPersonaHistoryAndProgress().catch(() => undefined);
+    });
+  }
+
+  async function applyPersonaHistory(id: string) {
+    if (!id) return;
+    const ok = window.confirm('快速应用这条历史人设？会直接覆盖当前草稿中的人设名称、正文、日记种子和系统注释。');
+    if (!ok) return;
+    await withBusy('config', async () => {
+      const result = await api.agentApplyPersonaHistory(id);
+      setPersonaHistory(asArray<PersonaHistoryRecord>(result.records));
+      if (result?.config) {
+        const nextConfig = { ...emptyConfig, ...(result.config || {}), api_key: '' } as AgentConfig;
+        setServerConfig(nextConfig);
+        setDraft(nextConfig);
+        draftDirtyRef.current = false;
+        setDraftDirty(false);
+      }
+      setPersonaHistoryEditingId(id);
+      setSelected(result.record || result);
+      await refreshPersonaHistoryAndProgress().catch(() => undefined);
+    });
+  }
+
+  async function deletePersonaHistory(id: string) {
+    if (!id) return;
+    const row = personaHistory.find((item) => String(item.id || '') === id);
+    const ok = window.confirm(`删除这条历史人设？\n${String(row?.name || row?.persona_name || id)}`);
+    if (!ok) return;
+    await withBusy('config', async () => {
+      const result = await api.agentDeletePersonaHistory(id);
+      setPersonaHistory(asArray<PersonaHistoryRecord>(result.records));
+      if (personaHistoryEditingId === id) {
+        setPersonaHistoryEditingId('');
+      }
+      setSelected(result);
+      await refreshPersonaHistoryAndProgress().catch(() => undefined);
+    });
+  }
+
+  async function saveUserProgressLoadout(payload: { current_title_id?: string; equipped_badge_ids?: string[] }) {
+    const now = Date.now();
+    const optimistic = {
+      ...((userProgress && typeof userProgress === 'object') ? userProgress : {}),
+      ...(payload.current_title_id !== undefined ? { current_title_id: payload.current_title_id } : {}),
+      ...(payload.equipped_badge_ids !== undefined ? { equipped_badge_ids: payload.equipped_badge_ids } : {}),
+      updated_at_ms: now,
+      generated_at_ms: now,
+    } as AnyRecord;
+    userProgressOverrideUpdatedAtRef.current = asNumber(optimistic.updated_at_ms, Date.now());
+    userProgressLocalOverrideRef.current = optimistic;
+    setUserProgressLocalOverride(optimistic);
+    setUserProgress(optimistic);
+    await withBusy('config', async () => {
+      const result = await api.agentUpdateUserProgressLoadout(payload);
+      const next = (result?.progress || result) as AnyRecord;
+      if (next && typeof next === 'object') {
+        userProgressOverrideUpdatedAtRef.current = asNumber(next.updated_at_ms, userProgressOverrideUpdatedAtRef.current);
+        userProgressLocalOverrideRef.current = next;
+        setUserProgressLocalOverride(next);
+        setUserProgress(next);
+        setSelected(next);
+      } else {
+        await refreshPersonaHistoryAndProgress().catch(() => undefined);
+      }
     });
   }
 
@@ -5684,9 +6239,11 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     setSelected({ event: 'apply_prompt_variant_preview', prompt_variant: value, note: '已写入左侧配置草稿，点击“保存配置”后生效。' });
   }
 
+  const liveActiveJob = isLiveAgentJob(activeJob) ? activeJob : null;
+  const recentFinishedJob = !liveActiveJob && activeJob ? activeJob : null;
   const packet = (status?.ap_packet || {}) as AnyRecord;
   const backgroundPacket = ((background?.last_result || {}) as AnyRecord).ap_packet || {};
-  const livePacket = pickFresherPacket(activeJob?.ap_packet || {}, backgroundPacket, packet);
+  const livePacket = pickFresherPacket(liveActiveJob?.ap_packet || {}, backgroundPacket, packet);
   const liveTickCounter = Math.max(0, asNumber(livePacket.tick_counter ?? packet.tick_counter, 0));
   const summary = livePacket.summary || packet.summary || {};
   const messages = asArray<AnyRecord>(status?.messages);
@@ -5731,8 +6288,14 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     },
     [thoughts, activeJob?.thought, activeJob?.thoughts],
   );
-  const liveCloud = asArray<AnyRecord>(livePacket.object_cloud);
-  const topObjects = asArray<AnyRecord>(livePacket.dominant_objects);
+  const liveCloud = asArray<AnyRecord>(livePacket.object_cloud).length
+    ? asArray<AnyRecord>(livePacket.object_cloud)
+    : (asArray<AnyRecord>(livePacket.dominant_objects).length
+      ? asArray<AnyRecord>(livePacket.dominant_objects)
+      : asArray<AnyRecord>(livePacket.top_objects));
+  const topObjects = asArray<AnyRecord>(livePacket.dominant_objects).length
+    ? asArray<AnyRecord>(livePacket.dominant_objects)
+    : asArray<AnyRecord>(livePacket.top_objects);
   const topMemory = asArray<AnyRecord>(livePacket.top_memory);
   const cfs = asArray<AnyRecord>(livePacket.cognitive_feelings);
   const ntRows = asArray<AnyRecord>(livePacket.emotion?.channels);
@@ -6112,6 +6675,10 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const visibleBackgroundStageLabel = backgroundStageIsFresh ? backgroundStageLabel : '';
   const visibleBackgroundStage = backgroundStageIsFresh ? backgroundStage : '';
   const backgroundDecision = String(backgroundProgress.decision || backgroundResult.decision || '').trim();
+  const visibleDecision = liveActiveJob?.decision
+    || backgroundDecision
+    || (background?.running ? (visibleBackgroundStage || 'background_running') : '')
+    || (displayThoughts[0]?.decision || 'waiting');
   const backgroundThoughtText = String(backgroundProgress.current_thought_text || backgroundResult.current_thought_text || '').trim();
   const backgroundWhy = String(backgroundProgress.why || backgroundResult.why || backgroundResult.reason || '').trim();
   const activeToolTask = (status?.active_tool_task || {}) as AnyRecord;
@@ -6122,7 +6689,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const activeToolTaskLabel = activeToolTaskLive
     ? `${String(activeToolTask.task || '工具')} · ${String(activeToolTask.summary || activeToolTask.stage || '运行中')}`
     : '';
-  const currentStage = activeJob?.stage_label
+  const currentStage = liveActiveJob?.stage_label
     || activeToolTaskLabel
     || (background?.running || visibleBackgroundStageLabel
       ? visibleBackgroundStageLabel || '后台主观能动性运行中'
@@ -6182,43 +6749,43 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     {
       label: '当前阶段',
       value: currentStage,
-      note: activeJob?.status === 'queued' ? '消息已入队，等待前序任务。' : activeJob?.stage ? `内部阶段：${activeJob.stage}` : activeToolTaskLive ? `工具阶段：${String(activeToolTask.stage || '-')}` : visibleBackgroundStage ? `后台阶段：${visibleBackgroundStage}` : '当前没有运行中的回合。',
+      note: liveActiveJob?.status === 'queued' ? '消息已入队，等待前序任务。' : liveActiveJob?.stage ? `内部阶段：${liveActiveJob.stage}` : activeToolTaskLive ? `工具阶段：${String(activeToolTask.stage || '-')}` : visibleBackgroundStage ? `后台阶段：${visibleBackgroundStage}` : '当前没有运行中的回合。',
     },
     {
       label: '当前决策',
-      value: String(activeJob?.decision || backgroundDecision || (displayThoughts[0]?.decision || 'waiting')),
+      value: String(visibleDecision),
       note: 'reply=准备回复；continue_thinking=继续联想；silent/sleep=本轮不回复；tool_call=先执行工具。',
     },
     {
       label: 'AP tick',
       value: activeToolTaskLive && activeToolTask.progress_current !== undefined
         ? `${formatCount(activeToolTask.progress_current)} / ${formatCount(activeToolTask.progress_total)}`
-        : `${formatCount(activeJob?.ap_tick_count ?? livePacket.tick_counter ?? packet.tick_counter ?? 0)}`,
+        : `${formatCount(liveActiveJob?.ap_tick_count ?? livePacket.tick_counter ?? packet.tick_counter ?? 0)}`,
       note: activeToolTaskLive ? '读书等长期工具会在这里显示当前 AP tick / 阶段进度。' : '这里会随着用户输入注入、预运行、thought 回灌和工具结果回灌实时增加。',
     },
     {
       label: '想法进度',
-              value: `${formatCount(activeJob?.thought_soft_window_index ?? activeJob?.current_thought_index ?? 0)} / ${formatCount(activeJob?.thought_soft_window_limit ?? activeJob?.thought_budget ?? draft.max_thoughts_per_turn ?? 0)}`,
-              note: `软窗口进度；硬上限 ${formatCount(activeJob?.thought_hard_step_limit ?? draft.max_total_thought_steps_per_turn ?? 0)}，continue 重置 ${formatCount(activeJob?.thought_reset_count ?? 0)} / ${formatCount(activeJob?.thought_reset_limit ?? draft.thought_budget_reset_limit ?? 0)}。`,
+              value: `${formatCount(liveActiveJob?.thought_soft_window_index ?? liveActiveJob?.current_thought_index ?? 0)} / ${formatCount(liveActiveJob?.thought_soft_window_limit ?? liveActiveJob?.thought_budget ?? draft.max_thoughts_per_turn ?? 0)}`,
+              note: `软窗口进度；硬上限 ${formatCount(liveActiveJob?.thought_hard_step_limit ?? draft.max_total_thought_steps_per_turn ?? 0)}，continue 重置 ${formatCount(liveActiveJob?.thought_reset_count ?? 0)} / ${formatCount(liveActiveJob?.thought_reset_limit ?? draft.thought_budget_reset_limit ?? 0)}。`,
             },
     {
       label: 'LLM 等待空 tick',
-      value: activeJob?.llm_status?.llm_wait_tick_count !== undefined
-        ? `${formatCount(activeJob?.llm_status?.llm_wait_tick_count)} / ${formatCount(activeJob?.llm_wait_tick_total ?? sendPreTicks ?? 0)}`
-        : activeJob?.llm_wait_tick_count !== undefined
-          ? `${formatCount(activeJob?.llm_wait_tick_count)} / ${formatCount(activeJob?.llm_wait_tick_total ?? sendPreTicks ?? 0)}`
+      value: liveActiveJob?.llm_status?.llm_wait_tick_count !== undefined
+        ? `${formatCount(liveActiveJob?.llm_status?.llm_wait_tick_count)} / ${formatCount(liveActiveJob?.llm_wait_tick_total ?? sendPreTicks ?? 0)}`
+        : liveActiveJob?.llm_wait_tick_count !== undefined
+          ? `${formatCount(liveActiveJob?.llm_wait_tick_count)} / ${formatCount(liveActiveJob?.llm_wait_tick_total ?? sendPreTicks ?? 0)}`
           : (sendWaitTicks ? '已开启' : '关闭'),
       note: '开启后，等待 LLM 返回期间 AP 会继续空 tick 消化；这些 tick 会抵扣下一次 LLM 前 AP tick 预算，最多不超过设置值。',
     },
     {
       label: 'LLM 前预 tick',
-      value: activeJob?.pre_tick_total ? `${formatCount(activeJob.pre_tick_index)} / ${formatCount(activeJob.pre_tick_total)}` : `${formatCount(sendPreTicks)} ticks`,
+      value: liveActiveJob?.pre_tick_total ? `${formatCount(liveActiveJob.pre_tick_index)} / ${formatCount(liveActiveJob.pre_tick_total)}` : `${formatCount(sendPreTicks)} ticks`,
       note: '每次调用 LLM 前都会执行这组 AP tick，工具结果后的第二次 LLM 也会应用。',
     },
     {
       label: 'LLM 后 AP tick',
-      value: activeJob?.post_tick_total
-        ? `${formatCount(activeJob.post_tick_index)} / ${formatCount(activeJob.post_tick_total)}`
+      value: liveActiveJob?.post_tick_total
+        ? `${formatCount(liveActiveJob.post_tick_index)} / ${formatCount(liveActiveJob.post_tick_total)}`
         : `${formatCount(sendPostTicks)} ticks`,
       note: '每段 thought/reply 生成并回灌 AP 后继续运行，用于自检、纠错、撤回或收束。',
     },
@@ -6238,25 +6805,25 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       note: '强化主观能动性模式每隔这么多 tick 做一次“该不该再想”的教师前判断，不直接生成 thought。',
     },
   ];
-  const activeReports = asArray<AnyRecord>(activeJob?.recent_reports);
-  const activeToolCalls = asArray<AnyRecord>(activeJob?.tool_calls).length ? asArray<AnyRecord>(activeJob?.tool_calls) : asArray<AnyRecord>(latestThought.tool_calls);
-  const activeToolResults = asArray<AnyRecord>(activeJob?.tool_results).length ? asArray<AnyRecord>(activeJob?.tool_results) : asArray<AnyRecord>(latestThought.tool_results);
-  const activeBridges = asArray<AnyRecord>(activeJob?.bridges);
-  const activeBridgeFeedback = asArray<AnyRecord>(activeJob?.bridge_teacher_feedback);
+  const activeReports = asArray<AnyRecord>(liveActiveJob?.recent_reports);
+  const activeToolCalls = asArray<AnyRecord>(liveActiveJob?.tool_calls).length ? asArray<AnyRecord>(liveActiveJob?.tool_calls) : asArray<AnyRecord>(latestThought.tool_calls);
+  const activeToolResults = asArray<AnyRecord>(liveActiveJob?.tool_results).length ? asArray<AnyRecord>(liveActiveJob?.tool_results) : asArray<AnyRecord>(latestThought.tool_results);
+  const activeBridges = asArray<AnyRecord>(liveActiveJob?.bridges);
+  const activeBridgeFeedback = asArray<AnyRecord>(liveActiveJob?.bridge_teacher_feedback);
   const backgroundBridges = asArray<AnyRecord>(background?.last_result?.bridges);
-  const liveDecisionNarrative = activeJob?.current_thought_text
-    ? `当前想法：${activeJob.current_thought_text}`
+  const liveDecisionNarrative = liveActiveJob?.current_thought_text
+    ? `当前想法：${liveActiveJob.current_thought_text}`
     : backgroundThoughtText
       ? `后台当前想法：${backgroundThoughtText}`
-    : activeJob?.why
-      ? `当前说明：${activeJob.why}`
+    : liveActiveJob?.why
+      ? `当前说明：${liveActiveJob.why}`
       : backgroundWhy
         ? `后台说明：${backgroundWhy}`
       : '发送消息后，这里会实时展示当前阶段、决策走向、thought 进度和工具执行情况。';
   const liveAnalysisRows = [
     {
       label: '决策解释',
-      value: shortText(String(activeJob?.why || backgroundWhy || latestThought?.why || '暂无'), 92),
+      value: shortText(String(liveActiveJob?.why || backgroundWhy || latestThought?.why || '暂无'), 92),
       note: '这里只放分析/判断，不和想法文本混在一起。',
     },
     {
@@ -6569,6 +7136,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                     当前会按“休眠策略”启动：{sleepModes.find((item) => item.value === draft.sleep_mode)?.label || draft.sleep_mode || '-'}。开启后会持续后台空 tick，直到手动停止；强化主观能动性会在空 tick 过程中按配置间隔做教师评估。
                   </Text>
                 </Card>
+                <UserProgressCard progress={userProgress} busy={busy} onSaveLoadout={(payload) => saveUserProgressLoadout(payload)} />
               </section>
 
               <section className="pa-main-column">
@@ -6747,36 +7315,36 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                       {activeJob?.status || (background?.running ? 'background' : 'idle')}
                     </Badge>
                   </Group>
-                  {activeJob ? (
-                    <div className="pa-decision-progress">
-                      <span style={{ width: `${Math.max(6, Math.min(100, (asNumber(activeJob.thought_soft_window_index ?? activeJob.current_thought_index, 0) / Math.max(1, asNumber(activeJob.thought_soft_window_limit ?? activeJob.thought_budget, draft.max_thoughts_per_turn || 1))) * 100))}%` }} />
-                    </div>
-                  ) : background?.running ? (
+                    {liveActiveJob ? (
+                      <div className="pa-decision-progress">
+                        <span style={{ width: `${Math.max(6, Math.min(100, (asNumber(liveActiveJob.thought_soft_window_index ?? liveActiveJob.current_thought_index, 0) / Math.max(1, asNumber(liveActiveJob.thought_soft_window_limit ?? liveActiveJob.thought_budget, draft.max_thoughts_per_turn || 1))) * 100))}%` }} />
+                      </div>
+                    ) : background?.running ? (
                     <div className="pa-decision-progress">
                       <span style={{ width: `${Math.max(8, Math.min(100, (asNumber(backgroundProgress.thought_soft_window_index ?? backgroundProgress.current_thought_index ?? backgroundResult.current_thought_index, 0) / Math.max(1, asNumber(backgroundProgress.thought_soft_window_limit ?? backgroundProgress.thought_budget ?? backgroundResult.thought_budget, draft.max_thoughts_per_turn || 1))) * 100))}%` }} />
                     </div>
                   ) : null}
                   <div className="pa-stage-list">
-                    {activeJob && isLiveAgentJob(activeJob) ? (
-                      <button type="button" className="pa-stage-row" onClick={() => setSelected(activeJob)}>
+                    {liveActiveJob ? (
+                      <button type="button" className="pa-stage-row" onClick={() => setSelected(liveActiveJob)}>
                         <span>当前任务</span>
-                        <strong>{shortText(agentJobTaskLabel(activeJob), 72)}</strong>
+                        <strong>{shortText(agentJobTaskLabel(liveActiveJob), 72)}</strong>
                       </button>
                     ) : null}
-                    {!activeJob && !background?.running && agentJobs.length ? (
-                      <button type="button" className="pa-stage-row" onClick={() => setSelected(agentJobs[0])}>
+                    {!liveActiveJob && !background?.running && (recentFinishedJob || agentJobs.length) ? (
+                      <button type="button" className="pa-stage-row" onClick={() => setSelected(recentFinishedJob || agentJobs[0])}>
                         <span>最近任务</span>
-                        <strong>{shortText(agentJobTaskLabel(agentJobs[0], true), 72)}</strong>
+                        <strong>{shortText(agentJobTaskLabel(recentFinishedJob || agentJobs[0], true), 72)}</strong>
                       </button>
                     ) : null}
                     {liveDecisionRows.map((row) => (
-                      <button key={row.label} type="button" className="pa-stage-row" onClick={() => setSelected({ ...row, activeJob })}>
+                      <button key={row.label} type="button" className="pa-stage-row" onClick={() => setSelected({ ...row, activeJob: liveActiveJob || recentFinishedJob })}>
                         <span>{row.label}</span>
                         <strong>{row.value}</strong>
                       </button>
                     ))}
                     <div className="pa-note-row">{liveDecisionNarrative}</div>
-                    {activeJob?.error ? <div className="pa-note-row">错误：{activeJob.error}</div> : null}
+                    {liveActiveJob?.error ? <div className="pa-note-row">错误：{liveActiveJob.error}</div> : null}
                   </div>
                   <Group grow mt="sm">
                     <Button
@@ -7156,16 +7724,18 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
               </section>
               <aside className="pa-side-column">
                 <Card className="pa-panel">
-                  <Group justify="space-between" mb="xs">
-                    <Text fw={900}>人设草稿</Text>
-                    <Badge variant="light">{draft.persona_name || '未命名'}</Badge>
-                  </Group>
-                  <div className="empty-box compact">
-                    人设只读取当前配置草稿，不再提供内置角色模板。更换人设时清空并重写这里的名称、人设信息、日记种子和系统注释即可。
-                  </div>
-                  <Button mt="sm" fullWidth variant="light" leftSection={<IconSparkles size={16} />} loading={polishBusy} onClick={polishPersona}>
-                    按当前草稿自动润色扩展
-                  </Button>
+                  <PersonaHistoryPanel
+                    records={personaHistory}
+                    draft={draft}
+                    busy={configBusy}
+                    editingId={personaHistoryEditingId}
+                    onSaveCurrent={() => void savePersonaHistory(false)}
+                    onSaveAsNew={() => void savePersonaHistory(true)}
+                    onResetEditing={() => setPersonaHistoryEditingId('')}
+                    onLoadToDraft={loadPersonaRecordToDraft}
+                    onApply={applyPersonaHistory}
+                    onDelete={deletePersonaHistory}
+                  />
                 </Card>
                 <Card className="pa-panel" mt="md">
                   <ModelPoolPanel
@@ -7195,6 +7765,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 </Card>
               </aside>
               <aside className="pa-json-column">
+                <BeginnerMissionsPanel progress={userProgress} busy={busy} onRefresh={() => void refreshPersonaHistoryAndProgress(true)} />
                 <ReadinessPanel readiness={readiness} onRefresh={refreshReadiness} busy={busy} />
                 <ModelReadinessPanel readiness={modelReadiness} onRefresh={refreshModelReadiness} onTest={testLlm} busy={busy} />
                 <ModelExportPreviewPanel preview={modelExportPreview} busy={busy} onRefresh={refreshModelExportPreview} onInspect={setSelected} />
