@@ -24449,7 +24449,14 @@ try {
         self._refresh_compact_status_cache(self._snapshot_to_compact_packet(snapshot))
 
     def _remember_snapshot(self, packet: dict[str, Any]) -> None:
-        if _as_dict(packet.get("_source_report")):
+        source_report = _as_dict(packet.get("_source_report"))
+        if source_report:
+            source = str(
+                packet.get("source")
+                or _as_dict(source_report.get("tick_labels")).get("source")
+                or ""
+            )
+            self._remember_report_snapshot(source_report, source=source)
             self._refresh_compact_status_cache(packet)
             return
         snapshots = self.state.get("snapshots")

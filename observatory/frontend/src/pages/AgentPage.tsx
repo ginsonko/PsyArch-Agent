@@ -946,6 +946,38 @@ function expandReplySegmentsForDisplay(rows: AnyRecord[], config: AgentConfig): 
   return expanded;
 }
 
+function packetTickCounter(packet: unknown): number {
+  return asNumber((packet as AnyRecord | null)?.tick_counter, -1);
+}
+
+function packetTimestamp(packet: unknown): number {
+  const row = (packet || {}) as AnyRecord;
+  return asNumber(row.generated_at_ms ?? row.created_at_ms, 0);
+}
+
+function packetHasRuntimeSignal(packet: unknown): boolean {
+  if (!packet || typeof packet !== 'object') return false;
+  const row = packet as AnyRecord;
+  return (
+    packetTickCounter(row) >= 0
+    || asArray<AnyRecord>(row.object_cloud).length > 0
+    || asArray<AnyRecord>(row.dominant_objects).length > 0
+    || Object.keys((row.summary || {}) as AnyRecord).length > 0
+  );
+}
+
+function pickFresherPacket(...packets: unknown[]): AnyRecord {
+  const rows = packets.filter(packetHasRuntimeSignal) as AnyRecord[];
+  if (!rows.length) return {} as AnyRecord;
+  return rows.reduce((best, current) => {
+    const bestTick = packetTickCounter(best);
+    const currentTick = packetTickCounter(current);
+    if (currentTick > bestTick) return current;
+    if (currentTick < bestTick) return best;
+    return packetTimestamp(current) >= packetTimestamp(best) ? current : best;
+  });
+}
+
 function AttachmentDraftPanel({
   fileDraft,
   attachmentDraft,
@@ -5652,8 +5684,10 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     setSelected({ event: 'apply_prompt_variant_preview', prompt_variant: value, note: '已写入左侧配置草稿，点击“保存配置”后生效。' });
   }
 
-  const packet = status?.ap_packet || {};
-  const livePacket = (activeJob?.ap_packet && Object.keys(activeJob.ap_packet).length ? activeJob.ap_packet : packet) as AnyRecord;
+  const packet = (status?.ap_packet || {}) as AnyRecord;
+  const backgroundPacket = ((background?.last_result || {}) as AnyRecord).ap_packet || {};
+  const livePacket = pickFresherPacket(activeJob?.ap_packet || {}, backgroundPacket, packet);
+  const liveTickCounter = Math.max(0, asNumber(livePacket.tick_counter ?? packet.tick_counter, 0));
   const summary = livePacket.summary || packet.summary || {};
   const messages = asArray<AnyRecord>(status?.messages);
   const activeJobs = asArray<AgentJob>(agentJobs).filter(isLiveAgentJob);
@@ -5735,7 +5769,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const cloud: AnyRecord[] = liveCloud.length ? liveCloud : historicalCloud;
   const cloudIsHistorical = liveCloud.length === 0 && historicalCloud.length > 0;
   const initialDataLoading = status === null;
-  const runtimeLooksEmpty = asNumber(summary.active_item_count, 0) <= 0 && liveCloud.length === 0 && asNumber(livePacket.tick_counter ?? packet.tick_counter, 0) <= 0;
+  const runtimeLooksEmpty = asNumber(summary.active_item_count, 0) <= 0 && liveCloud.length === 0 && liveTickCounter <= 0;
   const aggregatedCloud = useMemo(() => aggregateCloudItems(cloud), [cloud]);
   const cloudLayout = useMemo(() => {
     const source = clampCloudItemsForViewport(aggregatedCloud, cloudViewport.width, cloudViewport.height, 'compact');
@@ -5846,7 +5880,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const acceptanceNotes = asArray<string>(acceptance?.expected_notes);
   const expectedWarns = acceptanceNotes.length ? acceptanceNotes : [
     !draft.llm_enabled ? 'LLM 未启用，当前使用本地 fallback thought' : `LLM ${draft.model || '已启用'}`,
-    runtimeLooksEmpty ? 'AP 新进程状态池为空，注入种子后可观察对象云' : `AP tick ${formatCount(packet.tick_counter)}，对象 ${formatCount(summary.active_item_count)}`,
+    runtimeLooksEmpty ? 'AP 新进程状态池为空，注入种子后可观察对象云' : `AP tick ${formatCount(liveTickCounter)}，对象 ${formatCount(summary.active_item_count)}`,
     draft.qq_napcat_enabled ? `NapCat ${draft.qq_napcat_dry_run !== false ? 'dry-run' : 'live send'}` : 'NapCat disabled + dry-run，避免误发外部消息',
     background?.running ? `后台主观能动性运行中：${formatCount(background?.step_count)} steps` : '后台静默，挂机期间不主动写入对话历史',
   ];
@@ -5982,7 +6016,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     {
       id: 'ap_runtime',
       label: 'AP 运行态',
-      status: runtimeLooksEmpty ? '空态' : `tick ${formatCount(packet.tick_counter)}`,
+      status: runtimeLooksEmpty ? '空态' : `tick ${formatCount(liveTickCounter)}`,
       color: runtimeLooksEmpty ? 'yellow' : 'teal',
       note: runtimeLooksEmpty ? '需要种子或少量 tick 才能观察对象云' : `objects ${formatCount(summary.active_item_count)}`,
     },
@@ -6026,7 +6060,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     {
       id: 'ap_runtime',
       label: 'AP 运行态',
-      value: runtimeLooksEmpty ? '空态' : `tick ${formatCount(packet.tick_counter)}`,
+      value: runtimeLooksEmpty ? '空态' : `tick ${formatCount(liveTickCounter)}`,
       detail: runtimeLooksEmpty ? '需要注入种子或运行 tick' : `对象 ${formatCount(summary.active_item_count)} / cloud ${formatCount(cloud.length)}`,
       color: runtimeLooksEmpty ? 'yellow' : 'teal',
       source: packet,
@@ -6286,7 +6320,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
             <Badge className="pa-topbar-chip" variant="light" color={runtimeLooksEmpty ? 'yellow' : 'teal'}>
               {currentStage}
             </Badge>
-            <Badge className="pa-topbar-chip" variant="outline">tick {formatCount(livePacket.tick_counter ?? packet.tick_counter)}</Badge>
+            <Badge className="pa-topbar-chip" variant="outline">tick {formatCount(liveTickCounter)}</Badge>
             {activeJob?.job_id ? <Badge className="pa-topbar-chip" variant="outline">job {shortText(String(activeJob.job_id), 18)}</Badge> : null}
             <Badge className="pa-topbar-chip" variant="outline">{draft.llm_enabled ? draft.model || 'LLM' : 'fallback'}</Badge>
             <Tooltip label="自动刷新页面状态，不会写入 PA 历史。">
@@ -6525,12 +6559,15 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                   </div>
                   <Group grow mt="sm">
                     <Button size="xs" variant="light" leftSection={<IconPlayerPlay size={14} />} loading={isBusy('background')} onClick={backgroundStart}>
-                      主观能动
+                      启动主观能动
                     </Button>
                     <Button size="xs" variant="subtle" leftSection={<IconPlayerPause size={14} />} loading={isBusy('background')} onClick={backgroundStop}>
                       停止
                     </Button>
                   </Group>
+                  <Text size="xs" c="dimmed" mt={6}>
+                    当前会按“休眠策略”启动：{sleepModes.find((item) => item.value === draft.sleep_mode)?.label || draft.sleep_mode || '-'}。开启后会持续后台空 tick，直到手动停止；强化主观能动性会在空 tick 过程中按配置间隔做教师评估。
+                  </Text>
                 </Card>
               </section>
 
@@ -7944,7 +7981,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
 
       <Grid mb="md">
         <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
-          <MetricCard label="Tick" value={formatCount(packet.tick_counter)} note={summary.mood_hint || '等待 AP 状态'} icon={<IconBolt size={18} />} tone="ok" />
+          <MetricCard label="Tick" value={formatCount(liveTickCounter)} note={summary.mood_hint || '等待 AP 状态'} icon={<IconBolt size={18} />} tone="ok" />
         </Grid.Col>
         <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
           <MetricCard label="ER / EV" value={`${formatNumber(summary.total_er, 2)} / ${formatNumber(summary.total_ev, 2)}`} note={`EV/ER ${formatNumber(summary.ev_to_er_ratio, 2)}`} icon={<IconSparkles size={18} />} />
@@ -8429,7 +8466,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                 <Text size="xs" c="dimmed" mt={6}>
                   {background?.last_error
                     ? `错误：${background.last_error}`
-                    : `触发 ${formatCount(background?.trigger_count)} / tick 间隔 ${formatCount(background?.interval_ms)} ms / AP 检查 ${formatCount(background?.thought_interval_ticks)} / 强化评估 ${formatCount(background?.reinforced_agency_interval_ticks)}`}
+                    : `当前模式 ${sleepModes.find((item) => item.value === background?.sleep_mode)?.label || background?.sleep_mode || '-'} / 最新 tick ${formatCount(liveTickCounter)} / 触发 ${formatCount(background?.trigger_count)} / tick 间隔 ${formatCount(background?.interval_ms)} ms / AP 检查 ${formatCount(background?.thought_interval_ticks)} / 强化评估 ${formatCount(background?.reinforced_agency_interval_ticks)}`}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {background?.last_result?.reason
