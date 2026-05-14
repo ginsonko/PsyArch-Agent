@@ -3159,7 +3159,7 @@ class AgentConfig:
     library_book_limit: int = 200
     mcp_enabled: bool = False
     skill_enabled: bool = True
-    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])
+    tool_allowlist: list[str] = field(default_factory=lambda: ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message", "background_agency_control"])
     model_pool: list[dict[str, Any]] = field(default_factory=list)
     persona_name: str = _DEFAULT_PERSONA_NAME
     persona_text: str = _DEFAULT_PERSONA_TEXT
@@ -3358,8 +3358,8 @@ class AgentConfig:
         base.library_review_tick_interval = max(10, min(10000, _as_int(base.library_review_tick_interval, 300)))
         base.library_review_text_chars = max(1000, min(1000000, _as_int(base.library_review_text_chars, 200000)))
         base.library_book_limit = max(1, min(1000, _as_int(base.library_book_limit, 200)))
-        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"])]
-        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message"):
+        base.tool_allowlist = [_canonical_tool_name(item) for item in _listify_strings(base.tool_allowlist, ["time", "weather", "memory_note", "write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "web_search", "image_understanding", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message", "background_agency_control"])]
+        for builtin_tool in ("write_diary", "read_diary", "schedule_task", "browse_library", "read_book", "import_book", "timeline_recall", "image_generation", "ap_tick_report", "ap_recall", "ap_attention_focus", "ap_attention_diverge", "napcat_recall_message", "background_agency_control"):
             if builtin_tool not in base.tool_allowlist:
                 base.tool_allowlist.append(builtin_tool)
         if not isinstance(base.model_pool, list):
@@ -4287,6 +4287,13 @@ class LocalToolRegistry:
                 "input_schema": {"message_id": "可选，NapCat 返回的 message_id；省略则尝试撤回本轮最近一条已成功发送的 NapCat 回复", "reply_id": "可选，PA 本地 reply id", "reason": "撤回原因"},
             },
             {
+                "name": "background_agency_control",
+                "label": "后台主观能动性控制",
+                "enabled": True,
+                "description": "控制后台主观能动性的连续运行状态。可查看当前状态、停止后台主观能动性，或恢复后台主观能动性。",
+                "input_schema": {"operation": "status | stop | resume"},
+            },
+            {
                 "name": "web_search",
                 "label": "联网搜索占位",
                 "enabled": self._allowed("web_search"),
@@ -4376,6 +4383,8 @@ class LocalToolRegistry:
                 output = self.runtime.run_ap_attention_diverge(args, source=source)
             elif tool_name == "napcat_recall_message":
                 output = self.runtime.recall_adapter_message(args, source=source)
+            elif tool_name == "background_agency_control":
+                output = self.runtime.background_agency_control(args, source=source)
             elif tool_name == "web_search":
                 output = self._tool_web_search(args)
             elif tool_name == "image_understanding":
@@ -6471,6 +6480,24 @@ class AgentRuntime:
         rows.reverse()
         return rows
 
+    def _background_default_reply_context(self) -> dict[str, Any]:
+        rows = [row for row in _as_list(self.state.get("messages")) if isinstance(row, dict)]
+        for item in reversed(rows):
+            role = str(item.get("role") or "").lower()
+            if role in {"internal_user", "internal_assistant"}:
+                continue
+            target = self._compact_reply_target(_as_dict(item.get("reply_target") or item.get("adapter_event")))
+            if target.get("conversation_id") or target.get("group_id") or target.get("user_id"):
+                adapter_event = self._compact_adapter_event(_as_dict(item.get("adapter_event"))) if isinstance(item.get("adapter_event"), dict) else self._target_to_adapter_event(target)
+                return {
+                    "reply_target": target,
+                    "adapter_event": adapter_event,
+                    "adapter_label": _clean_text(item.get("adapter_label") or self._adapter_target_label(target), max_chars=160),
+                    "conversation_id": _clean_text(item.get("conversation_id") or target.get("conversation_id") or "", max_chars=120),
+                    "role": role,
+                }
+        return {"reply_target": {}, "adapter_event": {}, "adapter_label": "", "conversation_id": "", "role": ""}
+
     def _recent_tool_top_context_text(self) -> str:
         limit = max(0, min(20, _as_int(self.config.tool_context_top_limit, 5)))
         if limit <= 0:
@@ -7908,6 +7935,8 @@ class AgentRuntime:
                 "last_trigger_turn_id": "",
                 "pending_tool_chain": False,
                 "last_internal_think_at_ms": 0,
+                "last_internal_thought_text": "",
+                "last_internal_summary": "",
                 "last_internal_decision": "",
                 "last_internal_reason": "",
                 "last_internal_tool_count": 0,
@@ -19740,6 +19769,11 @@ try {
         adapter_label = _clean_text(payload.get("adapter_label") or reply_target.get("target_label") or adapter_event.get("target_label") or "", max_chars=160)
         skip_user_message_append = bool(payload.get("_skip_user_message_append"))
         suppress_public_replies = bool(payload.get("_suppress_public_replies") or internal_mode)
+        background_internal_reason = _clean_text(payload.get("_background_internal_reason") or "", max_chars=240)
+        background_internal_previous_thought = _sanitize_llm_visible_text(payload.get("_background_internal_previous_thought"), max_chars=320)
+        background_internal_previous_summary = _sanitize_llm_visible_text(payload.get("_background_internal_previous_summary"), max_chars=260)
+        background_internal_previous_decision = _clean_text(payload.get("_background_internal_previous_decision") or "", max_chars=80)
+        background_internal_previous_eval_reason = _clean_text(payload.get("_background_internal_previous_eval_reason") or "", max_chars=180)
         if conversation_id and not reply_target.get("conversation_id"):
             reply_target["conversation_id"] = conversation_id
         if adapter_label and not reply_target.get("target_label"):
@@ -20160,6 +20194,11 @@ try {
                     for result in _as_list(item.get("tool_results"))
                     if isinstance(result, dict) and _canonical_tool_name(result.get("tool")) == "reply_action"
                 ],
+                "background_internal_reason": background_internal_reason,
+                "background_internal_previous_thought": background_internal_previous_thought,
+                "background_internal_previous_summary": background_internal_previous_summary,
+                "background_internal_previous_decision": background_internal_previous_decision,
+                "background_internal_previous_eval_reason": background_internal_previous_eval_reason,
                     "adapter_context": {
                         "active_conversation_id": conversation_id,
                         "active_target_label": adapter_label or self._adapter_target_label(reply_target),
@@ -20376,6 +20415,21 @@ try {
                     max_chars=800,
                 )
                 _append_quality_flag(normalized, "thought_similarity_warning")
+            if internal_mode:
+                recent_internal_thoughts = [
+                    item
+                    for item in self.state.get("thoughts", [])[-4:]
+                    if isinstance(item, dict) and bool(item.get("internal_mode"))
+                ]
+                if recent_internal_thoughts and _looks_like_repeated_thought(thought_text, recent_internal_thoughts) and not tool_calls and not pending_tool_context:
+                    decision = "sleep"
+                    normalized["decision"] = "sleep"
+                    normalized["reply_text"] = ""
+                    normalized["why"] = _clean_text(
+                        f"{normalized.get('why', '')}；后台连续性提醒：这条后台 thought 与最近后台 thought 高度相似，且没有新的工具结果或推进，因此直接收束。",
+                        max_chars=820,
+                    )
+                    _append_quality_flag(normalized, "background_thought_similarity_sleep")
             emit(
                 "llm_returned",
                 f"LLM 已返回 {index + 1}",
@@ -21064,6 +21118,18 @@ try {
             agency_state["last_internal_think_at_ms"] = _now_ms()
             agency_state["last_internal_decision"] = str(decision or "")
             agency_state["last_internal_reason"] = _clean_text(_as_dict(thoughts[-1] if thoughts else {}).get("why", ""), max_chars=240)
+            agency_state["last_internal_thought_text"] = _clean_text(_as_dict(thoughts[-1] if thoughts else {}).get("text", ""), max_chars=600)
+            agency_state["last_internal_summary"] = _clean_text(
+                "；".join(
+                    item for item in [
+                        background_internal_reason,
+                        _clean_text(_as_dict(final_packet.get("summary")).get("mood_hint") or "", max_chars=160),
+                        _clean_text(_as_dict(replies[-1] if replies else {}).get("text", ""), max_chars=180),
+                    ]
+                    if item
+                ),
+                max_chars=420,
+            )
             agency_state["last_internal_tool_count"] = sum(len(_as_list(item.get("tool_results"))) for item in thoughts if isinstance(item, dict))
             agency_state["last_internal_reply_id"] = str(_as_dict(replies[-1] if replies else {}).get("id") or "")
             agency_state["pending_tool_chain"] = bool(decision in {"tool_call", "continue_thinking"} and not replies)
@@ -21125,6 +21191,10 @@ try {
             "bridge_teacher_feedback": bridge_teacher_feedback_all[-24:],
             "status": self.status(),
         }
+        try:
+            self._refresh_compact_status_cache(final_packet)
+        except Exception:
+            pass
         emit(
             "completed",
             "本轮完成",
@@ -21591,16 +21661,37 @@ try {
         reason: str,
         progress: Callable[[dict[str, Any]], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        suppress_public_replies: bool = True,
+        reply_target: dict[str, Any] | None = None,
+        adapter_event: dict[str, Any] | None = None,
+        adapter_label: str = "",
+        run_ap_while_waiting_llm: bool | None = False,
     ) -> dict[str, Any]:
         summary = _as_dict(packet.get("summary"))
+        agency = self._background_agency_state()
         mood_hint = _clean_text(summary.get("mood_hint") or "", max_chars=220)
         salient = [_clean_text(_as_dict(item).get("display") or "", max_chars=60) for item in _as_list(packet.get("dominant_objects"))[:3] if isinstance(item, dict)]
         cue = "；".join([item for item in salient if item]) or "当前内在状态仍在聚拢"
+        last_thought = _clean_text(agency.get("last_internal_thought_text") or "", max_chars=220)
+        last_summary = _clean_text(agency.get("last_internal_summary") or "", max_chars=220)
+        last_reason = _clean_text(agency.get("last_eval_reason") or agency.get("last_internal_reason") or "", max_chars=180)
+        last_decision = _clean_text(agency.get("last_internal_decision") or "", max_chars=60)
+        continuity_hint = ""
+        if last_thought or last_summary or last_reason or last_decision:
+            continuity_hint = _clean_text(
+                " 上一次后台思考并没有消失。"
+                f" 上次想法：{last_thought or last_summary or '无'}。"
+                f" 上次结论：{last_decision or '未记录'}。"
+                f" 上次评估线索：{last_reason or '未记录'}。"
+                " 这次必须在那个基础上续写、修正、推进或收束，不要把同一种感觉和同一句话换词重说。",
+                max_chars=520,
+            )
         internal_text = _clean_text(
             f"内部主动思考触发。原因：{reason or 'ap_internal_agency'}。"
             f" 当前感觉：{mood_hint or '有些线索还没整理完'}。"
-            f" 先沿着这些线索往下想：{cue}。",
-            max_chars=600,
+            f" 先沿着这些线索往下想：{cue}。"
+            f"{continuity_hint}",
+            max_chars=1100,
         )
         return self._run_message_flow(
             {
@@ -21608,7 +21699,16 @@ try {
                 "source": source,
                 "attachments": [],
                 "_pre_thought_ticks_override": 0,
-                "_suppress_public_replies": True,
+                "_run_ap_while_waiting_llm": run_ap_while_waiting_llm,
+                "_suppress_public_replies": suppress_public_replies,
+                "_background_internal_reason": _clean_text(reason or "", max_chars=240),
+                "_background_internal_previous_thought": last_thought,
+                "_background_internal_previous_summary": last_summary,
+                "_background_internal_previous_decision": last_decision,
+                "_background_internal_previous_eval_reason": last_reason,
+                "reply_target": copy.deepcopy(reply_target) if isinstance(reply_target, dict) else {},
+                "adapter_event": copy.deepcopy(adapter_event) if isinstance(adapter_event, dict) else {},
+                "adapter_label": _clean_text(adapter_label, max_chars=160),
             },
             progress=progress,
             should_stop=should_stop,
@@ -22940,6 +23040,12 @@ try {
         active_reply_target = self._compact_reply_target(_as_dict(adapter_context.get("initial_reply_target")))
         active_conversation_id = str(adapter_context.get("active_conversation_id") or active_reply_target.get("conversation_id") or "").strip()
         active_target_label = str(adapter_context.get("active_target_label") or self._adapter_target_label(active_reply_target)).strip()
+        background_internal_reason = _clean_text(runtime.get("background_internal_reason") or "", max_chars=240)
+        background_previous_thought = _sanitize_llm_visible_text(runtime.get("background_internal_previous_thought"), max_chars=320)
+        background_previous_summary = _sanitize_llm_visible_text(runtime.get("background_internal_previous_summary"), max_chars=260)
+        background_previous_decision = _clean_text(runtime.get("background_internal_previous_decision") or "", max_chars=80)
+        background_previous_eval_reason = _clean_text(runtime.get("background_internal_previous_eval_reason") or "", max_chars=180)
+        background_internal_mode = bool(runtime.get("internal_mode"))
         other_context_rows = [
             item
             for item in _as_list(runtime.get("other_adapter_contexts"))
@@ -23179,6 +23285,33 @@ try {
                 f"上一条 reply 的连续性锚点：{latest_reply_text or '无'}",
             ]
         )
+        persona_name = _clean_text(self.config.persona_name or "", max_chars=120)
+        persona_text = _clean_multiline_text(self.config.persona_text or "", max_chars=3600)
+        system_note_text = _clean_multiline_text(self.config.system_note or "", max_chars=1800)
+        persona_contract_text = "\n".join(
+            [
+                f"当前人设名称：{persona_name or '未设置'}",
+                f"当前人设文本：{persona_text or '未设置；请保持自然、清晰、不过度报告化。'}",
+                f"系统补充：{system_note_text or '暂无'}",
+                "硬约束：thought 与 reply 都必须像这一个人设在继续活着、继续说话，而不是像通用助手在报告。",
+                "硬约束：语气、兴趣、关系边界、称呼习惯、表达密度、主动性风格优先服从当前人设；不要滑回默认客服腔、论文腔、总结汇报腔。",
+                "硬约束：如果当前人设偏随性、亲近、嘴碎、毒舌、克制、冷感、温柔、俏皮或别的明确风格，thought 里也必须保留这种思维气味，而不是只在 reply 里偶尔出现。",
+                "硬约束：当 AP 当前状态与人设冲突时，要在保持人设边界的同时承认状态变化，比如同一个人设也会紧张、迟疑、靠近、收束；不要把人设写死成模板口号。",
+            ]
+        )
+        background_continuity_text = "\n".join(
+            [
+                f"是否后台内部思考：{background_internal_mode}",
+                f"本次后台触发原因：{background_internal_reason or '无'}",
+                f"上一次后台 thought：{background_previous_thought or '无'}",
+                f"上一次后台摘要：{background_previous_summary or '无'}",
+                f"上一次后台结论：{background_previous_decision or '无'}",
+                f"上一次后台评估理由：{background_previous_eval_reason or '无'}",
+                "如果这是强化评估/后台思考，你必须把这次 thought 写成对上一次后台 thought 的续写、修正、推进或收束。",
+                "禁止把上一次后台 thought 换几个近义词重新说一遍；如果没有新推进价值，应该直接 sleep/silent。",
+                "只有出现新的 AP 状态变化、新工具结果、新用户输入余波、新回忆命中、新行动冲动，才值得继续展开新的后台 thought。",
+            ]
+        )
 
         system_sections: list[tuple[str, str]] = [
             (
@@ -23206,6 +23339,17 @@ try {
                         "回复目标必须跟内容匹配：群聊消息默认回群，私聊消息默认回私聊；不要把某个用户在 A 群说的话当成私聊回复，也不要把私聊内容发到群里。",
                         "tool_calls 只放后端可执行工具调用；不要把工具计划混进 thought 或 reply_text。",
                         "why 是调试说明，可以明确写“已回复，收束 sleep”“纠错”“工具结果需回复”等；不要把 why 的内容写给用户。",
+                    ]
+                ),
+            ),
+            (
+                "人设优先级",
+                "\n".join(
+                    [
+                        "你必须先服从“人设和系统补充”，再组织其他上下文。人设不是装饰，而是决定 thought / reply 口吻、关系边界、主动性姿态和表达习惯的最高层约束之一。",
+                        "如果后面的上下文里没有明确要求你改人设，就绝不能退回成默认助手风格。",
+                        "同一轮里就算 decision=sleep 或 continue_thinking，thought 也必须像当前人设自己的脑内声音，而不是无人格的系统记录。",
+                        "如果你发现自己写出了通用助手腔、报告腔、模板安慰腔、客服腔，就应主动收回来，改写成更贴近当前人设的内心声音。",
                     ]
                 ),
             ),
@@ -23250,6 +23394,18 @@ try {
                         "当上一条 reply 已经完成用户请求时，下一条 thought 最自然的演进往往是“我已经说完了，继续说会重复，所以先停下等用户”。这是一种有效的内心活动，不是失败。",
                         "如果同轮 object_cloud 或近期 thought 反复出现上一条回复的词句，应把它识别为回响和重复风险，而不是误判成用户还想继续听同类内容。",
                         "只有当你能用一句话说清楚“这次 thought 相比上一条新增了什么信息或判断”时，才可以 continue_thinking 或 reply；说不清楚时选择 sleep/silent。",
+                    ]
+                ),
+            ),
+            (
+                "后台强化评估连续性",
+                "\n".join(
+                    [
+                        "强化评估不是每隔 N tick 重开一次新的角色独白，而是把这一段 AP 演化翻译成一条有连续性的内部念头。",
+                        "如果这是后台内部思考，要优先阅读“后台强化评估连续性线索”。",
+                        "上一次后台 thought、上一次后台结论、上一次后台评估理由，是这次 thought 的最近承接点。",
+                        "允许的演进只有四种：续写、修正、推进、收束。其余形式如果只是换词重复，都应视为低质量。",
+                        "若上一条后台 thought 已经把情绪/倾向说完，而这次没有新事实与新驱动力，就收束成 sleep/silent，不要再生成一个意思差不多的 thought。",
                     ]
                 ),
             ),
@@ -23456,9 +23612,7 @@ try {
             (
                 "人设和系统补充",
                 (
-                    f"当前人设名称：{self.config.persona_name or '未设置'}\n"
-                    f"{self.config.persona_text or '当前没有额外人设文本。'}\n\n"
-                    f"系统补充：{self.config.system_note or '暂无'}\n\n"
+                    persona_contract_text + "\n\n"
                     "说明：姓名、身份、说话风格、关系称呼和禁忌只来自本区；如果用户切换人设，应完全按新配置执行，不保留旧人设残影。"
                 ),
             ),
@@ -23472,6 +23626,7 @@ try {
                     f"是否有新工具上下文：{bool(runtime.get('new_tool_context_since_last_reply'))}。"
                 ),
             ),
+            ("后台强化评估连续性线索", background_continuity_text),
             ("回复连续性账本", continuity_ledger),
             ("近期工具 top 信息", tool_top_context_text),
             (
@@ -24127,6 +24282,13 @@ try {
                     )
                 elif output_dict.get("interrupted"):
                     body = _clean_text(output_dict.get("summary") or "读书被外界输入打断，未生成段落理解。下一段 thought 应先处理新输入，之后可从书签继续读。", max_chars=900)
+            if ok and _canonical_tool_name(tool) == "background_agency_control":
+                output_dict = _as_dict(output)
+                body = _clean_text(
+                    output_dict.get("summary")
+                    or f"后台主观能动性控制：{output_dict.get('operation') or '-'} -> {output_dict.get('status') or '-'}",
+                    max_chars=900,
+                )
             if not body:
                 body = "没有可用结果文本"
             state = "成功" if ok else "失败"
@@ -24154,6 +24316,60 @@ try {
                 "role": str(role or "judge"),
                 "background_packet_hint": _short(packet.get("prompt_text"), 320),
             },
+        }
+
+    def background_agency_control(self, args: dict[str, Any] | None = None, *, source: str = "manual_tool") -> dict[str, Any]:
+        args = args if isinstance(args, dict) else {}
+        operation_raw = _clean_text(args.get("operation") or args.get("action") or args.get("mode") or "", max_chars=80).lower()
+        aliases = {
+            "stop": "stop",
+            "pause": "stop",
+            "disable": "stop",
+            "静默": "stop",
+            "停止主观能动性": "stop",
+            "停止后台思考": "stop",
+            "resume": "resume",
+            "start": "resume",
+            "continue": "resume",
+            "enable": "resume",
+            "继续主观能动性": "resume",
+            "恢复后台思考": "resume",
+            "status": "status",
+            "query": "status",
+            "list": "status",
+            "查看": "status",
+        }
+        operation = aliases.get(operation_raw, operation_raw or "status")
+        if operation not in {"stop", "resume", "status"}:
+            operation = "status"
+        status = str(self.state.get("background_agency_control") or "running").strip().lower() or "running"
+        if operation == "stop":
+            status = "stopped"
+            self.state["background_agency_control"] = status
+        elif operation == "resume":
+            status = "running"
+            self.state["background_agency_control"] = status
+        self.state["updated_at_ms"] = _now_ms()
+        self.record_event(
+            {
+                "event": "background_agency_control",
+                "operation": operation,
+                "status": status,
+                "source": source,
+            }
+        )
+        return {
+            "ok": True,
+            "mode": "background_agency_control",
+            "operation": operation,
+            "status": status,
+            "summary": (
+                "后台主观能动性已停止，后续后台 tick 只保持静默待命。"
+                if operation == "stop"
+                else "后台主观能动性已恢复，可继续按后台节律运行和评估。"
+                if operation == "resume"
+                else ("后台主观能动性当前已停止。" if status == "stopped" else "后台主观能动性当前运行中。")
+            ),
         }
 
     def _background_recent_context_active(self, packet: dict[str, Any]) -> bool:

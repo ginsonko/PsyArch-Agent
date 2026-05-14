@@ -6277,16 +6277,20 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     return Boolean(auditRow?.is_duplicate || auditRow?.raw_leak);
   }).length, [messages, replyAuditById]);
   const thoughts = (thoughtPage ? asArray<AnyRecord>(thoughtPage.items) : asArray<AnyRecord>(status?.thoughts)).slice().reverse();
+  const backgroundResult = (background?.last_result || {}) as AnyRecord;
+  const backgroundThoughtResult = (backgroundResult.thought_result || {}) as AnyRecord;
   const liveThoughts = useMemo(
     () => {
       const additions = [
         ...asArray<AnyRecord>(activeJob?.thoughts),
         activeJob?.thought,
+        ...asArray<AnyRecord>(backgroundThoughtResult?.thoughts),
+        (backgroundThoughtResult?.thought && typeof backgroundThoughtResult.thought === 'object' ? backgroundThoughtResult.thought : null),
       ].filter((item): item is AnyRecord => Boolean(item && typeof item === 'object' && String(item.text || '').trim()));
       return mergeLiveRecords(additions, thoughts, 'thought')
         .sort((a, b) => asNumber(b.created_at_ms, 0) - asNumber(a.created_at_ms, 0));
     },
-    [thoughts, activeJob?.thought, activeJob?.thoughts],
+    [thoughts, activeJob?.thought, activeJob?.thoughts, backgroundThoughtResult],
   );
   const liveCloud = asArray<AnyRecord>(livePacket.object_cloud).length
     ? asArray<AnyRecord>(livePacket.object_cloud)
@@ -6666,7 +6670,6 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   }, [agentTab, latestVisibleMessageKey]);
   const displayThoughts = liveThoughts.slice(0, 8);
   const latestThought = displayThoughts[0] || {};
-  const backgroundResult = (background?.last_result || {}) as AnyRecord;
   const backgroundProgress = (backgroundResult.internal_think_progress || {}) as AnyRecord;
   const backgroundStageLabel = String(backgroundResult.stage_label || background?.last_stage_label || '').trim();
   const backgroundStage = String(backgroundResult.stage || background?.last_stage || '').trim();
@@ -6680,7 +6683,10 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     || (background?.running ? (visibleBackgroundStage || 'background_running') : '')
     || (displayThoughts[0]?.decision || 'waiting');
   const backgroundThoughtText = String(backgroundProgress.current_thought_text || backgroundResult.current_thought_text || '').trim();
-  const backgroundWhy = String(backgroundProgress.why || backgroundResult.why || backgroundResult.reason || '').trim();
+  const backgroundLatestThought = asArray<AnyRecord>(backgroundThoughtResult?.thoughts)[0]
+    || ((backgroundThoughtResult?.thought && typeof backgroundThoughtResult.thought === 'object') ? backgroundThoughtResult.thought as AnyRecord : {})
+    || {};
+  const backgroundWhy = String(backgroundProgress.why || backgroundResult.why || backgroundLatestThought.why || backgroundResult.reason || '').trim();
   const activeToolTask = (status?.active_tool_task || {}) as AnyRecord;
   const activeToolTaskLive = Boolean(
     String(activeToolTask.task_id || '').trim()

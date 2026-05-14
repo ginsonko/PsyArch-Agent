@@ -2216,7 +2216,7 @@ def test_second_corrective_reply_can_survive_without_extra_self_review():
 def test_tool_call_first_turn_then_reply_uses_timeline_without_self_review():
     runtime = _fast_runtime_for_flow([], soft=4, hard=6)
     runtime.gateway = _WeatherThenReplyGateway()
-    runtime.tools.run = lambda name, args, source="": {
+    runtime.tools.run = lambda name, args, source="", context=None: {
         "tool": name,
         "ok": True,
         "output": {"summary": "上海今天晴朗，约 23°C", "location": args.get("location")},
@@ -2583,7 +2583,7 @@ def test_same_turn_tool_result_is_in_next_llm_prompt():
         soft=4,
         hard=6,
     )
-    runtime.tools.run = lambda name, args, source="": {
+    runtime.tools.run = lambda name, args, source="", context=None: {
         "tool": name,
         "ok": False,
         "output": {"error": "HTTP Error 502: Bad Gateway", "location": args.get("location")},
@@ -2598,6 +2598,65 @@ def test_same_turn_tool_result_is_in_next_llm_prompt():
     assert "weather:失败" in second_prompt
     assert "上海" in second_prompt
     assert "HTTP Error" in second_prompt or "没有成功返回 上海" in second_prompt
+
+
+def test_internal_prompt_emphasizes_persona_and_background_continuity():
+    runtime = _fast_runtime_for_flow([], soft=4, hard=6)
+    runtime.config.persona_name = "银子系测试人设"
+    runtime.config.persona_text = "说话自然一点，带点熟悉感，不要客服腔，也不要换个比喻重复上一句。"
+    runtime.config.system_note = "强化评估时要像同一个人持续在想。"
+    packet = runtime.build_prompt_packet(reports=[])
+
+    messages = runtime._build_llm_messages(
+        user_text="后台最近没有外界输入，但注意力还挂在刚才那句没说完的话上。",
+        prompt_packet=packet,
+        thought_index=0,
+        thought_runtime={
+            "internal_mode": True,
+            "background_internal_reason": "reinforced_periodic_internal_think",
+            "background_internal_previous_thought": "我还惦记着那句没说完的话，但贸然再开口有点像自顾自续杯。",
+            "background_internal_previous_summary": "上次整体偏收束。",
+            "background_internal_previous_decision": "sleep",
+            "background_internal_previous_eval_reason": "reinforced_periodic_internal_think",
+        },
+    )
+    prompt_text = "\n".join(str(item.get("content") or "") for item in messages)
+
+    assert "当前人设名称：银子系测试人设" in prompt_text
+    assert "不要客服腔" in prompt_text
+    assert "后台强化评估连续性线索" in prompt_text
+    assert "上一次后台 thought" in prompt_text
+    assert "禁止把上一次后台 thought 换几个近义词重新说一遍" in prompt_text
+
+
+def test_internal_turn_persists_last_background_thought_summary():
+    runtime = _fast_runtime_for_flow(
+        [
+            {
+                "thought": "我还惦记着刚才那句没说完的话，但现在继续开口容易像重复刷屏。",
+                "decision": "sleep",
+                "reply_text": "",
+                "tool_calls": [],
+                "confidence": 0.82,
+                "why": "先收束，等新的推进点出现。",
+            }
+        ],
+        soft=4,
+        hard=6,
+    )
+
+    runtime._run_internal_think(
+        packet=runtime.build_prompt_packet(reports=[]),
+        source="agent_background",
+        reason="reinforced_periodic_internal_think",
+        suppress_public_replies=True,
+        run_ap_while_waiting_llm=False,
+    )
+
+    agency = runtime._background_agency_state()
+    assert "没说完的话" in str(agency.get("last_internal_thought_text") or "")
+    assert agency.get("last_internal_decision") == "sleep"
+    assert "reinforced_periodic_internal_think" in str(agency.get("last_internal_summary") or "")
 
 
 def test_same_turn_llm_error_status_is_in_next_llm_prompt():

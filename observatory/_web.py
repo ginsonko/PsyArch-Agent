@@ -32,7 +32,7 @@ from typing import Any
 import traceback
 
 from ._app import ObservatoryApp
-from .agent_runtime import AgentRuntime, _as_dict, _as_int, _now_ms
+from .agent_runtime import AgentRuntime, _as_dict, _as_int, _as_list, _now_ms
 from . import experiment as exp
 from .experiment.runner import apply_experiment_default_app_overrides
 
@@ -1652,7 +1652,17 @@ class ObservatoryWebServer(ThreadingHTTPServer):
             elif isinstance(last_result, dict) and last_result:
                 compact_result = dict(last_result)
                 compact_result["ap_packet"] = _as_dict(last_result.get("ap_packet"))
-                compact_result["thought_result"] = None
+                thought_result = last_result.get("thought_result") if isinstance(last_result.get("thought_result"), dict) else {}
+                if thought_result:
+                    compact_result["thought_result"] = {
+                        "turn": self.agent_runtime._compact_turns([_as_dict(thought_result.get("turn"))])[0] if isinstance(thought_result.get("turn"), dict) else {},
+                        "thoughts": self.agent_runtime._compact_thoughts(_as_list(thought_result.get("thoughts"))),
+                        "replies": self.agent_runtime._compact_messages(_as_list(thought_result.get("replies"))),
+                        "decision": str(_as_dict(thought_result.get("turn")).get("decision") or thought_result.get("decision") or ""),
+                        "adapter_replies": _as_list(thought_result.get("adapter_replies"))[:8],
+                    }
+                else:
+                    compact_result["thought_result"] = {}
                 compact_result["recent_reports"] = []
                 state["last_result"] = compact_result
             foreground_pending = self._agent_foreground_is_pending()
@@ -1677,7 +1687,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 if not current_stage or current_stage == "stopping":
                     merged_result["stage"] = "background_running"
                 if not str(merged_result.get("stage_label") or "").strip() or current_stage == "stopping":
-                    merged_result["stage_label"] = "??????????"
+                    merged_result["stage_label"] = "后台主观能动性运行中"
                 previous_tick_counter = _as_int(_as_dict(last_result.get("ap_packet")).get("tick_counter"), 0)
                 if (
                     current_stage.startswith("background_paused_")
@@ -1686,7 +1696,7 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 ):
                     merged_result["stage"] = "background_running"
                     merged_result["reason"] = "background_running_with_live_tick_progress"
-                    merged_result["stage_label"] = "??????????"
+                    merged_result["stage_label"] = "后台主观能动性运行中"
                 state["last_result"] = merged_result
         return state
 
@@ -1702,14 +1712,14 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                     "stopped_at_ms": 0,
                     "last_step_at_ms": 0,
                     "last_stage": "background_starting",
-                    "last_stage_label": "??????????",
+                    "last_stage_label": "后台正在启动",
                     "last_result": {
                         "ok": True,
                         "mode": str(getattr(self.agent_runtime.config, "sleep_mode", "full_silent") or "full_silent"),
                         "triggered": False,
                         "reason": "background_starting",
                         "stage": "background_starting",
-                        "stage_label": "??????????",
+                        "stage_label": "后台正在启动",
                         "latency_ms": 0,
                         "updated_at_ms": int(time.time() * 1000),
                         "ap_packet": _as_dict(self.agent_runtime.status_compact_cached().get("ap_packet")),
@@ -2099,6 +2109,10 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 except Exception:
                     return False
 
+            runtime_state = getattr(self.agent_runtime, "state", None)
+            if not isinstance(runtime_state, dict):
+                runtime_state = {}
+
             def background_should_abort() -> bool:
                 return background_stop_requested() or foreground_pending()
 
@@ -2106,7 +2120,12 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 return self._agent_foreground_is_pending()
 
             def paused_result(reason: str) -> dict[str, Any]:
-                stage_label = "后台已收到停止信号" if "stop_requested" in reason else "后台让路给前台输入"
+                if "stop_requested" in reason:
+                    stage_label = "后台已收到停止信号"
+                elif reason == "background_paused_by_llm_control":
+                    stage_label = "后台主观能动性已被想法关闭"
+                else:
+                    stage_label = "后台让路给前台输入"
                 result = {
                     "ok": True,
                     "mode": str(getattr(self.agent_runtime.config, "sleep_mode", "full_silent") or "full_silent"),
@@ -2128,6 +2147,8 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 return result
 
             started_ms = int(time.time() * 1000)
+            if str(runtime_state.get("background_agency_control") or "running").strip().lower() == "stopped":
+                return paused_result("background_paused_by_llm_control")
             if background_stop_requested():
                 return paused_result("background_stop_requested")
             if foreground_pending():
@@ -2212,31 +2233,62 @@ class ObservatoryWebServer(ThreadingHTTPServer):
                 drive = self.agent_runtime._estimate_wake_drive(packet)
                 thought_result = bridge.get("internal_think_result") if isinstance(bridge.get("internal_think_result"), dict) else None
                 triggered = bool(thought_result)
+                background_target_builder = getattr(self.agent_runtime, "_background_default_reply_context", None)
+                if callable(background_target_builder):
+                    try:
+                        background_target = _as_dict(background_target_builder())
+                    except Exception:
+                        background_target = {}
+                else:
+                    background_target = {}
                 if should_reinforced_eval:
-                    teacher_gate = self.agent_runtime._teacher_gate_should_wake(packet=packet, drive=drive, mode=mode)
-                    eval_reason = "reinforced_periodic_teacher_gate"
+                    teacher_gate = dict(self.agent_runtime._teacher_gate_should_wake(packet=packet, drive=drive, mode=mode) or {})
+                    teacher_gate["periodic_eval_due"] = True
+                    teacher_gate["trigger_policy"] = "observability_only"
+                    eval_reason = "reinforced_periodic_internal_think"
                     if background_stop_requested():
                         return paused_result("background_stop_requested_after_gate")
                     if foreground_pending():
                         return paused_result("background_paused_after_gate_for_foreground_turn")
-                    if bool(teacher_gate.get("should_wake")) and float(teacher_gate.get("confidence", 0.0) or 0.0) >= float(getattr(self.agent_runtime.config, "agency_teacher_gate_confidence", 0.62) or 0.62):
-                        thought_result = self.agent_runtime._run_internal_think(
-                            packet=packet,
-                            source="agent_background",
-                            reason=str(teacher_gate.get("reason") or eval_reason),
-                            progress=self._background_internal_think_progress,
-                            should_stop=background_should_abort,
-                        )
-                        triggered = True
-                        eval_reason = "reinforced_periodic_teacher_gate_allow"
-                    else:
-                        eval_reason = "reinforced_periodic_teacher_gate_reject"
+                    thought_result = self.agent_runtime._run_internal_think(
+                        packet=packet,
+                        source="agent_background",
+                        reason=eval_reason,
+                        progress=self._background_internal_think_progress,
+                        should_stop=background_should_abort,
+                        suppress_public_replies=False,
+                        reply_target=_as_dict(background_target.get("reply_target")),
+                        adapter_event=_as_dict(background_target.get("adapter_event")),
+                        adapter_label=str(background_target.get("adapter_label") or ""),
+                        run_ap_while_waiting_llm=None,
+                    )
+                    triggered = bool(thought_result)
                 elif mode == "reinforced_agency":
                     eval_reason = "reinforced_interval_wait"
                 elif triggered:
                     eval_reason = "ap_agency_action_teacher_gate_allow"
                 elif mode == "ap_agency":
                     eval_reason = "ap_agency_wait_action_trigger"
+                if isinstance(thought_result, dict) and thought_result:
+                    turn_row = _as_dict(thought_result.get("turn"))
+                    final_decision = str(turn_row.get("decision") or thought_result.get("decision") or "").strip().lower()
+                    latest_thought = _as_dict((_as_list(thought_result.get("thoughts")) or [{}])[-1])
+                    if final_decision == "tool_call":
+                        eval_reason = "background_internal_think_tool_call"
+                    elif final_decision == "reply":
+                        eval_reason = "background_internal_think_reply"
+                    elif final_decision in {"sleep", "silent"}:
+                        eval_reason = f"background_internal_think_{final_decision}"
+                    stop_requested_by_llm = False
+                    for tool_result in _as_list(latest_thought.get("tool_results")):
+                        output = _as_dict(_as_dict(tool_result).get("output"))
+                        if _canonical_tool_name(_as_dict(tool_result).get("tool")) == "background_agency_control" and str(output.get("status") or "").lower() == "stopped":
+                            stop_requested_by_llm = True
+                            break
+                    if stop_requested_by_llm:
+                        if isinstance(runtime_state, dict):
+                            runtime_state["background_agency_control"] = "stopped"
+                        eval_reason = "background_internal_think_stop_requested"
                 self.agent_runtime._remember_snapshot(packet)
                 should_save_background = False
                 save_reason = "interval_wait"

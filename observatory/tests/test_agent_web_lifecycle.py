@@ -801,6 +801,53 @@ def test_background_step_runs_idle_memory_maintenance_when_quiet(monkeypatch):
     assert server.agent_background_state["last_idle_memory_maintenance_wall_ms"] == 7
 
 
+def test_background_status_keeps_compact_thought_result(monkeypatch):
+    server = _server_without_init()
+    monkeypatch.setattr("observatory._web.apply_experiment_default_app_overrides", lambda app, source: {})
+    monkeypatch.setattr(server, "app_lock_status", lambda: {"locked": False})
+    monkeypatch.setattr(
+        server.agent_runtime,
+        "status_compact_cached",
+        lambda: {"ap_packet": {"tick_counter": 3, "generated_at_ms": 123}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server.agent_runtime,
+        "_compact_thoughts",
+        lambda rows: [{"id": "thought_1", "text": "后台想法", "why": "测试", "created_at_ms": 123}] if rows else [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server.agent_runtime,
+        "_compact_messages",
+        lambda rows: [{"id": "reply_1", "text": "后台回复", "created_at_ms": 124}] if rows else [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server.agent_runtime,
+        "_compact_turns",
+        lambda rows: [{"id": "turn_1", "decision": "reply", "created_at_ms": 125}] if rows else [],
+        raising=False,
+    )
+    server.agent_background_state["last_result"] = {
+        "stage": "background_internal_think",
+        "stage_label": "后台内部思考已触发",
+        "ap_packet": {"tick_counter": 2},
+        "thought_result": {
+            "turn": {"id": "turn_1", "decision": "reply"},
+            "thoughts": [{"id": "thought_1", "text": "后台想法"}],
+            "replies": [{"id": "reply_1", "text": "后台回复"}],
+        },
+    }
+
+    status = server.agent_background_status()
+
+    thought_result = status["last_result"]["thought_result"]
+    assert thought_result["decision"] == "reply"
+    assert thought_result["thoughts"][0]["text"] == "后台想法"
+    assert thought_result["replies"][0]["text"] == "后台回复"
+
+
 def test_background_step_skips_idle_memory_maintenance_when_foreground_pending(monkeypatch):
     server = _server_without_init()
     monkeypatch.setattr("observatory._web.apply_experiment_default_app_overrides", lambda app, source: {})
@@ -810,6 +857,46 @@ def test_background_step_skips_idle_memory_maintenance_when_foreground_pending(m
 
     assert result["reason"] == "background_paused_for_foreground_turn"
     assert not server.agent_runtime.idle_memory_calls
+
+
+def test_reinforced_background_step_always_runs_internal_think_on_interval(monkeypatch):
+    server = _server_without_init()
+    server.agent_runtime.config.sleep_mode = "reinforced_agency"
+    server.agent_runtime.config.reinforced_agency_interval_ticks = 5
+    server.agent_background_state["step_count"] = 4
+    monkeypatch.setattr("observatory._web.apply_experiment_default_app_overrides", lambda app, source: {})
+
+    seen: dict[str, object] = {}
+
+    def fake_gate(*, packet, drive, mode):
+        return {"should_wake": False, "confidence": 0.01, "reason": "teacher_gate_reject_for_test", "mode": mode}
+
+    def fake_internal_think(**kwargs):
+        seen["kwargs"] = dict(kwargs)
+        progress = kwargs.get("progress")
+        if callable(progress):
+            progress({"stage": "waiting_llm", "stage_label": "后台等待 LLM", "decision": "sleep", "llm_wait_tick_count": 2})
+        return {
+            "turn": {"id": "turn_bg_1", "decision": "sleep"},
+            "thoughts": [{"id": "thought_bg_1", "text": "30 tick 到点后的总结"}],
+            "replies": [],
+            "decision": "sleep",
+        }
+
+    monkeypatch.setattr(server.agent_runtime, "_teacher_gate_should_wake", fake_gate, raising=False)
+    monkeypatch.setattr(server.agent_runtime, "_run_internal_think", fake_internal_think, raising=False)
+
+    result = server._agent_background_step()
+
+    assert result["ok"] is True
+    assert result["triggered"] is True
+    assert result["reason"] == "background_internal_think_sleep"
+    assert result["thought_result"]["thoughts"][0]["text"] == "30 tick 到点后的总结"
+    assert result["teacher_gate"]["reason"] == "teacher_gate_reject_for_test"
+    assert result["teacher_gate"]["periodic_eval_due"] is True
+    assert result["teacher_gate"]["trigger_policy"] == "observability_only"
+    assert seen["kwargs"]["reason"] == "reinforced_periodic_internal_think"
+    assert seen["kwargs"]["run_ap_while_waiting_llm"] is None
 
 
 def test_stop_requested_job_keeps_stable_stopping_stage():
