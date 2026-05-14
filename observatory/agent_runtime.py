@@ -214,6 +214,12 @@ def _library_assets_dir() -> Path:
     return path
 
 
+def _library_reviews_dir() -> Path:
+    path = _library_dir() / "reviews"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _library_catalog_path() -> Path:
     return _library_dir() / "agent_library.json"
 
@@ -469,6 +475,8 @@ _MAX_JSONL_ARCHIVES = 3
 _MAX_JSON_ROW_CHARS = 24_000
 _MAX_STATE_BYTES = 12 * 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
+_MAX_ASSET_JSON_BYTES = 256 * 1024 * 1024
+_CRITICAL_JSON_BACKUP_LIMIT = 12
 _PROMPT_BUDGET_WARN_TOKENS = 100_000
 _PROMPT_BUDGET_FAIL_TOKENS = 200_000
 _DATA_URL_RE = re.compile(r"data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s_-]{256,})")
@@ -521,6 +529,51 @@ def _safe_write_bytes(path: Path, data: bytes) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
+
+
+def _backup_path_for(path: Path, *, suffix: str = ".bak") -> Path:
+    return path.with_name(path.name + suffix)
+
+
+def _timestamped_backup_path_for(path: Path) -> Path:
+    timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    return path.with_name(f"{path.name}.{timestamp}.bak")
+
+
+def _critical_json_backups(path: Path) -> list[Path]:
+    rows: list[Path] = []
+    try:
+        parent = path.parent
+        if parent.exists():
+            rows.extend(parent.glob(f"{path.name}*.bak"))
+    except Exception:
+        pass
+    rows = [item for item in rows if item.exists() and item.is_file()]
+    rows.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return rows
+
+
+def _prune_critical_json_backups(path: Path, *, limit: int = _CRITICAL_JSON_BACKUP_LIMIT) -> None:
+    backups = _critical_json_backups(path)
+    for old in backups[max(0, int(limit)) :]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _backup_existing_file(path: Path, *, timestamped: bool = False, min_bytes: int = 2) -> Path | None:
+    try:
+        if not path.exists() or not path.is_file() or path.stat().st_size < max(0, int(min_bytes)):
+            return None
+        backup = _timestamped_backup_path_for(path) if timestamped else _backup_path_for(path)
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup)
+        if timestamped:
+            _prune_critical_json_backups(path)
+        return backup
+    except Exception:
+        return None
 
 
 def _rotate_jsonl_if_needed(path: Path, *, max_bytes: int = _MAX_JSONL_BYTES, max_archives: int = _MAX_JSONL_ARCHIVES) -> None:
@@ -984,10 +1037,23 @@ def _safe_write_json(path: Path, payload: Any) -> None:
     _safe_write_bytes(path, data)
 
 
+def _safe_write_asset_json(path: Path, payload: Any, *, compact: bool = False, backup: bool = True) -> None:
+    data = _json_bytes(payload, compact=compact)
+    if len(data) > _MAX_ASSET_JSON_BYTES:
+        raise ValueError(f"asset json too large: {len(data)} bytes > {_MAX_ASSET_JSON_BYTES}")
+    if backup:
+        _backup_existing_file(path, timestamped=False)
+        if len(data) > _MAX_SNAPSHOT_BYTES:
+            _backup_existing_file(path, timestamped=True)
+    _safe_write_bytes(path, data)
+
+
 def _safe_write_json_compact(path: Path, payload: Any) -> None:
     safe_payload = _redact_large_inline_data(payload)
     data = _json_bytes(safe_payload, compact=True)
     if len(data) > _MAX_STATE_BYTES:
+        _backup_existing_file(path, timestamped=False)
+        _backup_existing_file(path, timestamped=True)
         safe_payload = {
             "session_id": _as_dict(payload).get("session_id") if isinstance(payload, dict) else "",
             "created_at_ms": _as_dict(payload).get("created_at_ms") if isinstance(payload, dict) else _now_ms(),
@@ -7408,7 +7474,7 @@ class AgentRuntime:
     def _timeline_save_index(self, payload: dict[str, Any]) -> None:
         data = payload if isinstance(payload, dict) else {}
         data["updated_at_ms"] = _now_ms()
-        _safe_write_json(_timeline_index_path(), data)
+        _safe_write_asset_json(_timeline_index_path(), data, compact=False, backup=True)
 
     def _timeline_shard_path(self, shard: dict[str, Any]) -> Path:
         shard = shard if isinstance(shard, dict) else {}
@@ -7426,7 +7492,7 @@ class AgentRuntime:
         return raw
 
     def _timeline_save_shard(self, shard: dict[str, Any], payload: dict[str, Any]) -> None:
-        _safe_write_json(self._timeline_shard_path(shard), payload)
+        _safe_write_asset_json(self._timeline_shard_path(shard), payload, compact=False, backup=True)
 
     def _timeline_new_shard(self, *, prev_id: str = "") -> dict[str, Any]:
         now = _now_ms()
@@ -9126,12 +9192,301 @@ class AgentRuntime:
             "path": str(_diary_path()),
         }
 
+    def _library_review_path(self, book_id: Any, review_id: Any) -> Path:
+        safe_book_id = _slug_id(book_id or "book", fallback="book")
+        safe_review_id = _slug_id(review_id or f"review_{_now_ms()}", fallback=f"review_{_now_ms()}")
+        return _library_reviews_dir() / safe_book_id / f"{safe_review_id}.json"
+
+    def _library_review_relative_path(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(_library_dir().resolve()).as_posix()
+        except Exception:
+            return str(path)
+
+    def _resolve_library_relative_path(self, value: Any) -> Path:
+        raw = str(value or "").strip()
+        if not raw:
+            return Path()
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        return _library_dir() / raw.replace("/", "\\")
+
+    def _read_json_file_strict(self, path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    def _catalog_book_count(self, payload: Any) -> int:
+        if isinstance(payload, list):
+            return len([row for row in payload if isinstance(row, dict)])
+        if isinstance(payload, dict):
+            return len([row for row in _as_list(payload.get("books")) if isinstance(row, dict)])
+        return 0
+
+    def _quarantine_bad_library_catalog(self, path: Path, *, reason: str) -> None:
+        try:
+            if not path.exists() or not path.is_file():
+                return
+            timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+            bad_path = path.with_name(f"{path.name}.{timestamp}.{reason}.bad")
+            shutil.copy2(path, bad_path)
+        except Exception:
+            pass
+
+    def _read_library_catalog_raw(self) -> tuple[Any, str]:
+        path = _library_catalog_path()
+        default = {"version": 1, "books": []}
+        if not path.exists():
+            return copy.deepcopy(default), ""
+        primary_error = ""
+        try:
+            raw = self._read_json_file_strict(path)
+            if not (isinstance(raw, dict) and bool(raw.get("truncated"))):
+                return raw if raw is not None else copy.deepcopy(default), ""
+            primary_error = "catalog_truncated"
+        except Exception as exc:
+            primary_error = str(exc)
+        self._quarantine_bad_library_catalog(path, reason="unreadable")
+        for backup in _critical_json_backups(path):
+            try:
+                raw = self._read_json_file_strict(backup)
+                if isinstance(raw, dict) and bool(raw.get("truncated")):
+                    continue
+                if self._catalog_book_count(raw) <= 0:
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, path)
+                try:
+                    self.record_system_log(
+                        {
+                            "event": "library_catalog_recovered_from_backup",
+                            "task": "图书馆保护",
+                            "stage": "load_catalog",
+                            "summary": "图书馆目录读取失败，已从备份恢复。",
+                            "detail": f"backup={backup}; error={primary_error}",
+                            "progress": 100,
+                        }
+                    )
+                except Exception:
+                    pass
+                return raw, str(backup)
+            except Exception:
+                continue
+        try:
+            self.record_system_log(
+                {
+                    "event": "library_catalog_read_failed",
+                    "level": "error",
+                    "task": "图书馆保护",
+                    "stage": "load_catalog",
+                    "summary": "图书馆目录读取失败，且没有找到可用备份；将尝试从残留正文重建。",
+                    "error": primary_error,
+                }
+            )
+        except Exception:
+            pass
+        return copy.deepcopy(default), ""
+
+    def _library_has_orphan_book_files(self) -> bool:
+        try:
+            return any(path.is_file() and path.suffix.lower() == ".txt" for path in _library_books_dir().glob("*.txt"))
+        except Exception:
+            return False
+
+    def _library_has_existing_user_data(self) -> bool:
+        path = _library_catalog_path()
+        try:
+            if path.exists() and path.is_file():
+                raw = self._read_json_file_strict(path)
+                if self._catalog_book_count(raw) > 0:
+                    return True
+        except Exception:
+            pass
+        for backup in _critical_json_backups(path):
+            try:
+                if self._catalog_book_count(self._read_json_file_strict(backup)) > 0:
+                    return True
+            except Exception:
+                continue
+        if self._library_has_orphan_book_files():
+            return True
+        try:
+            return any(path.is_file() and path.suffix.lower() == ".json" for path in _library_reviews_dir().rglob("*.json"))
+        except Exception:
+            return False
+
+    def _persist_library_review(self, book_id: Any, review: dict[str, Any]) -> dict[str, Any]:
+        item = review if isinstance(review, dict) else {}
+        review_id = _clean_text(item.get("id") or f"review_{_now_ms()}", max_chars=120) or f"review_{_now_ms()}"
+        path = self._library_review_path(book_id, review_id)
+        full = copy.deepcopy(item)
+        full["id"] = review_id
+        full["book_id"] = str(full.get("book_id") or book_id or "")
+        full.setdefault("created_at_ms", _now_ms())
+        compact_error = ""
+        try:
+            _safe_write_asset_json(path, full, compact=False, backup=True)
+        except Exception as exc:
+            compact_error = _short(exc, 180)
+        summary = _clean_multiline_text(item.get("understanding") or item.get("summary") or item.get("content") or "", max_chars=900)
+        compact = {
+            "id": review_id,
+            "book_id": str(item.get("book_id") or book_id or ""),
+            "book_title": _clean_text(item.get("book_title") or "", max_chars=180),
+            "title": _clean_text(item.get("title") or "", max_chars=180),
+            "range": _as_dict(item.get("range")),
+            "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+            "summary": summary,
+            "understanding": summary,
+            "excerpt": _clean_multiline_text(item.get("excerpt") or "", max_chars=800),
+            "ap_tick_count": _as_int(item.get("ap_tick_count"), 0),
+            "chunk_count": _as_int(item.get("chunk_count"), 0),
+            "review_tick_target": _as_int(item.get("review_tick_target"), 0),
+            "llm_generated": bool(item.get("llm_generated")),
+            "model": _clean_text(item.get("model") or "", max_chars=160),
+            "review_path": self._library_review_relative_path(path),
+        }
+        if compact_error:
+            compact["warnings"] = [f"段落理解正文外置保存失败：{compact_error}"]
+        return compact
+
+    def _compact_library_review_for_catalog(self, book_id: Any, review: dict[str, Any]) -> dict[str, Any]:
+        item = review if isinstance(review, dict) else {}
+        review_path = item.get("review_path") or item.get("path")
+        body = str(item.get("understanding") or item.get("summary") or item.get("content") or "")
+        if not review_path and len(body) > 900:
+            return self._persist_library_review(book_id, item)
+        summary = _clean_multiline_text(body, max_chars=900)
+        return {
+            "id": _clean_text(item.get("id") or f"review_{_now_ms()}", max_chars=120) or f"review_{_now_ms()}",
+            "book_id": str(item.get("book_id") or book_id or ""),
+            "book_title": _clean_text(item.get("book_title") or "", max_chars=180),
+            "title": _clean_text(item.get("title") or "", max_chars=180),
+            "range": _as_dict(item.get("range")),
+            "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
+            "summary": summary,
+            "understanding": summary,
+            "excerpt": _clean_multiline_text(item.get("excerpt") or "", max_chars=800),
+            "ap_tick_count": _as_int(item.get("ap_tick_count"), 0),
+            "chunk_count": _as_int(item.get("chunk_count"), 0),
+            "review_tick_target": _as_int(item.get("review_tick_target"), 0),
+            "llm_generated": bool(item.get("llm_generated")),
+            "model": _clean_text(item.get("model") or "", max_chars=160),
+            **({"review_path": str(review_path)} if review_path else {}),
+        }
+
+    def _hydrate_library_review(self, review: dict[str, Any]) -> dict[str, Any]:
+        item = copy.deepcopy(review if isinstance(review, dict) else {})
+        review_path = item.get("review_path") or item.get("path")
+        if not review_path:
+            return item
+        path = self._resolve_library_relative_path(review_path)
+        try:
+            if path.exists() and path.is_file():
+                raw = self._read_json_file_strict(path)
+                if isinstance(raw, dict):
+                    merged = {**item, **raw}
+                    merged["review_path"] = str(review_path)
+                    return merged
+        except Exception as exc:
+            warnings = [str(row) for row in _as_list(item.get("warnings")) if str(row or "").strip()]
+            warnings.append(f"段落理解正文文件读取失败：{_short(exc, 180)}")
+            item["warnings"] = warnings[-8:]
+        return item
+
+    def _recover_library_catalog_from_backups_or_files(self, *, reason: str = "") -> dict[str, Any]:
+        books: list[dict[str, Any]] = []
+        now = _now_ms()
+        try:
+            for text_path in sorted(_library_books_dir().glob("*.txt"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
+                if not text_path.is_file():
+                    continue
+                try:
+                    stat = text_path.stat()
+                    text_chars = len(text_path.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    stat = None
+                    text_chars = 0
+                book_id = _slug_id(text_path.stem, fallback=f"book_{len(books) + 1}")
+                review_rows = []
+                review_dir = _library_reviews_dir() / book_id
+                if review_dir.exists():
+                    for review_file in sorted(review_dir.glob("*.json"), key=lambda item: item.stat().st_mtime if item.exists() else 0):
+                        try:
+                            raw_review = self._read_json_file_strict(review_file)
+                        except Exception:
+                            continue
+                        if isinstance(raw_review, dict):
+                            raw_review.setdefault("review_path", self._library_review_relative_path(review_file))
+                            review_rows.append(self._persist_library_review(book_id, raw_review))
+                books.append(
+                    {
+                        "id": book_id,
+                        "title": text_path.stem,
+                        "summary": "",
+                        "source_path": "",
+                        "source_type": "txt",
+                        "text_path": str(text_path),
+                        "asset_dir": "",
+                        "text_chars": text_chars,
+                        "cursor": 0,
+                        "read_chars": 0,
+                        "read_tick_count": 0,
+                        "last_read_at_ms": 0,
+                        "status": "ready",
+                        "tags": [],
+                        "warnings": ["由图书馆修复流程从正文文件重建目录。"],
+                        "assets": [],
+                        "reviews": review_rows[-300:],
+                        "created_at_ms": int(stat.st_ctime * 1000) if stat else now,
+                        "updated_at_ms": int(stat.st_mtime * 1000) if stat else now,
+                        "source": f"library_recovery:{reason or 'unknown'}",
+                    }
+                )
+        except Exception as exc:
+            try:
+                self.record_system_log(
+                    {
+                        "event": "library_catalog_rebuild_failed",
+                        "level": "error",
+                        "task": "图书馆保护",
+                        "stage": "rebuild_catalog",
+                        "summary": "尝试从正文文件重建图书馆目录失败。",
+                        "error": str(exc),
+                    }
+                )
+            except Exception:
+                pass
+        payload = {"version": 1, "updated_at_ms": now, "books": books}
+        if books:
+            try:
+                _safe_write_asset_json(_library_catalog_path(), payload, compact=False, backup=True)
+                self.record_system_log(
+                    {
+                        "event": "library_catalog_rebuilt_from_files",
+                        "task": "图书馆保护",
+                        "stage": "rebuild_catalog",
+                        "summary": f"已从残留正文文件重建 {len(books)} 本书的图书馆目录。",
+                        "progress": 100,
+                    }
+                )
+            except Exception:
+                pass
+        return payload
+
     def _load_library_catalog(self) -> dict[str, Any]:
-        raw = _safe_read_json(_library_catalog_path(), {"version": 1, "books": []})
+        raw, recovered_from = self._read_library_catalog_raw()
         if isinstance(raw, list):
             raw = {"version": 1, "books": raw}
         if not isinstance(raw, dict):
             raw = {"version": 1, "books": []}
+        if bool(raw.get("truncated")):
+            recovered = self._recover_library_catalog_from_backups_or_files(reason="catalog_truncated")
+            if recovered:
+                raw = recovered
+        if not _as_list(raw.get("books")) and self._library_has_orphan_book_files():
+            recovered = self._recover_library_catalog_from_backups_or_files(reason="catalog_empty_or_missing")
+            if recovered and _as_list(recovered.get("books")):
+                raw = recovered
         books: list[dict[str, Any]] = []
         seen: set[str] = set()
         now = _now_ms()
@@ -9176,7 +9531,7 @@ class AgentRuntime:
                 "tags": _optional_string_list(item.get("tags"))[:20],
                 "warnings": warnings[:20],
                 "assets": [row for row in _as_list(item.get("assets"))[:200] if isinstance(row, dict)],
-                "reviews": [row for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
+                "reviews": [self._compact_library_review_for_catalog(book_id, row) for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
                 "created_at_ms": created_at,
                 "updated_at_ms": updated_at,
                 "source": _clean_text(item.get("source") or "", max_chars=120),
@@ -9188,16 +9543,20 @@ class AgentRuntime:
                     pass
             books.append(book)
         books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
-        return {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "books": books}
+        result = {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "books": books}
+        if recovered_from:
+            result["recovered_from"] = recovered_from
+        return result
 
-    def _save_library_catalog(self, books: list[dict[str, Any]]) -> None:
+    def _save_library_catalog(self, books: list[dict[str, Any]], *, allow_empty: bool = False) -> None:
         safe_books: list[dict[str, Any]] = []
         for item in books:
             if not isinstance(item, dict):
                 continue
+            book_id = _slug_id(item.get("id") or item.get("title") or f"book_{len(safe_books) + 1}", fallback=f"book_{len(safe_books) + 1}")
             safe_books.append(
                 {
-                    "id": _slug_id(item.get("id") or item.get("title") or f"book_{len(safe_books) + 1}", fallback=f"book_{len(safe_books) + 1}"),
+                    "id": book_id,
                     "title": _clean_text(item.get("title") or "", max_chars=180) or f"book_{len(safe_books) + 1}",
                     "summary": _clean_multiline_text(item.get("summary") or "", max_chars=2000),
                     "source_path": _clean_text(item.get("source_path") or "", max_chars=800),
@@ -9213,7 +9572,7 @@ class AgentRuntime:
                     "tags": _optional_string_list(item.get("tags"))[:20],
                     "warnings": [str(row) for row in _as_list(item.get("warnings"))[:20] if str(row or "").strip()],
                     "assets": [row for row in _as_list(item.get("assets"))[:200] if isinstance(row, dict)],
-                    "reviews": [row for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
+                    "reviews": [self._compact_library_review_for_catalog(book_id, row) for row in _as_list(item.get("reviews"))[-300:] if isinstance(row, dict)],
                     "created_at_ms": _as_int(item.get("created_at_ms"), _now_ms()),
                     "updated_at_ms": _as_int(item.get("updated_at_ms"), _now_ms()),
                     "source": _clean_text(item.get("source") or "", max_chars=120),
@@ -9228,10 +9587,21 @@ class AgentRuntime:
                     path.unlink()
             except Exception:
                 pass
-        _safe_write_json(_library_catalog_path(), {"version": 1, "updated_at_ms": _now_ms(), "books": safe_books[:limit]})
+        if not safe_books and not allow_empty and self._library_has_existing_user_data():
+            self.record_system_log(
+                {
+                    "event": "library_catalog_empty_save_blocked",
+                    "level": "error",
+                    "task": "图书馆保护",
+                    "stage": "save_catalog",
+                    "summary": "阻止了一次把非空图书馆保存成空目录的操作；请运行图书馆修复工具检查残留数据。",
+                }
+            )
+            return
+        _safe_write_asset_json(_library_catalog_path(), {"version": 1, "updated_at_ms": _now_ms(), "books": safe_books[:limit]}, compact=False, backup=True)
 
     def _public_library_review(self, review: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
-        item = review if isinstance(review, dict) else {}
+        item = self._hydrate_library_review(review) if detail else (review if isinstance(review, dict) else {})
         row = {
             "id": str(item.get("id") or ""),
             "title": _clean_text(item.get("title") or "", max_chars=180),
@@ -9244,7 +9614,7 @@ class AgentRuntime:
             "llm_generated": bool(item.get("llm_generated")),
         }
         if detail:
-            row["summary"] = _clean_multiline_text(item.get("understanding") or item.get("summary") or item.get("content") or "", max_chars=60000)
+            row["summary"] = _clean_multiline_text(item.get("understanding") or item.get("summary") or item.get("content") or "", max_chars=1_000_000)
             row["understanding"] = row["summary"]
             row["excerpt"] = _clean_multiline_text(item.get("excerpt") or "", max_chars=4000)
             row["ap_tick_count"] = _as_int(item.get("ap_tick_count"), 0)
@@ -11000,7 +11370,7 @@ try {
                                 path.unlink()
                         except Exception:
                             pass
-            self._save_library_catalog(kept)
+            self._save_library_catalog(kept, allow_empty=True)
         self.record_event({"event": "library_books_deleted", "ids": ids, "removed_count": len(removed)})
         result = self.library_public(detail=False)
         result.update({"removed_books": [self._public_library_book(row, detail=False) for row in removed], "summary": f"已删除 {len(removed)} 本书。"})
@@ -11127,10 +11497,11 @@ try {
         if old_payload is None:
             if incoming.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
+                _backup_existing_file(target, timestamped=True)
                 shutil.copy2(incoming, target)
             return {"ok": True, "mode": "copied_json", "target": str(target)}
         merged = _merge_runtime_payload(old_payload, new_payload, strategy=strategy)
-        _safe_write_json(target, merged)
+        _safe_write_asset_json(target, merged, compact=False, backup=True)
         return {"ok": True, "mode": "merged_json", "target": str(target), "strategy": _runtime_merge_strategy(strategy)}
 
     def _import_package_files(self, root: Path, *, strategy: str, include_hdb: bool, include_state: bool, include_agent_data: bool, include_library: bool, task_id: str = "") -> list[dict[str, Any]]:
@@ -11158,7 +11529,7 @@ try {
             incoming_catalog = root / "library" / "agent_library.json"
             if incoming_catalog.exists():
                 ops.append(self._merge_json_file_from_package(_library_catalog_path(), incoming_catalog, strategy=strategy))
-            for subdir in ("books", "files", "assets"):
+            for subdir in ("books", "files", "assets", "reviews"):
                 incoming_dir = root / "library" / subdir
                 if incoming_dir.exists():
                     copied = _safe_copytree_contents(incoming_dir, _library_dir() / subdir, ignore_patterns=("*.jsonl", "*.gz"))

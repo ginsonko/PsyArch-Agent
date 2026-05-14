@@ -28,6 +28,32 @@ function Is-UnderRoot {
     $targetFull.StartsWith($rootFull + [System.IO.Path]::AltDirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Is-ProtectedUserData {
+  param(
+    [string]$RootPath,
+    [string]$TargetPath
+  )
+  $protected = @(
+    "observatory\outputs\agent\library",
+    "observatory\outputs\agent\timeline_memory",
+    "observatory\outputs\agent\runtime_packages",
+    "observatory\outputs\agent\agent_config.json",
+    "observatory\outputs\agent\agent_state.json",
+    "observatory\outputs\agent\agent_diary.json",
+    "observatory\outputs\agent\agent_scheduled_tasks.json",
+    "observatory\outputs\agent\agent_user_progress.json",
+    "observatory\outputs\agent\agent_persona_history.json",
+    "hdb\data"
+  )
+  foreach ($rel in $protected) {
+    $protectedPath = Join-Path $RootPath $rel
+    if (Is-UnderRoot $protectedPath $TargetPath) {
+      return $true
+    }
+  }
+  return $false
+}
+
 function Add-DirectoryChildren {
   param(
     [System.Collections.Generic.List[object]]$List,
@@ -186,7 +212,7 @@ Add-FileByPattern $targets $outputsPath "tmp_*.py" $cutoff
 $unique = $targets |
   Where-Object { $_ -ne $null } |
   Sort-Object FullName -Unique |
-  Where-Object { Is-UnderRoot $rootPath $_.FullName }
+  Where-Object { (Is-UnderRoot $rootPath $_.FullName) -and (-not (Is-ProtectedUserData $rootPath $_.FullName)) }
 
 $totalBytes = 0L
 $fileCount = 0
@@ -214,7 +240,7 @@ Write-Host ("Target dirs: {0}" -f $dirCount)
 Write-Host ("Target files: {0}" -f $fileCount)
 Write-Host ("Direct file bytes: {0}" -f $totalBytes)
 Write-Host "Directory sizes are not recursively counted, to keep preview fast."
-Write-Host "Preserved: config files, HDB data, latest.json/latest.html, stickers, generated images, and incoming attachments."
+Write-Host "Preserved: config files, agent state, HDB data, library/books/reviews, timeline memory, runtime packages, stickers, generated images, and incoming attachments."
 Write-Host ""
 
 $unique | Select-Object -First 120 | ForEach-Object {

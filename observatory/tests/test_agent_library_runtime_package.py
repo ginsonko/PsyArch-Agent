@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import zipfile
+import json
 from pathlib import Path
 
 from observatory import agent_runtime as ar
@@ -294,6 +295,119 @@ def test_library_file_picker_falls_back_and_sets_title(tmp_path, monkeypatch):
     assert result["path"] == str(selected)
     assert result["title"] == "用户选择的书"
     assert any("PowerShell 文件选择框失败" in item for item in result["warnings"])
+
+
+def test_library_catalog_does_not_truncate_large_reviews(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    large_review = "这一段理解很长。" * 120000
+    book = {
+        "id": "big_book",
+        "title": "大段落理解",
+        "text_path": str(tmp_path / "library" / "books" / "big_book.txt"),
+        "text_chars": 10,
+        "reviews": [
+            {
+                "id": "review_big",
+                "book_id": "big_book",
+                "title": "大段落理解 0-10",
+                "range": {"start": 0, "end": 10},
+                "summary": large_review,
+                "understanding": large_review,
+                "created_at_ms": 1000,
+            }
+        ],
+        "created_at_ms": 1000,
+        "updated_at_ms": 1000,
+    }
+    Path(book["text_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(book["text_path"]).write_text("测试正文。", encoding="utf-8")
+
+    runtime._save_library_catalog([book])
+    raw = ar._library_catalog_path().read_text(encoding="utf-8")
+    assert '"truncated"' not in raw
+    assert len(raw) < 1000000
+
+    loaded = runtime._load_library_catalog()
+    loaded_book = loaded["books"][0]
+    assert loaded_book["id"] == "big_book"
+    assert len(loaded_book["reviews"][0]["understanding"]) < 1200
+    detailed = runtime._public_library_review(loaded_book["reviews"][0], detail=True)
+    assert detailed["understanding"] == large_review
+    assert Path(tmp_path / "library" / "reviews" / "big_book" / "review_big.json").exists()
+
+
+def test_library_catalog_recovers_from_truncated_primary_backup(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    imported = runtime.import_book({"title": "可恢复小书", "text": "第一句。第二句。"}, source="test")
+    book_id = imported["book"]["id"]
+    catalog_path = ar._library_catalog_path()
+    backup_path = catalog_path.with_name(catalog_path.name + ".bak")
+    assert backup_path.exists()
+
+    catalog_path.write_text('{"truncated":true,"reason":"json_payload_too_large","preview":{"books":[]}}', encoding="utf-8")
+    loaded = runtime._load_library_catalog()
+
+    assert loaded["books"]
+    assert loaded["books"][0]["id"] == book_id
+    assert "truncated" not in catalog_path.read_text(encoding="utf-8")
+
+
+def test_library_catalog_rebuilds_from_orphan_text_file(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    text_path = tmp_path / "library" / "books" / "orphan_book.txt"
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text("孤儿正文仍然存在。", encoding="utf-8")
+    ar._library_catalog_path().write_text('{"version":1,"books":[]}', encoding="utf-8")
+
+    loaded = runtime._load_library_catalog()
+
+    assert loaded["books"]
+    assert loaded["books"][0]["id"] == "orphan_book"
+    assert "由图书馆修复流程" in loaded["books"][0]["warnings"][0]
+
+
+def test_library_catalog_rebuilds_orphan_review_files(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    text_path = tmp_path / "library" / "books" / "orphan_book.txt"
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text("孤儿正文仍然存在。", encoding="utf-8")
+    review_dir = tmp_path / "library" / "reviews" / "orphan_book"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    review_text = "这是从外置段落理解文件恢复出来的完整理解。"
+    (review_dir / "review_1.json").write_text(
+        json.dumps(
+            {
+                "id": "review_1",
+                "book_id": "orphan_book",
+                "title": "孤儿书 0-10",
+                "summary": review_text,
+                "understanding": review_text,
+                "created_at_ms": 1000,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    ar._library_catalog_path().write_text('{"version":1,"books":[]}', encoding="utf-8")
+
+    loaded = runtime._load_library_catalog()
+    review = loaded["books"][0]["reviews"][0]
+    detail = runtime._public_library_review(review, detail=True)
+
+    assert review["id"] == "review_1"
+    assert detail["understanding"] == review_text
+
+
+def test_library_blocks_unexpected_empty_overwrite(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    imported = runtime.import_book({"title": "不能误清空", "text": "正文。"}, source="test")
+    book_id = imported["book"]["id"]
+
+    runtime._save_library_catalog([])
+    listed = runtime.browse_library({})
+
+    assert listed["total"] == 1
+    assert listed["books"][0]["id"] == book_id
 
 
 def test_runtime_package_export_redacts_config_and_safe_import(tmp_path, monkeypatch):
