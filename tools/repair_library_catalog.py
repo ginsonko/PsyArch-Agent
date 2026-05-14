@@ -3,8 +3,20 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import time
 from pathlib import Path
+
+
+def _ensure_repo_root_on_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return repo_root
+
+
+REPO_ROOT = _ensure_repo_root_on_path()
 
 from observatory import agent_runtime as ar
 
@@ -53,6 +65,89 @@ def normalize_catalog(payload) -> dict:
     payload["version"] = payload.get("version") or 1
     payload["updated_at_ms"] = int(time.time() * 1000)
     return payload
+
+
+def looks_like_default_book_title(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    return text.startswith("book_") or text in {"book", "untitled", "unknown", "txt"}
+
+
+def choose_best_book_title(*values: str) -> str:
+    fallback = ""
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if not fallback:
+            fallback = text
+        if not looks_like_default_book_title(text):
+            return text
+    return fallback
+
+
+def review_dir_candidates(book_id: str, text_stem: str) -> list[str]:
+    rows: list[str] = []
+    for value in (book_id, text_stem, slug(text_stem, text_stem or "book")):
+        text = str(value or "").strip()
+        if text and text not in rows:
+            rows.append(text)
+    return rows
+
+
+def book_metadata_by_text_path(payload: dict) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
+    for book in [row for row in normalize_catalog(payload).get("books", []) if isinstance(row, dict)]:
+        text_path = str(book.get("text_path") or "").strip()
+        if text_path:
+            rows[str(Path(text_path))] = book
+    return rows
+
+
+def book_metadata_by_id(payload: dict) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
+    for book in [row for row in normalize_catalog(payload).get("books", []) if isinstance(row, dict)]:
+        book_id = str(book.get("id") or "").strip()
+        if book_id:
+            rows[book_id] = book
+    return rows
+
+
+def load_review_summaries(library_dir: Path, keys: list[str], *, default_book_title: str, default_created_at_ms: int) -> list[dict]:
+    reviews_dir = library_dir / "reviews"
+    rows: list[dict] = []
+    seen_paths: set[str] = set()
+    for key in keys:
+        review_dir = reviews_dir / key
+        if not review_dir.exists():
+            continue
+        for review_path in sorted(review_dir.glob("*.json"), key=lambda item: item.stat().st_mtime):
+            resolved = str(review_path.resolve())
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                review = read_json(review_path)
+            except Exception:
+                continue
+            if not isinstance(review, dict):
+                continue
+            summary = str(review.get("understanding") or review.get("summary") or "")[:900]
+            rows.append(
+                {
+                    "id": str(review.get("id") or review_path.stem),
+                    "book_id": str(review.get("book_id") or ""),
+                    "book_title": str(review.get("book_title") or default_book_title),
+                    "title": str(review.get("title") or review_path.stem),
+                    "range": review.get("range") or {},
+                    "created_at_ms": int(review.get("created_at_ms") or default_created_at_ms),
+                    "summary": summary,
+                    "understanding": summary,
+                    "review_path": str(review_path.relative_to(library_dir)).replace("\\", "/"),
+                }
+            )
+    return rows
 
 
 def compact_review_for_catalog(library_dir: Path, book_id: str, review: dict) -> tuple[dict, bool]:
@@ -109,65 +204,74 @@ def compact_catalog_reviews(library_dir: Path, payload: dict) -> tuple[dict, int
     return catalog, changed_count
 
 
-def rebuild_from_files(library_dir: Path) -> dict:
+def rebuild_from_files(library_dir: Path, seed_catalog: dict | None = None) -> dict:
     books_dir = library_dir / "books"
     files_dir = library_dir / "files"
-    reviews_dir = library_dir / "reviews"
+    seed_by_text_path = book_metadata_by_text_path(seed_catalog or {})
+    seed_by_id = book_metadata_by_id(seed_catalog or {})
     books = []
     seen_ids: set[str] = set()
     if books_dir.exists():
         for text_path in sorted(books_dir.glob("*.txt"), key=lambda item: item.stat().st_mtime, reverse=True):
             book_id = slug(text_path.stem, f"book_{len(books) + 1}")
             seen_ids.add(book_id)
+            seeded = seed_by_text_path.get(str(text_path)) or seed_by_id.get(book_id) or {}
             try:
-                text_chars = len(text_path.read_text(encoding="utf-8", errors="replace"))
+                text_body = text_path.read_text(encoding="utf-8", errors="replace")
+                text_chars = len(text_body)
             except Exception:
+                text_body = ""
                 text_chars = 0
             stat = text_path.stat()
-            reviews = []
-            review_dir = reviews_dir / book_id
-            if review_dir.exists():
-                for review_path in sorted(review_dir.glob("*.json"), key=lambda item: item.stat().st_mtime):
-                    try:
-                        review = read_json(review_path)
-                    except Exception:
-                        continue
-                    if isinstance(review, dict):
-                        review.setdefault("review_path", str(review_path.relative_to(library_dir)).replace("\\", "/"))
-                        summary = str(review.get("understanding") or review.get("summary") or "")[:900]
-                        reviews.append(
-                            {
-                                "id": str(review.get("id") or review_path.stem),
-                                "book_id": book_id,
-                                "book_title": str(review.get("book_title") or text_path.stem),
-                                "title": str(review.get("title") or review_path.stem),
-                                "range": review.get("range") or {},
-                                "created_at_ms": int(review.get("created_at_ms") or stat.st_mtime * 1000),
-                                "summary": summary,
-                                "understanding": summary,
-                                "review_path": str(review_path.relative_to(library_dir)).replace("\\", "/"),
-                            }
-                        )
+            reviews = load_review_summaries(
+                library_dir,
+                review_dir_candidates(book_id, text_path.stem),
+                default_book_title=str(seeded.get("title") or text_path.stem),
+                default_created_at_ms=int(stat.st_mtime * 1000),
+            )
+            source_path = str(seeded.get("source_path") or "").strip()
+            source_name = Path(source_path).stem if source_path else ""
+            review_book_title = next((str(item.get("book_title") or "").strip() for item in reviews if str(item.get("book_title") or "").strip()), "")
+            title = choose_best_book_title(
+                str(seeded.get("title") or ""),
+                review_book_title,
+                source_name,
+                text_path.stem,
+                book_id,
+            ) or text_path.stem
+            summary = str(seeded.get("summary") or "").strip()
+            if not summary and text_body.strip():
+                summary = ar._short(text_body.strip().replace("\n", " "), 180)
+            cursor = max(0, int(seeded.get("cursor") or seeded.get("read_chars") or 0))
+            if cursor <= 0:
+                range_ends = [int((item.get("range") or {}).get("end") or 0) for item in reviews if isinstance(item, dict)]
+                cursor = max(range_ends, default=0)
+            cursor = max(0, min(text_chars, cursor))
+            last_read_at_ms = max(0, int(seeded.get("last_read_at_ms") or 0))
+            if not last_read_at_ms and reviews:
+                last_read_at_ms = max(int(item.get("created_at_ms") or 0) for item in reviews)
+            warnings = [str(item) for item in seeded.get("warnings", []) if str(item or "").strip()] if isinstance(seeded.get("warnings"), list) else []
+            warnings.append("由一键修复脚本从残留正文文件重建目录。")
             books.append(
                 {
                     "id": book_id,
-                    "title": text_path.stem,
-                    "summary": "",
-                    "source_path": "",
-                    "source_type": "txt",
+                    "title": title,
+                    "summary": summary,
+                    "source_path": source_path,
+                    "source_type": str(seeded.get("source_type") or ("txt" if not source_path else Path(source_path).suffix.lower().lstrip(".") or "file")),
                     "text_path": str(text_path),
-                    "asset_dir": "",
+                    "asset_dir": str(seeded.get("asset_dir") or ""),
                     "text_chars": text_chars,
-                    "cursor": 0,
-                    "read_chars": 0,
-                    "read_tick_count": 0,
-                    "last_read_at_ms": 0,
-                    "status": "ready",
-                    "tags": [],
-                    "warnings": ["由一键修复脚本从残留正文文件重建目录。"],
-                    "assets": [],
+                    "cursor": cursor,
+                    "read_chars": cursor,
+                    "read_tick_count": max(0, int(seeded.get("read_tick_count") or 0)),
+                    "last_read_at_ms": last_read_at_ms,
+                    "status": str(seeded.get("status") or ("reading" if cursor and cursor < text_chars else "ready")),
+                    "tags": [str(item) for item in seeded.get("tags", []) if str(item or "").strip()][:20] if isinstance(seeded.get("tags"), list) else [],
+                    "warnings": list(dict.fromkeys(warnings))[:12],
+                    "assets": [row for row in seeded.get("assets", [])[:200] if isinstance(row, dict)] if isinstance(seeded.get("assets"), list) else [],
                     "reviews": reviews[-300:],
-                    "created_at_ms": int(stat.st_ctime * 1000),
+                    "created_at_ms": int(seeded.get("created_at_ms") or stat.st_ctime * 1000),
                     "updated_at_ms": int(stat.st_mtime * 1000),
                     "source": "repair_library_catalog.py",
                 }
@@ -202,7 +306,7 @@ def rebuild_from_files(library_dir: Path) -> dict:
                 {
                     "id": book_id,
                     "title": source_path.stem,
-                    "summary": "",
+                    "summary": ar._short(text.replace("\n", " "), 180),
                     "source_path": str(source_path),
                     "source_type": source_path.suffix.lower().lstrip(".") or "file",
                     "text_path": str(text_path),
@@ -258,7 +362,7 @@ def merge_missing_books(existing: dict, recovered: dict) -> tuple[dict, int]:
 
 
 def main() -> int:
-    repo = Path(__file__).resolve().parents[1]
+    repo = REPO_ROOT
     library_dir = repo / "observatory" / "outputs" / "agent" / "library"
     catalog = library_dir / "agent_library.json"
     report_lines = [
@@ -284,7 +388,7 @@ def main() -> int:
         shutil.copy2(catalog, backup)
         report_lines.append(f"[OK] 已额外留下检查备份: {backup}")
         compacted, changed_count = compact_catalog_reviews(library_dir, current)
-        rebuilt = rebuild_from_files(library_dir)
+        rebuilt = rebuild_from_files(library_dir, seed_catalog=compacted)
         compacted, recovered_added = merge_missing_books(compacted, rebuilt)
         if changed_count > 0:
             report_lines.append(f"[OK] 已整理 {changed_count} 条段落理解：完整正文外置到 library/reviews，目录保留轻量索引。")
@@ -295,7 +399,7 @@ def main() -> int:
         if changed_count > 0 or recovered_added > 0:
             write_json(catalog, compacted)
         else:
-            report_lines.append("[OK] 段落理解索引已经是轻量结构，无需整理。")
+            report_lines.append("[OK] 当前目录不需要额外修复写回。")
     else:
         if current_error:
             report_lines.append(f"[WARN] 当前目录不可用: {current_error}")

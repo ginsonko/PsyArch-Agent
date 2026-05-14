@@ -2214,6 +2214,10 @@ body {
   background: color-mix(in srgb, var(--ap-bg-elevated) 88%, #4dabf7 5%);
 }
 
+.agent-library-original-detail {
+  background: color-mix(in srgb, var(--ap-bg-elevated) 88%, #20c997 5%);
+}
+
 .agent-library-mini-stat {
   display: grid;
   gap: 2px;

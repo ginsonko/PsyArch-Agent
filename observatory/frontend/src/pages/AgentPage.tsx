@@ -4215,6 +4215,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
   const [library, setLibrary] = useState<AnyRecord | null>(null);
   const [selectedBook, setSelectedBook] = useState<AnyRecord | null>(null);
   const [selectedLibraryReview, setSelectedLibraryReview] = useState<AnyRecord | null>(null);
+  const [selectedLibraryOriginal, setSelectedLibraryOriginal] = useState<AnyRecord | null>(null);
   const [bookImportDraft, setBookImportDraft] = useState<AnyRecord>({ path: '', title: '', summary: '', text: '' });
   const [runtimePackages, setRuntimePackages] = useState<AnyRecord | null>(null);
   const [runtimePackageDraft, setRuntimePackageDraft] = useState<AnyRecord>({
@@ -5820,6 +5821,7 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       const detail = asArray<AnyRecord>(result.books)[0] || result.book || book;
       setSelectedBook(detail);
       setSelectedLibraryReview(asArray<AnyRecord>(detail.reviews)[0] || null);
+      setSelectedLibraryOriginal(null);
       setSelected(detail);
     });
   }
@@ -5865,6 +5867,19 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     await withBusy('tool', async () => {
       const result = await api.agentReadBook({ book_id: id, mode, chars: Number(draft.library_chunk_target_chars ?? 30), ticks: Number(draft.library_after_chunk_ticks ?? 6) });
       setSelected(result);
+      if (mode === 'original' && result?.ok) {
+        setSelectedLibraryOriginal({
+          book_id: id,
+          title: String(result?.book?.title || selectedBook?.title || id),
+          range: result?.range || {},
+          text: String(result?.text || ''),
+          summary: String(result?.summary || ''),
+        });
+      } else if (mode === 'reviews') {
+        setSelectedLibraryOriginal(null);
+      } else if (mode === 'read' || mode === 'stop') {
+        setSelectedLibraryOriginal(null);
+      }
       if (result?.book) {
         const detail = await api.agentLibrary(true, id).catch(() => null);
         const detailBook = asArray<AnyRecord>(detail?.books)[0] || detail?.book || result.book;
@@ -5883,12 +5898,14 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
     const reviewId = String(review.id || '').trim();
     if (!bookId || !reviewId) {
       setSelectedLibraryReview(review);
+      setSelectedLibraryOriginal(null);
       return;
     }
     await withBusy('tool', async () => {
       const result = await api.agentReadBook({ book_id: bookId, mode: 'reviews', ids: [reviewId], detail: true });
       const detail = asArray<AnyRecord>(result?.reviews)[0] || review;
       setSelectedLibraryReview(detail);
+      setSelectedLibraryOriginal(null);
     });
   }
 
@@ -5901,6 +5918,8 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
       const result = await api.agentDeleteBook(id);
       setSelected(result);
       setSelectedBook(null);
+      setSelectedLibraryReview(null);
+      setSelectedLibraryOriginal(null);
       const payload = await api.agentLibrary(false).catch(() => null);
       if (payload) setLibrary(payload);
     });
@@ -8398,6 +8417,22 @@ export function AgentPage({ onStatusChange }: AgentPageProps) {
                               {!asArray<AnyRecord>(selectedBook.reviews).length ? <div className="empty-box compact">还没有段落理解。点击“读下一段”后会生成第一条。</div> : null}
                             </Stack>
                           </ScrollArea.Autosize>
+                          {selectedLibraryOriginal ? (
+                            <div className="agent-library-review-detail agent-library-original-detail">
+                              <Group justify="space-between" gap={6}>
+                                <Text size="xs" fw={800}>{shortText(String(selectedLibraryOriginal.title || selectedBook.title || selectedBook.id || '原文片段'), 42)}</Text>
+                                <Badge size="xs" variant="light">原文</Badge>
+                              </Group>
+                              <Text size="xs" c="dimmed">
+                                {formatCount(selectedLibraryOriginal.range?.start)}-{formatCount(selectedLibraryOriginal.range?.end)} 字
+                              </Text>
+                              <ScrollArea.Autosize mah={220}>
+                                <Text size="sm" className="agent-library-review-content">
+                                  {String(selectedLibraryOriginal.text || '当前没有可展示的原文片段。')}
+                                </Text>
+                              </ScrollArea.Autosize>
+                            </div>
+                          ) : null}
                           {selectedLibraryReview ? (
                             <div className="agent-library-review-detail">
                               <Group justify="space-between" gap={6}>
