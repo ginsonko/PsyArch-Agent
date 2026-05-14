@@ -477,6 +477,7 @@ _MAX_STATE_BYTES = 12 * 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
 _MAX_ASSET_JSON_BYTES = 256 * 1024 * 1024
 _CRITICAL_JSON_BACKUP_LIMIT = 12
+_OVERSIZED_STATE_BACKUP_LIMIT = 6
 _PROMPT_BUDGET_WARN_TOKENS = 100_000
 _PROMPT_BUDGET_FAIL_TOKENS = 200_000
 _DATA_URL_RE = re.compile(r"data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s_-]{256,})")
@@ -553,8 +554,30 @@ def _critical_json_backups(path: Path) -> list[Path]:
     return rows
 
 
+def _oversized_state_backups(path: Path) -> list[Path]:
+    rows: list[Path] = []
+    try:
+        parent = path.parent
+        if parent.exists():
+            rows.extend(parent.glob(f"{path.stem}.oversized.*{path.suffix}"))
+    except Exception:
+        pass
+    rows = [item for item in rows if item.exists() and item.is_file()]
+    rows.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return rows
+
+
 def _prune_critical_json_backups(path: Path, *, limit: int = _CRITICAL_JSON_BACKUP_LIMIT) -> None:
     backups = _critical_json_backups(path)
+    for old in backups[max(0, int(limit)) :]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _prune_oversized_state_backups(path: Path, *, limit: int = _OVERSIZED_STATE_BACKUP_LIMIT) -> None:
+    backups = _oversized_state_backups(path)
     for old in backups[max(0, int(limit)) :]:
         try:
             old.unlink()
@@ -1054,6 +1077,15 @@ def _safe_write_json_compact(path: Path, payload: Any) -> None:
     if len(data) > _MAX_STATE_BYTES:
         _backup_existing_file(path, timestamped=False)
         _backup_existing_file(path, timestamped=True)
+        if len(data) <= _MAX_ASSET_JSON_BYTES:
+            _safe_write_bytes(path, data)
+            return
+        oversized_path = path.with_name(f"{path.stem}.oversized.{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.json")
+        try:
+            _safe_write_bytes(oversized_path, data)
+            _prune_oversized_state_backups(path)
+        except Exception:
+            oversized_path = Path()
         safe_payload = {
             "session_id": _as_dict(payload).get("session_id") if isinstance(payload, dict) else "",
             "created_at_ms": _as_dict(payload).get("created_at_ms") if isinstance(payload, dict) else _now_ms(),
@@ -1061,6 +1093,7 @@ def _safe_write_json_compact(path: Path, payload: Any) -> None:
             "truncated": True,
             "reason": "state_payload_too_large",
             "original_bytes": len(data),
+            "oversized_state_path": str(oversized_path) if oversized_path else "",
             "messages": _as_list(_as_dict(payload).get("messages"))[-20:] if isinstance(payload, dict) else [],
             "thoughts": _as_list(_as_dict(payload).get("thoughts"))[-12:] if isinstance(payload, dict) else [],
             "turns": _as_list(_as_dict(payload).get("turns"))[-8:] if isinstance(payload, dict) else [],
@@ -6807,7 +6840,64 @@ class AgentRuntime:
             "created_at_ms": _now_ms(),
             "updated_at_ms": _now_ms(),
         }
-        state = _safe_read_json(_state_path(), default)
+        state_path = _state_path()
+        state = _safe_read_json(state_path, default)
+        recovered_from = ""
+        recovery_error = ""
+        if isinstance(state, dict) and bool(state.get("truncated")):
+            candidate_paths: list[Path] = []
+            oversized_hint = Path(str(state.get("oversized_state_path") or "").strip()) if str(state.get("oversized_state_path") or "").strip() else Path()
+            if oversized_hint:
+                candidate_paths.append(oversized_hint)
+            candidate_paths.extend(_oversized_state_backups(state_path))
+            candidate_paths.extend(_critical_json_backups(state_path))
+            seen_candidates: set[str] = set()
+            for candidate in candidate_paths:
+                try:
+                    resolved = str(candidate.resolve())
+                except Exception:
+                    resolved = str(candidate)
+                if not resolved or resolved in seen_candidates:
+                    continue
+                seen_candidates.add(resolved)
+                try:
+                    recovered = self._read_json_file_strict(candidate)
+                except Exception as exc:
+                    recovery_error = str(exc)
+                    continue
+                if not isinstance(recovered, dict) or bool(recovered.get("truncated")):
+                    continue
+                if not any(isinstance(recovered.get(key), list) and recovered.get(key) for key in ("messages", "thoughts", "turns", "snapshots")):
+                    continue
+                state = recovered
+                recovered_from = str(candidate)
+                try:
+                    _safe_write_bytes(state_path, _json_bytes(recovered, compact=True))
+                except Exception:
+                    pass
+                break
+            if recovered_from:
+                self.record_system_log(
+                    {
+                        "event": "agent_state_recovered_from_backup",
+                        "task": "运行态保护",
+                        "stage": "load_state",
+                        "summary": "检测到主运行态被截断，已自动从较完整备份恢复。",
+                        "detail": f"source={recovered_from}",
+                        "progress": 100,
+                    }
+                )
+            else:
+                self.record_system_log(
+                    {
+                        "event": "agent_state_truncated_preview_loaded",
+                        "level": "error",
+                        "task": "运行态保护",
+                        "stage": "load_state",
+                        "summary": "检测到主运行态被截断，但没有找到可恢复的完整备份。",
+                        "error": recovery_error or str(state.get("reason") or "state_truncated"),
+                    }
+                )
         if not isinstance(state, dict):
             state = default
         for key in ("messages", "thoughts", "turns", "snapshots"):
@@ -9292,6 +9382,12 @@ class AgentRuntime:
         except Exception:
             return False
 
+    def _library_has_orphan_source_files(self) -> bool:
+        try:
+            return any(path.is_file() for path in _library_files_dir().glob("*"))
+        except Exception:
+            return False
+
     def _library_has_existing_user_data(self) -> bool:
         path = _library_catalog_path()
         try:
@@ -9308,6 +9404,8 @@ class AgentRuntime:
             except Exception:
                 continue
         if self._library_has_orphan_book_files():
+            return True
+        if self._library_has_orphan_source_files():
             return True
         try:
             return any(path.is_file() and path.suffix.lower() == ".json" for path in _library_reviews_dir().rglob("*.json"))
@@ -9393,9 +9491,10 @@ class AgentRuntime:
             item["warnings"] = warnings[-8:]
         return item
 
-    def _recover_library_catalog_from_backups_or_files(self, *, reason: str = "") -> dict[str, Any]:
+    def _recover_library_catalog_from_backups_or_files(self, *, reason: str = "", persist: bool = True) -> dict[str, Any]:
         books: list[dict[str, Any]] = []
         now = _now_ms()
+        seen_ids: set[str] = set()
         try:
             for text_path in sorted(_library_books_dir().glob("*.txt"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
                 if not text_path.is_file():
@@ -9407,6 +9506,7 @@ class AgentRuntime:
                     stat = None
                     text_chars = 0
                 book_id = _slug_id(text_path.stem, fallback=f"book_{len(books) + 1}")
+                seen_ids.add(book_id)
                 review_rows = []
                 review_dir = _library_reviews_dir() / book_id
                 if review_dir.exists():
@@ -9442,6 +9542,58 @@ class AgentRuntime:
                         "source": f"library_recovery:{reason or 'unknown'}",
                     }
                 )
+            for source_path in sorted(_library_files_dir().glob("*"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
+                if not source_path.is_file():
+                    continue
+                candidate_id = _slug_id(source_path.stem, fallback=f"book_{len(books) + 1}")
+                if candidate_id in seen_ids:
+                    continue
+                try:
+                    extracted = self._extract_book_from_path(source_path, book_id=candidate_id)
+                except Exception:
+                    extracted = {"text": "", "assets": [], "warnings": [f"无法重新提取原始文件：{source_path.name}"], "asset_dir": ""}
+                text = str(extracted.get("text") or "").replace("\x00", "").strip()
+                if not text:
+                    continue
+                book_id = candidate_id
+                text_path = _library_books_dir() / f"{book_id}.txt"
+                suffix = 2
+                while text_path.exists():
+                    book_id = _slug_id(f"{candidate_id}_{suffix}", fallback=f"{candidate_id}_{suffix}")
+                    text_path = _library_books_dir() / f"{book_id}.txt"
+                    suffix += 1
+                text_path.parent.mkdir(parents=True, exist_ok=True)
+                text_path.write_text(text, encoding="utf-8")
+                try:
+                    stat = source_path.stat()
+                except Exception:
+                    stat = None
+                seen_ids.add(book_id)
+                books.append(
+                    {
+                        "id": book_id,
+                        "title": source_path.stem,
+                        "summary": "",
+                        "source_path": str(source_path),
+                        "source_type": source_path.suffix.lower().lstrip(".") or "file",
+                        "text_path": str(text_path),
+                        "asset_dir": str(extracted.get("asset_dir") or ""),
+                        "text_chars": len(text),
+                        "cursor": 0,
+                        "read_chars": 0,
+                        "read_tick_count": 0,
+                        "last_read_at_ms": 0,
+                        "status": "ready",
+                        "tags": [],
+                        "warnings": [f"由图书馆修复流程从原始文件 {source_path.name} 重新提取正文。"]
+                        + [str(row) for row in _as_list(extracted.get("warnings")) if str(row or "").strip()][:8],
+                        "assets": [row for row in _as_list(extracted.get("assets"))[:200] if isinstance(row, dict)],
+                        "reviews": [],
+                        "created_at_ms": int(stat.st_ctime * 1000) if stat else now,
+                        "updated_at_ms": int(stat.st_mtime * 1000) if stat else now,
+                        "source": f"library_recovery:{reason or 'unknown'}",
+                    }
+                )
         except Exception as exc:
             try:
                 self.record_system_log(
@@ -9457,7 +9609,7 @@ class AgentRuntime:
             except Exception:
                 pass
         payload = {"version": 1, "updated_at_ms": now, "books": books}
-        if books:
+        if books and persist:
             try:
                 _safe_write_asset_json(_library_catalog_path(), payload, compact=False, backup=True)
                 self.record_system_log(
@@ -9483,7 +9635,7 @@ class AgentRuntime:
             recovered = self._recover_library_catalog_from_backups_or_files(reason="catalog_truncated")
             if recovered:
                 raw = recovered
-        if not _as_list(raw.get("books")) and self._library_has_orphan_book_files():
+        if not _as_list(raw.get("books")) and (self._library_has_orphan_book_files() or self._library_has_orphan_source_files()):
             recovered = self._recover_library_catalog_from_backups_or_files(reason="catalog_empty_or_missing")
             if recovered and _as_list(recovered.get("books")):
                 raw = recovered
@@ -9542,6 +9694,52 @@ class AgentRuntime:
                 except Exception:
                     pass
             books.append(book)
+        if self._library_has_orphan_book_files() or self._library_has_orphan_source_files():
+            recovered = self._recover_library_catalog_from_backups_or_files(reason="catalog_missing_entries", persist=False)
+            recovered_books = [row for row in _as_list(_as_dict(recovered).get("books")) if isinstance(row, dict)]
+            if recovered_books:
+                known_ids = {str(row.get("id") or "") for row in books}
+                known_text_paths = {str(row.get("text_path") or "") for row in books if str(row.get("text_path") or "").strip()}
+                known_source_paths = {str(row.get("source_path") or "") for row in books if str(row.get("source_path") or "").strip()}
+                added = 0
+                for row in recovered_books:
+                    book_id = str(row.get("id") or "")
+                    text_path = str(row.get("text_path") or "")
+                    source_path = str(row.get("source_path") or "")
+                    if book_id and book_id in known_ids:
+                        continue
+                    if text_path and text_path in known_text_paths:
+                        continue
+                    if source_path and source_path in known_source_paths:
+                        continue
+                    books.append(row)
+                    if book_id:
+                        known_ids.add(book_id)
+                    if text_path:
+                        known_text_paths.add(text_path)
+                    if source_path:
+                        known_source_paths.add(source_path)
+                    added += 1
+                if added > 0:
+                    books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
+                    try:
+                        _safe_write_asset_json(
+                            _library_catalog_path(),
+                            {"version": 1, "updated_at_ms": _now_ms(), "books": books},
+                            compact=False,
+                            backup=True,
+                        )
+                        self.record_system_log(
+                            {
+                                "event": "library_catalog_merged_missing_disk_books",
+                                "task": "图书馆保护",
+                                "stage": "load_catalog",
+                                "summary": f"检测到目录缺失 {added} 本仍在磁盘上的书，已自动补回图书馆目录。",
+                                "progress": 100,
+                            }
+                        )
+                    except Exception:
+                        pass
         books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
         result = {"version": 1, "updated_at_ms": _as_int(raw.get("updated_at_ms"), now), "books": books}
         if recovered_from:
@@ -9580,11 +9778,20 @@ class AgentRuntime:
             )
         limit = max(1, int(self.config.library_book_limit or 200))
         safe_books.sort(key=lambda row: (_as_int(row.get("updated_at_ms"), 0), _as_int(row.get("created_at_ms"), 0)), reverse=True)
-        for row in safe_books[limit:]:
+        dropped_count = max(0, len(safe_books) - limit)
+        if dropped_count:
             try:
-                path = Path(str(row.get("text_path") or "")).resolve()
-                if path.exists() and path.is_file() and _library_dir().resolve() in path.parents:
-                    path.unlink()
+                self.record_system_log(
+                    {
+                        "event": "library_catalog_limit_applied_without_deleting_files",
+                        "level": "warn",
+                        "task": "图书馆保护",
+                        "stage": "save_catalog",
+                        "summary": f"图书馆目录超过上限 {limit} 本，本次仅截断目录展示，未删除任何正文或资源文件。",
+                        "detail": f"dropped_catalog_rows={dropped_count}; limit={limit}",
+                        "progress": 100,
+                    }
+                )
             except Exception:
                 pass
         if not safe_books and not allow_empty and self._library_has_existing_user_data():

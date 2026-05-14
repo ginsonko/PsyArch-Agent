@@ -6,6 +6,8 @@ import shutil
 import time
 from pathlib import Path
 
+from observatory import agent_runtime as ar
+
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -109,11 +111,14 @@ def compact_catalog_reviews(library_dir: Path, payload: dict) -> tuple[dict, int
 
 def rebuild_from_files(library_dir: Path) -> dict:
     books_dir = library_dir / "books"
+    files_dir = library_dir / "files"
     reviews_dir = library_dir / "reviews"
     books = []
+    seen_ids: set[str] = set()
     if books_dir.exists():
         for text_path in sorted(books_dir.glob("*.txt"), key=lambda item: item.stat().st_mtime, reverse=True):
             book_id = slug(text_path.stem, f"book_{len(books) + 1}")
+            seen_ids.add(book_id)
             try:
                 text_chars = len(text_path.read_text(encoding="utf-8", errors="replace"))
             except Exception:
@@ -167,7 +172,89 @@ def rebuild_from_files(library_dir: Path) -> dict:
                     "source": "repair_library_catalog.py",
                 }
             )
+    if files_dir.exists():
+        extractor = object.__new__(ar.AgentRuntime)
+        for source_path in sorted(files_dir.glob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
+            if not source_path.is_file():
+                continue
+            candidate_id = slug(source_path.stem, f"book_{len(books) + 1}")
+            if candidate_id in seen_ids:
+                continue
+            try:
+                extracted = ar.AgentRuntime._extract_book_from_path(extractor, source_path, book_id=candidate_id)
+            except Exception as exc:
+                extracted = {"text": "", "assets": [], "warnings": [f"re-extract failed: {exc}"], "asset_dir": ""}
+            text = str(extracted.get("text") or "").replace("\x00", "").strip()
+            if not text:
+                continue
+            book_id = candidate_id
+            text_path = books_dir / f"{book_id}.txt"
+            suffix = 2
+            while text_path.exists():
+                book_id = slug(f"{candidate_id}_{suffix}", f"{candidate_id}_{suffix}")
+                text_path = books_dir / f"{book_id}.txt"
+                suffix += 1
+            text_path.parent.mkdir(parents=True, exist_ok=True)
+            text_path.write_text(text, encoding="utf-8")
+            seen_ids.add(book_id)
+            stat = source_path.stat()
+            books.append(
+                {
+                    "id": book_id,
+                    "title": source_path.stem,
+                    "summary": "",
+                    "source_path": str(source_path),
+                    "source_type": source_path.suffix.lower().lstrip(".") or "file",
+                    "text_path": str(text_path),
+                    "asset_dir": str(extracted.get("asset_dir") or ""),
+                    "text_chars": len(text),
+                    "cursor": 0,
+                    "read_chars": 0,
+                    "read_tick_count": 0,
+                    "last_read_at_ms": 0,
+                    "status": "ready",
+                    "tags": [],
+                    "warnings": [f"由一键修复脚本从原始文件 {source_path.name} 重新提取正文。"]
+                    + [str(item) for item in extracted.get("warnings", []) if str(item or "").strip()][:8],
+                    "assets": [row for row in extracted.get("assets", [])[:200] if isinstance(row, dict)],
+                    "reviews": [],
+                    "created_at_ms": int(stat.st_ctime * 1000),
+                    "updated_at_ms": int(stat.st_mtime * 1000),
+                    "source": "repair_library_catalog.py",
+                }
+            )
     return {"version": 1, "updated_at_ms": int(time.time() * 1000), "books": books}
+
+
+def merge_missing_books(existing: dict, recovered: dict) -> tuple[dict, int]:
+    catalog = normalize_catalog(existing)
+    books = [row for row in catalog.get("books", []) if isinstance(row, dict)]
+    known_ids = {str(row.get("id") or "") for row in books}
+    known_text_paths = {str(row.get("text_path") or "") for row in books if str(row.get("text_path") or "").strip()}
+    known_source_paths = {str(row.get("source_path") or "") for row in books if str(row.get("source_path") or "").strip()}
+    added = 0
+    for row in [item for item in normalize_catalog(recovered).get("books", []) if isinstance(item, dict)]:
+        book_id = str(row.get("id") or "")
+        text_path = str(row.get("text_path") or "")
+        source_path = str(row.get("source_path") or "")
+        if book_id and book_id in known_ids:
+            continue
+        if text_path and text_path in known_text_paths:
+            continue
+        if source_path and source_path in known_source_paths:
+            continue
+        books.append(row)
+        if book_id:
+            known_ids.add(book_id)
+        if text_path:
+            known_text_paths.add(text_path)
+        if source_path:
+            known_source_paths.add(source_path)
+        added += 1
+    books.sort(key=lambda item: (int(item.get("updated_at_ms") or 0), int(item.get("created_at_ms") or 0)), reverse=True)
+    catalog["books"] = books
+    catalog["updated_at_ms"] = int(time.time() * 1000)
+    return catalog, added
 
 
 def main() -> int:
@@ -197,9 +284,16 @@ def main() -> int:
         shutil.copy2(catalog, backup)
         report_lines.append(f"[OK] 已额外留下检查备份: {backup}")
         compacted, changed_count = compact_catalog_reviews(library_dir, current)
+        rebuilt = rebuild_from_files(library_dir)
+        compacted, recovered_added = merge_missing_books(compacted, rebuilt)
         if changed_count > 0:
-            write_json(catalog, compacted)
             report_lines.append(f"[OK] 已整理 {changed_count} 条段落理解：完整正文外置到 library/reviews，目录保留轻量索引。")
+        else:
+            report_lines.append("[OK] 段落理解索引已经是轻量结构，无需整理。")
+        if recovered_added > 0:
+            report_lines.append(f"[OK] 目录可读取但存在缺失，已从 books/files 残留数据补回 {recovered_added} 本书。")
+        if changed_count > 0 or recovered_added > 0:
+            write_json(catalog, compacted)
         else:
             report_lines.append("[OK] 段落理解索引已经是轻量结构，无需整理。")
     else:
@@ -220,7 +314,7 @@ def main() -> int:
                 break
         if recovered is None:
             recovered = rebuild_from_files(library_dir)
-            recovered_from = "library/books + library/reviews"
+            recovered_from = "library/books + library/files + library/reviews"
         if book_count(recovered) > 0:
             if catalog.exists():
                 bad = catalog.with_name(f"{catalog.name}.{time.strftime('%Y%m%d-%H%M%S')}.before-repair.bak")

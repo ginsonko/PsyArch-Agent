@@ -410,6 +410,130 @@ def test_library_blocks_unexpected_empty_overwrite(tmp_path, monkeypatch):
     assert listed["books"][0]["id"] == book_id
 
 
+def test_library_catalog_limit_does_not_delete_existing_book_files(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    runtime.config.library_book_limit = 1
+    first = runtime.import_book({"title": "first_book", "text": "first body"}, source="test")
+    second = runtime.import_book({"title": "second_book", "text": "second body"}, source="test")
+
+    first_text_path = Path(first["book"]["text_path"])
+    second_text_path = Path(second["book"]["text_path"])
+
+    assert first_text_path.exists()
+    assert second_text_path.exists()
+
+    listed = runtime.browse_library({})
+    assert listed["total"] == 2
+    assert first_text_path.exists()
+    assert second_text_path.exists()
+
+
+def test_library_catalog_rebuilds_from_library_files_when_books_missing(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    source = tmp_path / "source_only.txt"
+    source.write_text("original source should still recover the book", encoding="utf-8")
+    imported = runtime.import_book({"title": "source_only", "path": str(source)}, source="test")
+
+    text_path = Path(imported["book"]["text_path"])
+    assert text_path.exists()
+    text_path.unlink()
+    ar._library_catalog_path().write_text('{"version":1,"books":[]}', encoding="utf-8")
+
+    loaded = runtime._load_library_catalog()
+
+    assert loaded["books"]
+    recovered = loaded["books"][0]
+    assert recovered["source_path"]
+    assert Path(recovered["text_path"]).exists()
+    assert "原始文件" in recovered["warnings"][0]
+
+
+def test_library_catalog_merges_missing_disk_books_when_catalog_still_has_one(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, monkeypatch)
+    kept = runtime.import_book({"title": "kept_book", "text": "keep this one"}, source="test")
+    source = tmp_path / "missing_source.txt"
+    source.write_text("recover this second book from source file", encoding="utf-8")
+    missing = runtime.import_book({"title": "missing_book", "path": str(source)}, source="test")
+
+    kept_book = runtime._load_library_catalog()["books"][0]
+    ar._library_catalog_path().write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "books": [
+                    {
+                        "id": kept_book["id"],
+                        "title": kept_book["title"],
+                        "text_path": kept_book["text_path"],
+                        "source_path": kept_book.get("source_path") or "",
+                        "created_at_ms": kept_book["created_at_ms"],
+                        "updated_at_ms": kept_book["updated_at_ms"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    missing_text_path = Path(missing["book"]["text_path"])
+    if missing_text_path.exists():
+        missing_text_path.unlink()
+
+    loaded = runtime._load_library_catalog()
+
+    assert len(loaded["books"]) == 2
+    recovered_ids = {str(row.get("id") or "") for row in loaded["books"]}
+    assert kept_book["id"] in recovered_ids
+    assert any("missing_source" in row_id or row_id == missing["book"]["id"] for row_id in recovered_ids)
+
+
+def test_truncated_state_recovers_from_oversized_backup(tmp_path, monkeypatch):
+    _patch_runtime_paths(tmp_path, monkeypatch)
+    state_path = ar._state_path()
+    full_state = {
+        "session_id": "sess_1",
+        "messages": [{"role": "user", "text": "old message"}],
+        "thoughts": [{"text": "old thought"}],
+        "turns": [{"id": "turn_1"}],
+        "snapshots": [{"kind": "message", "summary": {"active_item_count": 1}}],
+        "outbound": {"last_send_at_ms": 0},
+        "group_continuity_windows": {},
+        "adapter_group_history": {},
+        "background_agency": {"recent_input_tick_counter": 0},
+        "created_at_ms": 1,
+        "updated_at_ms": 2,
+    }
+    oversized_path = tmp_path / "agent_state.oversized.20260514-190000.json"
+    oversized_path.write_text(json.dumps(full_state, ensure_ascii=False), encoding="utf-8")
+    state_path.write_text(
+        json.dumps(
+            {
+                "session_id": "sess_1",
+                "created_at_ms": 1,
+                "updated_at_ms": 3,
+                "truncated": True,
+                "reason": "state_payload_too_large",
+                "oversized_state_path": str(oversized_path),
+                "messages": [],
+                "thoughts": [],
+                "turns": [],
+                "snapshots": [],
+                "outbound": {"last_send_at_ms": 0},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = AgentRuntime(_LibraryFakeApp())
+    runtime.config = AgentConfig(library_enabled=True)
+    runtime.record_event = lambda payload: None
+
+    assert runtime.state["messages"]
+    assert runtime.state["messages"][0]["text"] == "old message"
+    assert '"truncated"' not in state_path.read_text(encoding="utf-8")
+
+
 def test_runtime_package_export_redacts_config_and_safe_import(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path, monkeypatch)
     runtime.write_diary({"title": "用户信息", "content": "银子是晋中人", "importance": 90}, source="test")
